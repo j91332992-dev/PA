@@ -1,0 +1,8 @@
+node_modules/
+.env
+firmware/**/include/config.h
+data/*.json
+data/*.bak
+data/*.tmp
+.pio/
+dist/

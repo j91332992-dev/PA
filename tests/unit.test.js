@@ -1,0 +1,1 @@
+const test=require('node:test'),assert=require('node:assert/strict'),mod=require('../backend/server');test('UID normalization',()=>assert.equal(mod.uid('04 a1:b2-c3'),'04A1B2C3'));test('password hashes use salt',()=>{const h=mod.hash('abcdefghij');assert.match(h,/^[0-9a-f]+:[0-9a-f]+$/);assert.notEqual(h,mod.hash('abcdefghij'))});

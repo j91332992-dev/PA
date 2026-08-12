@@ -1,0 +1,5 @@
+{
+  "name":"smart-wardrobe","version":"1.0.0","private":true,"type":"commonjs",
+  "scripts":{"start":"node backend/server.js","dev":"node --watch backend/server.js","simulator":"node simulator/index.js","test:scale":"node simulator/scale-test.js 50","test":"node --test tests/*.test.js"},
+  "engines":{"node":">=20"},"dependencies":{"ws":"^8.18.0"}
+}
