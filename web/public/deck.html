@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<script>
+  (function () {
+    if (new URLSearchParams(location.search).has('legacy')) return;
+    var target = 'presentation/index.html' + location.search + location.hash;
+    location.replace(target);
+  }());
+</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WARDROBE / 발표 덱</title>
+<style>
+  :root {
+    --ink: #070a0f;
+    --line: rgba(255, 255, 255, .12);
+    --muted: #8b96a8;
+    --signal: #13f7a5;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Apple SD Gothic Neo", sans-serif; }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 8;
+    opacity: .22;
+    background-image: linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px);
+    background-size: 48px 48px;
+    mask-image: linear-gradient(to bottom, black, transparent 90%);
+  }
+  iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; background: var(--ink); }
+  .topbar {
+    position: fixed; top: 24px; left: 32px; right: 32px; z-index: 20;
+    display: flex; align-items: center; justify-content: space-between; pointer-events: none;
+    color: #fff; font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
+  }
+  .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 750; }
+  .brand-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 18px var(--signal); }
+  .top-meta { color: rgba(255,255,255,.55); font-weight: 650; }
+  .progress-wrap { position: fixed; top: 0; left: 0; right: 0; z-index: 21; height: 3px; background: rgba(255,255,255,.06); }
+  .progress { height: 100%; width: 0; background: var(--signal); box-shadow: 0 0 18px var(--signal); }
+  .loading { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: var(--ink); color: #fff; transition: opacity .35s ease; }
+  .loading.is-hidden { opacity: 0; pointer-events: none; }
+  .loading-inner { display: grid; gap: 16px; justify-items: center; color: var(--muted); font-size: 12px; letter-spacing: .12em; }
+  .loading-mark { width: 34px; height: 34px; border: 2px solid rgba(255,255,255,.12); border-top-color: var(--signal); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .deck-nav {
+    position: fixed; left: 32px; right: 32px; bottom: 24px; z-index: 20;
+    display: flex; align-items: center; justify-content: space-between; pointer-events: none;
+  }
+  .deck-nav > * { pointer-events: auto; }
+  .nav-cluster { display: flex; align-items: center; gap: 10px; }
+  .deck-btn, .auto-toggle {
+    border: 1px solid var(--line); background: rgba(7,10,15,.68); color: #fff; backdrop-filter: blur(18px);
+    border-radius: 999px; padding: 10px 15px; font: 650 11px/1 inherit; letter-spacing: .04em; cursor: pointer; transition: .2s ease;
+  }
+  .deck-btn:hover:not(:disabled), .auto-toggle:hover { border-color: rgba(19,247,165,.6); transform: translateY(-2px); }
+  .deck-btn:disabled { opacity: .3; cursor: default; }
+  .deck-indicator { color: #fff; font: 700 12px/1 inherit; letter-spacing: .12em; min-width: 58px; text-align: center; }
+  .auto-toggle { color: var(--signal); background: rgba(19,247,165,.1); border-color: rgba(19,247,165,.28); }
+  .auto-toggle.off { color: var(--muted); background: rgba(255,255,255,.04); border-color: var(--line); }
+  @media (max-width: 720px) {
+    .topbar, .deck-nav { left: 18px; right: 18px; }
+    .topbar { top: 18px; }
+    .top-meta { display: none; }
+    .deck-nav { bottom: 16px; }
+    .deck-btn { padding: 10px 12px; }
+  }
+</style>
+<link rel="stylesheet" href="presentation-theme.css">
+</head>
+<body>
+  <div class="progress-wrap"><div class="progress" id="progress"></div></div>
+  <div class="topbar"><div class="brand"><span class="brand-dot"></span> WARDROBE / SYSTEM STORY</div><div class="top-meta">NFC · ESP-NOW · PWA</div></div>
+  <div class="loading" id="loading"><div class="loading-inner"><div class="loading-mark"></div><span>LOADING PRESENTATION</span></div></div>
+  <iframe id="slideFrame" title="발표 슬라이드"></iframe>
+  <div class="deck-nav">
+    <div class="nav-cluster">
+      <button class="deck-btn" id="prevBtn" type="button">← 이전</button>
+      <span class="deck-indicator" id="indicator">01 / 07</span>
+      <button class="deck-btn" id="nextBtn" type="button">다음 →</button>
+    </div>
+    <div class="nav-cluster">
+      <button class="auto-toggle off" id="autoBtn" type="button">자동 진행 OFF</button>
+      <button class="deck-btn" id="fullscreenBtn" type="button">전체화면</button>
+    </div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script>
+    /*
+      라이브 앱 연결 지점
+      앱이 완성되면 이 두 URL만 바꾸면 slide-4-live.html의
+      오른쪽 데스크톱 앱과 왼쪽 모바일 중계 화면에 바로 표시됩니다.
+    */
+    const EMBED_DEFAULTS = {
+      desktop: '',
+      mobile: ''
+    };
+    const embedParams = new URLSearchParams(location.search);
+    window.PRESENTATION_EMBEDS = {
+      desktop: embedParams.get('desktop') || EMBED_DEFAULTS.desktop,
+      mobile: embedParams.get('mobile') || EMBED_DEFAULTS.mobile
+    };
+    const slides = [
+      { name: 'OPENING', file: 'slide-1.html' },
+      { name: 'PROBLEM', file: 'slide-2.html' },
+      { name: 'SOLUTION', file: 'slide-3.html' },
+      { name: 'HARDWARE', file: 'slide-3d.html' },
+      { name: 'LIVE DEMO', file: 'slide-4-live.html' },
+      { name: 'PROOF', file: 'slide-5-proof.html' },
+      { name: 'CLOSE', file: 'slide-6-close.html' }
+    ];
+    let current = 0;
+    let autoTimer = null;
+    const frame = document.getElementById('slideFrame');
+    const progress = document.getElementById('progress');
+    const loading = document.getElementById('loading');
+    const indicator = document.getElementById('indicator');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const autoBtn = document.getElementById('autoBtn');
+
+    function show(index) {
+      current = Math.max(0, Math.min(slides.length - 1, index));
+      loading.classList.remove('is-hidden');
+      frame.src = slides[current].file;
+      indicator.textContent = String(current + 1).padStart(2, '0') + ' / ' + String(slides.length).padStart(2, '0');
+      progress.style.width = ((current + 1) / slides.length * 100) + '%';
+      prevBtn.disabled = current === 0;
+      nextBtn.disabled = current === slides.length - 1;
+      if (window.gsap) gsap.fromTo('.deck-nav', { opacity: .55 }, { opacity: 1, duration: .35, ease: 'power2.out' });
+      history.replaceState(null, '', '#slide-' + (current + 1));
+    }
+    function next() { show(current + 1); }
+    function prev() { show(current - 1); }
+    function setAuto(on) {
+      clearInterval(autoTimer);
+      autoTimer = on ? setInterval(function() { if (current < slides.length - 1) next(); else setAuto(false); }, 16000) : null;
+      autoBtn.textContent = on ? '자동 진행 ON' : '자동 진행 OFF';
+      autoBtn.classList.toggle('off', !on);
+    }
+    prevBtn.onclick = prev;
+    nextBtn.onclick = next;
+    autoBtn.onclick = function() { setAuto(!autoTimer); };
+    document.getElementById('fullscreenBtn').onclick = function() { document.documentElement.requestFullscreen?.(); };
+    document.addEventListener('keydown', function(event) {
+      if (['ArrowRight', ' ', 'Enter'].includes(event.key)) { event.preventDefault(); next(); }
+      if (event.key === 'ArrowLeft') { event.preventDefault(); prev(); }
+      if (event.key.toLowerCase() === 'f') document.documentElement.requestFullscreen?.();
+    });
+    frame.onload = function() { setTimeout(function() { loading.classList.add('is-hidden'); }, 180); };
+    window.addEventListener('message', function(event) {
+      if (event.data?.type === 'deck:navigate') show(Number(event.data.index) || 0);
+    });
+    const hashIndex = Number(location.hash.replace('#slide-', '')) - 1;
+    show(Number.isInteger(hashIndex) && hashIndex >= 0 ? hashIndex : 0);
+  </script>
+</body>
+</html>

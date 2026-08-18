@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WARDROBE / 8분 발표 덱</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="progress-wrap" aria-hidden="true"><div class="progress" id="progress"></div></div>
+
+  <header class="topbar">
+    <div class="brand"><span class="brand-dot"></span> WARDROBE / SYSTEM STORY</div>
+    <div class="top-meta">NFC · ESP-NOW · PWA</div>
+  </header>
+
+  <div class="loading" id="loading" role="status" aria-live="polite">
+    <div class="loading-inner"><div class="loading-mark"></div><span>LOADING PRESENTATION</span></div>
+  </div>
+
+  <main class="stage" aria-label="발표 슬라이드">
+    <iframe id="slideFrame" title="발표 슬라이드" allow="camera; microphone; autoplay; fullscreen"></iframe>
+  </main>
+
+  <nav class="deck-nav" aria-label="슬라이드 내비게이션">
+    <div class="nav-cluster">
+      <button class="deck-btn" id="prevBtn" type="button">← 이전</button>
+      <span class="deck-indicator" id="indicator">01 / 15</span>
+      <button class="deck-btn" id="nextBtn" type="button">다음 →</button>
+    </div>
+    <div class="nav-cluster">
+      <button class="auto-toggle off" id="autoBtn" type="button">자동 진행 OFF</button>
+      <button class="deck-btn" id="outlineBtn" type="button">목차</button>
+      <button class="deck-btn" id="fullscreenBtn" type="button">전체화면</button>
+    </div>
+  </nav>
+
+  <aside class="outline-panel" id="outlinePanel" aria-label="발표 목차" aria-hidden="true">
+    <div class="outline-head"><div><span class="outline-kicker">PRESENTATION OUTLINE</span><h2>8분 발표 흐름</h2></div><button class="outline-close" id="outlineClose" type="button" aria-label="목차 닫기">×</button></div>
+    <div class="outline-list" id="outlineList"></div>
+    <div class="outline-foot">← → 슬라이드 이동 · O 목차 · F 전체화면</div>
+  </aside>
+
+  <script src="slides.js"></script>
+</body>
+</html>

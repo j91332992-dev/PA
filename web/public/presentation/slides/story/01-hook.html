@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WARDROBE — Opening Hook</title>
+  <link rel="stylesheet" href="../../slide.css">
+</head>
+<body>
+  <main class="slide">
+    <div class="slide-content">
+      <div class="slide-header animate-in"><div class="kicker"><i></i> 01 / OPENING HOOK</div><div class="meta">VIDEO SLOT · 8–12 SEC</div></div>
+      <div class="hook-layout">
+        <section class="hook-copy">
+          <div class="eyebrow animate-in">THE MORNING SEARCH</div>
+          <h1 class="animate-in">찾는 시간은 길어지고,<br><span class="accent">아침은 늦어진다.</span></h1>
+          <p class="lead animate-in">옷이 없는 것이 아니라, 옷장 안에 있다는 사실만으로는 충분하지 않습니다.</p>
+          <div class="hook-stats animate-in"><div class="hook-stat"><b>기억</b><span>손의 기억에 의존</span></div><div class="hook-stat"><b>탐색</b><span>옷을 하나씩 꺼냄</span></div><div class="hook-stat"><b>시간</b><span>아침이 늦어짐</span></div></div>
+        </section>
+        <section class="hook-visual animate-scale" aria-label="스마트 옷걸이와 영상 자리">
+          <div class="hanger-stage"><div class="hanger-halo"></div><canvas id="hanger3dCanvas" aria-label="삼각형 스마트 옷걸이 3D 모델"></canvas><div class="hanger-fallback" aria-hidden="true"><div class="fallback-hook"></div><div class="fallback-triangle"><div class="fallback-board"></div><div class="fallback-led"></div></div></div><div class="pin one" title="고리 전원 포고핀"></div><div class="pin two" title="고리 전원 포고핀"></div><span class="model-tag pogo">POGO / HOOK</span><span class="model-tag nfc">PN532 / NFC</span><span class="model-tag c6">XIAO C6</span></div>
+          <div class="slot video-slot" data-video-src="" aria-label="아침에 옷을 찾는 영상 자리"><div class="video-scan"></div><div class="slot-center"><div class="slot-icon">▶</div><strong>아침 상황 영상 자리</strong><span>MP4 또는 WebM URL을<br>data-video-src에 연결하세요.</span></div><div class="slot-label">VIDEO / REPLACEABLE</div><video playsinline></video></div>
+        </section>
+      </div>
+    </div>
+    <div class="footer-line"><span>SMART WARDROBE / SYSTEM STORY</span><strong>Find the garment before the morning finds you.</strong></div>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script><script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script><script src="https://cdn.jsdelivr.net/npm/animejs@3.2.1/lib/anime.min.js"></script>
+  <script>
+    (function () {
+      var canvas = document.getElementById('hanger3dCanvas');
+      if (!canvas || !window.THREE) return;
+      var scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(27, 1, .1, 100);
+      camera.position.set(0, .25, 6.5);
+      var renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2)); renderer.setClearColor(0x000000, 0);
+      var group = new THREE.Group(); scene.add(group); scene.add(new THREE.HemisphereLight(0xf5fbff, 0x7da6c8, 2.2));
+      var key = new THREE.DirectionalLight(0xffffff, 3.2); key.position.set(3, 4, 5); scene.add(key);
+      function mat(color, rough, metal) { return new THREE.MeshStandardMaterial({ color: color, roughness: rough || .42, metalness: metal || .05 }); }
+      var frame = new THREE.Shape(); frame.moveTo(0, 2.05); frame.lineTo(1.58, -1.65); frame.lineTo(-1.58, -1.65); frame.closePath();
+      var body = new THREE.Mesh(new THREE.ExtrudeGeometry(frame, { depth: .17, bevelEnabled: true, bevelSegments: 3, bevelSize: .05, bevelThickness: .05 }), mat(0x1c568b, .34, .22)); body.position.z = -.15; group.add(body);
+      var inset = new THREE.Shape(); inset.moveTo(0, 1.78); inset.lineTo(1.27, -1.35); inset.lineTo(-1.27, -1.35); inset.closePath();
+      var inner = new THREE.Mesh(new THREE.ShapeGeometry(inset), mat(0xeef7ff, .75, 0)); inner.position.z = .04; group.add(inner);
+      var board = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.46, .12), mat(0x0f4f86, .28, .12)); board.position.set(0, -.15, .15); group.add(board);
+      var ring = new THREE.Mesh(new THREE.TorusGeometry(.36, .075, 14, 48), mat(0xeaf7ff, .25, .18)); ring.position.set(0, .2, .24); group.add(ring);
+      var ring2 = new THREE.Mesh(new THREE.TorusGeometry(.2, .035, 12, 40), mat(0x9ed6ff, .25, .12)); ring2.position.set(0, .2, .25); group.add(ring2);
+      var led = new THREE.Mesh(new THREE.SphereGeometry(.075, 18, 18), new THREE.MeshStandardMaterial({ color: 0x71c4ff, emissive: 0x2f8ddd, emissiveIntensity: 2.8 })); led.position.set(0, -.85, .26); group.add(led);
+      var curve = new THREE.CatmullRomCurve3([new THREE.Vector3(0,2.18,.05),new THREE.Vector3(0,2.95,.05),new THREE.Vector3(.55,3.18,.05),new THREE.Vector3(.8,2.78,.05)]);
+      var hook = new THREE.Mesh(new THREE.TubeGeometry(curve, 40, .09, 12, false), mat(0x5f7e98, .25, .65)); hook.position.y = -.62; group.add(hook);
+      [-.13,.13].forEach(function(x){ var p = new THREE.Mesh(new THREE.CylinderGeometry(.055,.055,.36,14), mat(0xd9f0ff, .16, .82)); p.position.set(x,2.04,.24); p.rotation.z = x > 0 ? -.12 : .12; group.add(p); });
+      group.rotation.set(-.18, -.32, .04); group.position.y = -.15; group.scale.setScalar(.82);
+      function resize(){ var r=canvas.getBoundingClientRect(),w=Math.max(r.width,1),h=Math.max(r.height,1); renderer.setSize(w,h,false); camera.aspect=w/h; camera.updateProjectionMatrix(); }
+      resize(); window.addEventListener('resize', resize);
+      if (window.gsap) gsap.to(group.rotation, { y: .13, duration: 4, yoyo: true, repeat: -1, ease: 'sine.inOut' });
+      if (window.anime) anime({ targets: led.scale, x: [1,1.55,1], y: [1,1.55,1], z: [1,1.55,1], duration: 1450, loop: true, easing: 'easeInOutSine' });
+      (function render(){ renderer.render(scene,camera); requestAnimationFrame(render); }());
+    }());
+  </script><script src="../../slide-runtime.js"></script>
+</body>
+</html>
