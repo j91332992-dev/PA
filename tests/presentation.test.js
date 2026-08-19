@@ -9,7 +9,7 @@ const slidesRoot = path.join(presentationRoot, 'slides');
 const slideFiles = [
   'story/01-hook.html',
   'story/02-question.html',
-  'story/03-intro.html',
+  'story/03-intro-clean.html',
   'story/04-problem-definition.html',
   'story/05-location-problem.html',
   'story/06-evidence.html',

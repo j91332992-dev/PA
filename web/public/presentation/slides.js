@@ -4,7 +4,7 @@
   const slides = [
     { name: '오프닝 훅 / 아침 영상', short: 'HOOK', time: '0:35', file: 'slides/story/01-hook.html' },
     { name: '핵심 질문', short: 'QUESTION', time: '0:35', file: 'slides/story/02-question.html' },
-    { name: '제목·팀 소개', short: 'INTRO', time: '0:25', file: 'slides/story/03-intro.html' },
+    { name: '제목·팀 소개', short: 'INTRO', time: '0:25', file: 'slides/story/03-intro-clean.html' },
     { name: '문제 정의', short: 'PROBLEM MAP', time: '0:20', file: 'slides/story/04-problem-definition.html' },
     { name: '문제 01 / 위치', short: 'LOCATION', time: '0:30', file: 'slides/story/05-location-problem.html' },
     { name: '사용자 조사', short: 'EVIDENCE', time: '0:35', file: 'slides/story/06-evidence.html' },
