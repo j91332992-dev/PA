@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WARDROBE - Live Demo</title>
+<style>
+  :root{--paper:#eef6ff;--ink:#173e68;--line:rgba(27,83,145,.14);--muted:#607b99;--signal:#2f78d0;--orange:#d7812d}
+  *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--paper);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo",sans-serif}
+  body::before{content:"";position:fixed;inset:0;opacity:.45;background:linear-gradient(rgba(18,53,40,.055) 1px,transparent 1px),linear-gradient(90deg,rgba(18,53,40,.055) 1px,transparent 1px);background-size:62px 62px;mask-image:linear-gradient(to bottom,black,transparent 92%)}
+  .glow{position:fixed;width:45vw;height:45vw;border-radius:50%;filter:blur(120px);background:#6eaaf4;opacity:.12;left:28%;top:-20%}
+  .head{position:relative;z-index:3;padding:7vh 5vw 0;display:flex;align-items:center;justify-content:space-between}.kicker{display:flex;align-items:center;gap:9px;color:var(--signal);font-size:11px;font-weight:850;letter-spacing:.2em}.kicker i{width:7px;height:7px;border-radius:50%;background:var(--signal);box-shadow:0 0 16px var(--signal);animation:blink 1.3s infinite}@keyframes blink{50%{opacity:.35}}.ready{color:var(--muted);font-size:10px;letter-spacing:.15em}
+  .layout{position:relative;z-index:2;min-height:84vh;padding:3vh 5vw 7vh;display:grid;grid-template-columns:1.28fr .72fr;gap:18px;align-items:center}
+  .phone-panel,.app-panel{min-height:570px;border:1px solid var(--line);border-radius:28px;background:rgba(255,255,255,.78);box-shadow:0 24px 70px rgba(42,75,60,.12);opacity:0;overflow:hidden}.phone-panel{display:flex;flex-direction:column}
+  .panel-head{display:flex;align-items:center;gap:9px;padding:18px 20px;border-bottom:1px solid var(--line);color:var(--ink);font-size:11px;font-weight:850;letter-spacing:.08em;background:rgba(255,255,255,.72)}.panel-head span:last-child{margin-left:auto;color:var(--muted);font-size:9px;letter-spacing:.15em}.live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--signal);box-shadow:0 0 13px var(--signal);margin-right:5px}
+  .phone-body{flex:1;display:grid;place-items:center;padding:18px;min-height:470px;background:linear-gradient(145deg,#e3effd,#f8fbff)}.phone{width:min(242px,75%);height:450px;padding:8px;border:2px solid #294965;border-radius:36px;background:#0c1f35;box-shadow:0 25px 60px rgba(20,61,104,.26);transform:translateY(20px);opacity:0}.phone-screen{position:relative;width:100%;height:100%;overflow:hidden;border-radius:28px;background:#fff}.embed-frame{display:block;width:100%;height:100%;border:0;background:#fff}.phone-embed{position:absolute;inset:0}.embed-placeholder{position:absolute;inset:0;display:grid;place-items:center;align-content:center;gap:10px;padding:28px;text-align:center;background:linear-gradient(145deg,#f8fbff,#e8f2fd);color:#315d88}.embed-placeholder.hidden{display:none}.slot-icon{display:grid;place-items:center;width:50px;height:50px;border-radius:16px;background:#d8eafd;color:#2f78d0;font-size:24px}.embed-placeholder strong{font-size:14px;letter-spacing:-.03em}.embed-placeholder span{color:#7790a8;font-size:10px;line-height:1.5}.slot-note{padding:11px 18px;border-top:1px solid var(--line);color:var(--muted);font-size:9px;letter-spacing:.12em;text-align:center}
+  .app-panel{display:flex;flex-direction:column}.app-body{position:relative;flex:1;min-height:418px;margin:18px;border:1px solid rgba(27,83,145,.14);border-radius:18px;overflow:hidden;background:#fff}.app-embed{position:absolute;inset:0}.app-placeholder{border:1px dashed rgba(47,120,208,.35);background:linear-gradient(145deg,#f8fbff,#e8f2fd)}.app-placeholder::after{content:"DESKTOP APP SLOT";position:absolute;right:18px;top:16px;color:#7890a8;font:800 9px/1 inherit;letter-spacing:.16em}
+  .console{padding:0 18px 16px}.console-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;color:var(--muted);font-size:9px;font-weight:850;letter-spacing:.15em}.demo-button{border:1px solid rgba(47,120,208,.3);border-radius:999px;padding:8px 11px;background:#e2effd;color:#2465aa;font:850 9px inherit;letter-spacing:.04em;cursor:pointer}.demo-button:active{transform:scale(.98)}.console-steps{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}.console-step{display:grid;gap:6px;padding:9px;border:1px solid rgba(27,83,145,.1);border-radius:11px;background:#f5f9fe;color:#7890a8;font-size:9px;line-height:1.25}.console-step i{width:7px;height:7px;border-radius:50%;background:#b9c8c0}.console-step b{font-size:9px;color:#607b99}.console-step.active{border-color:rgba(47,120,208,.38);background:#eaf3ff;color:#2465aa}.console-step.active i{background:var(--signal);box-shadow:0 0 12px rgba(47,120,208,.5)}.console-step.active b{color:#2465aa}
+  .foot{position:fixed;left:5vw;right:5vw;bottom:22px;z-index:3;display:flex;justify-content:space-between;color:var(--muted);font-size:10px;letter-spacing:.08em}.foot b{color:var(--ink)}
+  @media(max-width:900px){.head{padding:7vh 18px 0}.ready{display:none}.layout{padding:3vh 18px 10vh;grid-template-columns:1fr;gap:12px;overflow:auto}.phone-panel,.app-panel{min-height:420px}.phone-body{min-height:300px}.phone{height:330px;width:190px}.app-body{min-height:280px}.foot{left:18px;right:18px}.foot span{display:none}}
+</style>
+<link rel="stylesheet" href="../presentation-theme.css">
+</head>
+<body>
+  <div class="glow"></div>
+  <header class="head"><div class="kicker"><i></i> 04 / LIVE DEMO</div><div class="ready">MOBILE RELAY ↔ CUSTOM APP</div></header>
+  <main class="layout">
+    <section class="phone-panel">
+      <div class="panel-head"><span>📱 SMARTPHONE RELAY</span><span><b class="live-dot"></b> MOBILE VIEW</span></div>
+      <div class="phone-body">
+        <div class="phone">
+          <div class="phone-screen">
+            <iframe id="phoneFrame" class="embed-frame phone-embed" title="스마트폰 중계 앱" allow="camera; microphone; autoplay; fullscreen"></iframe>
+            <div id="phonePlaceholder" class="embed-placeholder">
+              <div class="slot-icon">📱</div>
+              <strong>스마트폰 중계 화면</strong>
+              <span>mobile app URL을 연결하면<br>이 프레임에 바로 표시됩니다.</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="slot-note">MOBILE IFRAME SLOT · READY FOR APP</div>
+    </section>
+    <section class="app-panel">
+      <div class="panel-head"><span>💻 CUSTOM APP / DESKTOP</span><span><b class="live-dot"></b> DESKTOP VIEW</span></div>
+      <div class="app-body">
+        <iframe id="appFrame" class="embed-frame app-embed" title="직접 만든 앱" allow="camera; microphone; autoplay; fullscreen"></iframe>
+        <div id="appPlaceholder" class="embed-placeholder app-placeholder">
+          <div class="slot-icon">⌘</div>
+          <strong>직접 만든 앱을 여기에 표시</strong>
+          <span>앱이 완성되면 URL 한 줄만 연결하세요.<br>발표 덱 안에서 바로 실행됩니다.</span>
+        </div>
+      </div>
+      <div class="console">
+        <div class="console-head"><span>EVENT MIRROR / PRESENTATION CONTROL</span><button class="demo-button" id="demoButton" type="button">시연 플로우 재생</button></div>
+        <div class="console-steps">
+          <div class="console-step" data-step="0"><i></i><b>REQUEST</b><span>찾기 요청</span></div>
+          <div class="console-step" data-step="1"><i></i><b>GATEWAY</b><span>명령 전달</span></div>
+          <div class="console-step" data-step="2"><i></i><b>ESP-NOW</b><span>대상 전송</span></div>
+          <div class="console-step" data-step="3"><i></i><b>ACK / LED</b><span>응답 완료</span></div>
+        </div>
+      </div>
+    </section>
+  </main>
+  <div class="foot"><span>LIVE / TWO-SCREEN PRESENTATION</span><b>왼쪽은 중계, 오른쪽은 제품</b></div>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script>
+    /*
+      앱 연결 방법
+      1) presentation/slides.js의 URL 기본값을 수정하거나
+      2) presentation/index.html?desktop=...&mobile=... 형태로 URL을 넘깁니다.
+      3) 05-live.html?app=...&phone=... 형태로 직접 넘깁니다.
+      예: desktop:'/live-demo?view=desktop', mobile:'/live-demo?view=mobile'
+    */
+    var localEmbedUrls = { desktop: '', mobile: '' };
+    var parentEmbedUrls = window.parent !== window && window.parent.PRESENTATION_EMBEDS ? window.parent.PRESENTATION_EMBEDS : {};
+    var query = new URLSearchParams(location.search);
+    var embedUrls = {
+      desktop: query.get('app') || parentEmbedUrls.desktop || localEmbedUrls.desktop,
+      mobile: query.get('phone') || parentEmbedUrls.mobile || localEmbedUrls.mobile
+    };
+    function mountFrame(id, placeholderId, url) {
+      var frame = document.getElementById(id);
+      var placeholder = document.getElementById(placeholderId);
+      if (!url) return;
+      frame.src = url;
+      frame.addEventListener('load', function() { placeholder.classList.add('hidden'); });
+    }
+    mountFrame('appFrame', 'appPlaceholder', embedUrls.desktop);
+    mountFrame('phoneFrame', 'phonePlaceholder', embedUrls.mobile);
+
+    var consoleSteps = Array.from(document.querySelectorAll('.console-step'));
+    var running = false;
+    function activateStep(index) {
+      consoleSteps.forEach(function(step, stepIndex) { step.classList.toggle('active', stepIndex <= index); });
+    }
+    function runDemo() {
+      if (running) return;
+      running = true;
+      consoleSteps.forEach(function(step) { step.classList.remove('active'); });
+      document.getElementById('demoButton').textContent = '재생 중…';
+      consoleSteps.forEach(function(step, index) {
+        setTimeout(function() {
+          activateStep(index);
+          if (index === consoleSteps.length - 1) {
+            setTimeout(function() {
+              document.getElementById('demoButton').textContent = '다시 재생';
+              running = false;
+            }, 550);
+          }
+        }, index * 520);
+      });
+    }
+    document.getElementById('demoButton').onclick = runDemo;
+    window.addEventListener('message', function(event) {
+      if (event.source !== document.getElementById('appFrame').contentWindow &&
+          event.source !== document.getElementById('phoneFrame').contentWindow) return;
+      var type = event.data && event.data.type;
+      var map = { 'command.queued': 0, 'gateway.sent': 1, 'hanger.command': 2, 'command.ack': 3, 'hanger.led': 3 };
+      if (Object.prototype.hasOwnProperty.call(map, type)) activateStep(map[type]);
+    });
+    if (window.gsap) {
+      gsap.timeline({defaults:{ease:'power3.out'}})
+        .to('.phone-panel',{opacity:1,y:0,duration:.7})
+        .to('.phone',{opacity:1,y:0,duration:.7},'-.4')
+        .to('.app-panel',{opacity:1,y:0,duration:.7},'-.55');
+      setTimeout(runDemo, 900);
+    } else {
+      document.querySelectorAll('.phone-panel,.phone,.app-panel').forEach(function(el){el.style.opacity=1});
+    }
+  </script>
+</body>
+</html>

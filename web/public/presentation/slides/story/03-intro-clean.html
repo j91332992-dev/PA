@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WARDROBE — Project Introduction</title>
-  <link rel="stylesheet" href="../../slide.css">
+  <link rel="stylesheet" href="../../slide.css?v=20260819-37">
   <style>
     .intro-clean-layout { display:grid; grid-template-columns:minmax(0,1.12fr) minmax(360px,.88fr); align-items:center; gap:8vw; flex:1; margin-top:5vh; }
     .clean-copy { position:relative; padding-left:32px; }
@@ -17,24 +17,31 @@
     .clean-rule { width:100%; height:1px; margin:34px 0 20px; background:var(--line); }
     .presenter-line { display:flex; align-items:baseline; gap:13px; color:var(--muted); font-size:11px; }
     .presenter-line b { color:var(--navy); font-size:17px; }
-    .presenter-line small { color:var(--muted-2); font-size:10px; letter-spacing:.08em; }
-    .identity-panel { position:relative; min-height:480px; padding:26px; overflow:hidden; border-radius:26px; background:var(--navy); color:#eef7ff; box-shadow:0 30px 80px rgba(18,58,97,.24); }
-    .identity-panel::before { content:""; position:absolute; inset:0; opacity:.12; background-image:linear-gradient(rgba(255,255,255,.28) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.28) 1px,transparent 1px); background-size:34px 34px; mask-image:linear-gradient(to bottom,black,transparent 90%); }
-    .identity-top { position:relative; z-index:1; display:flex; justify-content:space-between; color:#91b6d6; font-size:9px; font-weight:850; letter-spacing:.14em; }
-    .identity-title { position:relative; z-index:1; margin-top:15px; color:#fff; font-size:20px; font-weight:850; letter-spacing:-.04em; }
-    .signal-figure { position:relative; z-index:1; height:250px; margin:6px 0 10px; }
-    .signal-triangle { position:absolute; left:50%; top:17px; width:190px; height:205px; transform:translateX(-50%); clip-path:polygon(50% 0,100% 100%,0 100%); background:linear-gradient(145deg,#5faef0,#1d5b91); filter:drop-shadow(0 18px 24px rgba(0,0,0,.25)); }
-    .signal-triangle::after { content:""; position:absolute; inset:12px; clip-path:polygon(50% 0,100% 100%,0 100%); background:var(--navy); }
-    .signal-board { position:absolute; left:50%; top:91px; z-index:2; width:70px; height:96px; transform:translateX(-50%); border:1px solid rgba(220,242,255,.55); border-radius:5px; background:#11629d; box-shadow:0 8px 20px rgba(0,0,0,.23); }
-    .signal-board::before { content:""; position:absolute; left:50%; top:22px; width:30px; height:30px; transform:translateX(-50%); border:4px solid #eaf7ff; border-radius:50%; box-shadow:0 0 0 5px rgba(234,247,255,.16); }
-    .signal-board::after { content:"UID"; position:absolute; left:0; right:0; bottom:14px; color:#d9f1ff; font-size:8px; font-weight:900; text-align:center; letter-spacing:.16em; }
-    .signal-hook { position:absolute; left:50%; top:0; z-index:3; width:18px; height:44px; transform:translateX(-50%); border:4px solid #9ac6e4; border-bottom:0; border-radius:17px 17px 0 0; }
-    .signal-pulse { position:absolute; left:50%; top:118px; z-index:4; width:7px; height:7px; transform:translateX(-50%); border-radius:50%; background:#79ceff; box-shadow:0 0 0 9px rgba(121,206,255,.14),0 0 22px #54b7ff; }
-    .identity-rows { position:relative; z-index:1; display:grid; gap:0; border-top:1px solid rgba(216,236,255,.18); }
-    .identity-row { display:flex; align-items:center; justify-content:space-between; gap:15px; padding:13px 0; border-bottom:1px solid rgba(216,236,255,.14); }
-    .identity-row b { color:#72c2ff; font-size:9px; letter-spacing:.14em; }
-    .identity-row span { color:#c5dced; font-size:11px; }
-    @media(max-width:900px){ .intro-clean-layout{grid-template-columns:1fr;gap:24px}.identity-panel{min-height:360px}.signal-figure{height:175px}.signal-triangle{transform:translateX(-50%) scale(.72);transform-origin:top center}.clean-copy{padding-left:22px} }
+    .presenter-line small { color:var(--muted); font-size:10px; letter-spacing:.08em; }
+    .identity-panel { position:relative; min-height:480px; padding:26px; overflow:hidden; border:1px solid rgba(83,151,198,.22); border-radius:26px; background:linear-gradient(145deg,#fbfdff 0%,#edf7fd 52%,#dceef8 100%); color:#123c62; box-shadow:0 30px 80px rgba(44,108,153,.16); }
+    .identity-panel::before { content:""; position:absolute; inset:0; opacity:.22; background-image:linear-gradient(rgba(44,116,162,.14) 1px,transparent 1px),linear-gradient(90deg,rgba(44,116,162,.14) 1px,transparent 1px); background-size:34px 34px; mask-image:linear-gradient(to bottom,black,transparent 90%); }
+    .identity-top { position:relative; z-index:1; display:flex; justify-content:space-between; color:#5d7f9d; font-size:9px; font-weight:850; letter-spacing:.14em; }
+    .identity-title { position:relative; z-index:1; margin-top:15px; color:#113e66; font-size:20px; font-weight:850; letter-spacing:-.04em; }
+    .board-figure { position:relative; z-index:1; height:285px; margin:0 -10px 2px; overflow:hidden; }
+    #esp32c6Canvas { position:absolute; inset:0; z-index:2; width:100%; height:100%; display:block; cursor:grab; touch-action:none; }
+    #esp32c6Canvas:active { cursor:grabbing; }
+    .board-glow { position:absolute; left:50%; top:52%; z-index:0; width:285px; height:220px; transform:translate(-50%,-50%); border-radius:50%; background:radial-gradient(ellipse,rgba(75,176,239,.32),transparent 68%); filter:blur(10px); }
+    .board-callout { position:absolute; z-index:4; display:flex; align-items:center; gap:6px; color:#176ba2; font-size:8px; font-weight:850; letter-spacing:.12em; white-space:nowrap; opacity:0; }
+    .board-callout i { display:block; width:22px; height:1px; background:rgba(46,128,184,.7); box-shadow:0 0 9px rgba(74,157,207,.38); }
+    .board-callout.reader { left:0; top:52%; flex-direction:row-reverse; }
+    .board-callout.controller { right:0; top:30%; }
+    .board-callout.hanger { right:0; bottom:13%; }
+    .board-name { position:absolute; left:50%; bottom:5%; z-index:4; transform:translateX(-50%); color:rgba(34,88,123,.76); font-size:8px; font-weight:850; letter-spacing:.14em; text-align:center; white-space:nowrap; }
+    .board-name b { color:#176ea8; font-size:10px; }
+    .model-status { position:absolute; left:50%; top:50%; z-index:1; transform:translate(-50%,-50%); color:#2b739f; font-size:9px; font-weight:800; letter-spacing:.13em; white-space:nowrap; transition:opacity .35s ease; }
+    .model-status.is-ready { opacity:0; }
+    .model-credit { position:absolute; left:50%; bottom:-2px; z-index:4; transform:translateX(-50%); color:rgba(45,91,123,.62); font-size:7px; letter-spacing:.1em; white-space:nowrap; }
+    .model-credit b { color:rgba(21,94,145,.84); }
+    .identity-rows { position:relative; z-index:1; display:grid; gap:0; border-top:1px solid rgba(37,103,145,.18); }
+    .identity-row { display:flex; align-items:center; justify-content:space-between; gap:15px; padding:13px 0; border-bottom:1px solid rgba(37,103,145,.14); }
+    .identity-row b { color:#1d78b0; font-size:9px; letter-spacing:.14em; }
+    .identity-row span { color:#295777; font-size:11px; }
+    @media(max-width:900px){ .intro-clean-layout{grid-template-columns:1fr;gap:24px}.identity-panel{min-height:360px}.board-figure{height:245px}.clean-copy{padding-left:22px}.board-callout{font-size:7px}.board-callout i{width:14px}.model-credit{font-size:6px} }
   </style>
 </head>
 <body>
@@ -49,14 +56,341 @@
         <div class="clean-rule animate-in"></div>
         <div class="presenter-line animate-in"><span>TEAM</span><b>피지컬 부경</b><small>PHYSICAL COMPUTING / BUKYONG</small></div>
       </section>
-      <section class="identity-panel animate-scale" aria-label="스마트 옷장 핵심 기술">
-        <div class="identity-top"><span>SYSTEM ID / SW-01</span><span>PROTOTYPE</span></div>
-        <div class="identity-title">옷장에 위치 정보를 부여하다.</div>
-        <div class="signal-figure"><div class="signal-hook"></div><div class="signal-triangle"></div><div class="signal-board"></div><div class="signal-pulse pulse-dot"></div></div>
-        <div class="identity-rows"><div class="identity-row"><b>TAG</b><span>NTAG213 / UNIQUE UID</span></div><div class="identity-row"><b>MEMORY</b><span>REAL-TIME STATE</span></div><div class="identity-row"><b>FIND</b><span>LED + ACK RESPONSE</span></div></div>
+      <section class="identity-panel animate-scale" aria-label="옷걸이 내부 하드웨어 3D 조립 모델">
+        <div class="identity-top"><span>SYSTEM ID / SW-01</span><span>LOCAL CAD ASSEMBLY</span></div>
+        <div class="identity-title">옷걸이에 내장된 스마트 모듈</div>
+        <div class="board-figure" id="boardFigure" data-model-source="hanger ee.IGS + XIAO ESP32C6 v2.step + NFC PN532.stp">
+          <div class="board-glow"></div>
+          <canvas id="esp32c6Canvas" aria-label="삼각형 옷걸이 내부의 Seeed Studio XIAO ESP32-C6 및 NFC PN532 실제 CAD 조립 모델"></canvas>
+          <div class="model-status" id="modelStatus">LOCAL CAD ASSEMBLY · LOADING</div>
+          <div class="board-callout reader"><i></i><span>PN532 NFC READER</span></div>
+          <div class="board-callout controller"><i></i><span>XIAO ESP32-C6</span></div>
+          <div class="board-callout hanger"><i></i><span>REAL HANGER CAD</span></div>
+          <div class="board-name">SMART HANGER / INTERNAL ASSEMBLY<br><b>ESP32-C6 + PN532 NFC</b></div>
+        <div class="model-credit">LOCAL CAD ASSEMBLY · <b>3 SOURCE MODELS · DRAG TO ROTATE</b></div>
+        </div>
+        <div class="identity-rows"><div class="identity-row"><b>MCU</b><span>SEEED XIAO ESP32-C6</span></div><div class="identity-row"><b>READER</b><span>NFC PN532 / UID</span></div><div class="identity-row"><b>MOUNT</b><span>HANGER INTERIOR</span></div></div>
       </section>
     </div>
   </div><div class="footer-line"><span>PROJECT INTRODUCTION</span><strong>피지컬 부경팀</strong></div></main>
-  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script><script src="https://cdn.jsdelivr.net/npm/animejs@3.2.1/lib/anime.min.js"></script><script src="../../slide-runtime.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/animejs@3.2.1/lib/anime.min.js"></script>
+  <script src="../../slide-runtime.js"></script>
+  <script type="module">
+    import * as THREE from '../../assets/vendor/three.module.js';
+    import { GLTFLoader } from '../../assets/vendor/GLTFLoader.js';
+
+    const canvas = document.getElementById('esp32c6Canvas');
+    const figure = document.getElementById('boardFigure');
+    const status = document.getElementById('modelStatus');
+    if (!canvas || !figure || !status) throw new Error('3D assembly stage is missing.');
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(34, 1, 0.01, 1000);
+    camera.position.set(0.12, 0.12, 8.2);
+    camera.lookAt(0, 0.15, 0);
+    const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setClearColor(0x000000, 0);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.15;
+    if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    scene.add(new THREE.HemisphereLight(0xdff3ff, 0x0b2238, 2.4));
+    const key = new THREE.DirectionalLight(0xffffff, 4.4);
+    key.position.set(3.5, 4.5, 5.5);
+    scene.add(key);
+    const rim = new THREE.DirectionalLight(0x63c7ff, 2.6);
+    rim.position.set(-4, 1.5, 2.5);
+    scene.add(rim);
+
+    const assemblyRoot = new THREE.Group();
+    assemblyRoot.rotation.set(-0.05, 0.05, 0);
+    assemblyRoot.position.set(0, -0.05, 0);
+    assemblyRoot.scale.setScalar(0.16);
+    scene.add(assemblyRoot);
+
+    let targetRotationX = -0.05;
+    let targetRotationY = 0.05;
+    let isDragging = false;
+    let pointerX = 0;
+    let pointerY = 0;
+
+    canvas.addEventListener('pointerdown', (event) => {
+      isDragging = true;
+      pointerX = event.clientX;
+      pointerY = event.clientY;
+      canvas.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+    });
+    canvas.addEventListener('pointermove', (event) => {
+      if (!isDragging) return;
+      const deltaX = event.clientX - pointerX;
+      const deltaY = event.clientY - pointerY;
+      pointerX = event.clientX;
+      pointerY = event.clientY;
+      targetRotationY += deltaX * 0.008;
+      targetRotationX = THREE.MathUtils.clamp(targetRotationX + deltaY * 0.006, -0.85, 0.75);
+      event.preventDefault();
+    });
+    const endDrag = (event) => {
+      isDragging = false;
+      canvas.releasePointerCapture?.(event.pointerId);
+    };
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+
+    function loadModel(url) {
+      const loader = new GLTFLoader();
+      return new Promise((resolve, reject) => loader.load(url, resolve, undefined, reject));
+    }
+
+    function placeCadModel(gltf, targetMaxSize, position, rotation, appearance = {}) {
+      const wrapper = new THREE.Group();
+      const model = gltf.scene;
+      const originalBounds = new THREE.Box3().setFromObject(model);
+      const center = originalBounds.getCenter(new THREE.Vector3());
+      const size = originalBounds.getSize(new THREE.Vector3());
+      const fitScale = targetMaxSize / (Math.max(size.x, size.y, size.z) || 1);
+      model.scale.setScalar(fitScale);
+      model.position.copy(center).multiplyScalar(-fitScale);
+      model.traverse((object) => {
+        if (!object.isMesh) return;
+        object.frustumCulled = false;
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        materials.filter(Boolean).forEach((material) => {
+          material.side = THREE.DoubleSide;
+          material.roughness = Math.min(material.roughness ?? 0.42, 0.52);
+          material.metalness = Math.max(material.metalness ?? 0.18, 0.22);
+          if (appearance.hanger) {
+            material.color.set(0x1b2430);
+            material.emissive.set(0x04070b);
+            material.emissiveIntensity = 0.18;
+            material.transparent = true;
+            material.opacity = 0.76;
+            material.depthWrite = false;
+          } else if (appearance.pn532) {
+            material.color.set(0x211b8f);
+            material.emissive.set(0x07052e);
+            material.emissiveIntensity = 0.28;
+            material.roughness = 0.38;
+            material.metalness = 0.28;
+            material.transparent = false;
+            material.opacity = 1;
+            material.depthWrite = true;
+          }
+        });
+      });
+      wrapper.add(model);
+      wrapper.position.copy(position);
+      wrapper.rotation.copy(rotation);
+      return wrapper;
+    }
+
+    function makePn532Details(boardWidth) {
+      const details = new THREE.Group();
+      const boardHeight = boardWidth * 0.62;
+      // PN532 STEP의 보드 면은 X-Z 평면이고, +Y 면이 앞면이다.
+      // 디테일을 하나의 데칼로 묶어 보드와 같은 축으로 회전시킨다.
+      details.position.y = boardWidth * 0.06;
+      details.rotation.x = -Math.PI / 2;
+
+      const decalCanvas = document.createElement('canvas');
+      decalCanvas.width = 800;
+      decalCanvas.height = 500;
+      const context = decalCanvas.getContext('2d');
+      const blue = '#211b8f';
+      const white = '#f6f7f4';
+      const black = '#12152a';
+      const gold = '#e1c76d';
+      context.clearRect(0, 0, decalCanvas.width, decalCanvas.height);
+
+      const hole = (x, y) => {
+        context.beginPath();
+        context.fillStyle = white;
+        context.arc(x, y, 18, 0, Math.PI * 2);
+        context.fill();
+        context.beginPath();
+        context.fillStyle = blue;
+        context.arc(x, y, 8, 0, Math.PI * 2);
+        context.fill();
+      };
+      hole(42, 42); hole(758, 42); hole(42, 458); hole(758, 458);
+
+      context.strokeStyle = white;
+      context.lineWidth = 26;
+      context.beginPath();
+      context.arc(570, 210, 102, 0, Math.PI * 2);
+      context.stroke();
+      context.fillStyle = white;
+      context.font = '800 62px Arial, sans-serif';
+      context.textAlign = 'center';
+      context.textBaseline = 'middle';
+      context.fillText('NFC', 570, 210);
+
+      const roundedRect = (x, y, width, height, radius, fill) => {
+        context.fillStyle = fill;
+        context.beginPath();
+        context.roundRect(x, y, width, height, radius);
+        context.fill();
+      };
+      roundedRect(105, 142, 48, 220, 8, black);
+      roundedRect(172, 176, 34, 150, 7, black);
+      for (let row = 0; row < 8; row += 1) {
+        roundedRect(116, 160 + row * 25, 25, 8, 3, gold);
+        roundedRect(181, 190 + row * 17, 15, 6, 2, gold);
+      }
+      roundedRect(272, 386, 245, 34, 5, black);
+      for (let column = 0; column < 8; column += 1) {
+        roundedRect(286 + column * 28, 397, 8, 10, 2, gold);
+      }
+      roundedRect(290, 155, 82, 39, 19, white);
+      context.fillStyle = '#b6bcc4';
+      context.fillRect(310, 163, 42, 23);
+      roundedRect(260, 274, 62, 58, 3, '#6c422d');
+      roundedRect(198, 40, 54, 30, 3, white);
+      roundedRect(280, 40, 54, 30, 3, white);
+      context.fillStyle = white;
+      context.font = '700 19px Arial, sans-serif';
+      context.textAlign = 'left';
+      context.fillText('PN532', 310, 95);
+      context.font = '600 13px Arial, sans-serif';
+      context.fillText('NFC READER', 310, 115);
+
+      const decalTexture = new THREE.CanvasTexture(decalCanvas);
+      decalTexture.colorSpace = THREE.SRGBColorSpace;
+      decalTexture.anisotropy = 4;
+      const decalMaterial = new THREE.MeshBasicMaterial({ map: decalTexture, side: THREE.DoubleSide, transparent: true, depthWrite: false, toneMapped: false });
+      const decal = new THREE.Mesh(new THREE.PlaneGeometry(boardWidth * 0.97, boardHeight * 0.97), decalMaterial);
+      decal.material.polygonOffset = true;
+      decal.material.polygonOffsetFactor = -1;
+      decal.material.polygonOffsetUnits = -1;
+      decal.renderOrder = 5;
+      details.add(decal);
+      return details;
+    }
+
+    function makeHangerHookRepair() {
+      const hookRoot = new THREE.Group();
+      const hookMaterial = new THREE.MeshStandardMaterial({
+        color: 0x1b2430,
+        emissive: 0x04070b,
+        emissiveIntensity: 0.18,
+        roughness: 0.28,
+        metalness: 0.42,
+        transparent: true,
+        opacity: 0.9,
+        depthWrite: false,
+        depthTest: true
+      });
+      // IGS 옷걸이 상단 목대와 같은 깊이에 맞춘 보수용 고리
+      const z = -0.5;
+      const hookPath = new THREE.CurvePath();
+      hookPath.add(new THREE.LineCurve3(
+        new THREE.Vector3(0, 0.52, z),
+        new THREE.Vector3(0, 0.84, z)
+      ));
+      hookPath.add(new THREE.CubicBezierCurve3(
+        new THREE.Vector3(0, 0.84, z),
+        new THREE.Vector3(0.2, 0.87, z),
+        new THREE.Vector3(0.42, 0.98, z),
+        new THREE.Vector3(0.4, 1.12, z)
+      ));
+      hookPath.add(new THREE.CubicBezierCurve3(
+        new THREE.Vector3(0.4, 1.12, z),
+        new THREE.Vector3(0.42, 1.29, z),
+        new THREE.Vector3(0.27, 1.39, z),
+        new THREE.Vector3(0.03, 1.36, z)
+      ));
+      hookPath.add(new THREE.CubicBezierCurve3(
+        new THREE.Vector3(0.03, 1.36, z),
+        new THREE.Vector3(-0.18, 1.35, z),
+        new THREE.Vector3(-0.39, 1.27, z),
+        new THREE.Vector3(-0.47, 1.1, z)
+      ));
+      const hookMesh = new THREE.Mesh(new THREE.TubeGeometry(hookPath, 96, 0.025, 12, false), hookMaterial);
+      hookMesh.renderOrder = 6;
+      hookRoot.add(hookMesh);
+      const hookTip = new THREE.Mesh(new THREE.SphereGeometry(0.029, 16, 10), hookMaterial);
+      hookTip.position.set(-0.47, 1.1, z);
+      hookTip.renderOrder = 7;
+      hookRoot.add(hookTip);
+      return hookRoot;
+    }
+
+    let assemblyBoundsSize = null;
+    let assemblyBoundsCenter = new THREE.Vector3(0, 0.2, 0);
+    function fitCameraToAssembly() {
+      if (!assemblyBoundsSize) return;
+      const verticalFov = THREE.MathUtils.degToRad(camera.fov);
+      const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
+      const verticalDistance = assemblyBoundsSize.y / (2 * Math.tan(verticalFov / 2));
+      const horizontalDistance = assemblyBoundsSize.x / (2 * Math.tan(horizontalFov / 2));
+      const distance = Math.max(verticalDistance, horizontalDistance) * 1.18 + assemblyBoundsSize.z * 0.22;
+      camera.position.set(0.12, assemblyBoundsCenter.y + 0.08, Math.max(6.2, distance));
+      camera.lookAt(assemblyBoundsCenter.x, assemblyBoundsCenter.y, assemblyBoundsCenter.z);
+    }
+    function resize() {
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(rect.width, 1);
+      const height = Math.max(rect.height, 1);
+      renderer.setSize(width, height, false);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      fitCameraToAssembly();
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    Promise.all([
+      loadModel('../../assets/models/seeed-studio-xiao-esp32c6-v2.glb'),
+      loadModel('../../assets/models/nfc-pn532-reader.glb'),
+      loadModel('../../assets/models/smart-hanger-reference.glb')
+    ]).then(([esp32, pn532, hanger]) => {
+      const hangerCad = placeCadModel(hanger, 4.5, new THREE.Vector3(0, 0, -0.34), new THREE.Euler(0, 0, 0), { hanger: true });
+      const hangerHookRepair = makeHangerHookRepair();
+      const reader = placeCadModel(pn532, 0.8, new THREE.Vector3(0, -0.04, 0.02), new THREE.Euler(Math.PI / 2, 0.04, -0.02), { pn532: true });
+      reader.add(makePn532Details(0.8));
+      const controller = placeCadModel(esp32, 0.46, new THREE.Vector3(0.58, 0.28, 0.05), new THREE.Euler(Math.PI / 2 - 0.08, 0.18, 0.08));
+      assemblyRoot.add(hangerCad, hangerHookRepair, reader, controller);
+
+      const wireMaterial = new THREE.MeshStandardMaterial({ color: 0x75d3ff, emissive: 0x17658c, emissiveIntensity: 1.4, roughness: 0.28, metalness: 0.35 });
+      const wireCurve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(0.5, 0.26, 0.08), new THREE.Vector3(0.29, 0.16, 0.07),
+        new THREE.Vector3(0.12, 0.06, 0.06), new THREE.Vector3(0.02, 0, 0.05)
+      ]);
+      assemblyRoot.add(new THREE.Mesh(new THREE.TubeGeometry(wireCurve, 28, 0.014, 8, false), wireMaterial));
+
+      assemblyRoot.scale.setScalar(1);
+      assemblyRoot.updateMatrixWorld(true);
+      const assemblyBounds = new THREE.Box3().setFromObject(assemblyRoot);
+      assemblyBoundsSize = assemblyBounds.getSize(new THREE.Vector3());
+      assemblyBoundsCenter = assemblyBounds.getCenter(new THREE.Vector3());
+      fitCameraToAssembly();
+      assemblyRoot.scale.setScalar(0.16);
+      status.textContent = 'LOCAL CAD ASSEMBLY · READY';
+      status.classList.add('is-ready');
+      if (window.anime) {
+        anime({ targets: assemblyRoot.scale, x: [0.16, 1], y: [0.16, 1], z: [0.16, 1], duration: 1250, delay: 220, easing: 'easeOutElastic(1, .72)' });
+        anime({ targets: '.board-callout', opacity: [0, 1], translateX: [-6, 0], delay: anime.stagger(170, { start: 680 }), duration: 500, easing: 'easeOutCubic' });
+      } else {
+        assemblyRoot.scale.setScalar(1);
+        document.querySelectorAll('.board-callout').forEach((node) => { node.style.opacity = '1'; });
+      }
+    }).catch((error) => {
+      console.error('Local smart hanger CAD assembly load failed', error);
+      status.textContent = 'LOCAL CAD · LOAD ERROR';
+      status.style.color = '#ffb0a8';
+    });
+
+    function render() {
+      const damping = isDragging ? 0.2 : 0.1;
+      assemblyRoot.rotation.x += (targetRotationX - assemblyRoot.rotation.x) * damping;
+      assemblyRoot.rotation.y += (targetRotationY - assemblyRoot.rotation.y) * damping;
+      renderer.render(scene, camera);
+      requestAnimationFrame(render);
+    }
+    render();
+  </script>
 </body>
 </html>

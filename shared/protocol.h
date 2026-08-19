@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <Arduino.h>
 namespace sw {
 constexpr uint8_t VERSION=1,MAX_TARGETS=16;constexpr uint8_t BROADCAST[6]={0xff,0xff,0xff,0xff,0xff,0xff};

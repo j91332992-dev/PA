@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WARDROBE - Opening</title>
+<style>
+  :root { --ink:#eef6ff; --signal:#2f78d0; --muted:#6c819c; --line:rgba(27,83,145,.18); }
+  * { box-sizing:border-box; }
+  html,body { margin:0; width:100%; height:100%; overflow:hidden; background:var(--ink); color:#10233d; font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo",sans-serif; }
+  body::before { content:""; position:fixed; inset:0; opacity:.42; background:linear-gradient(rgba(43,112,190,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(43,112,190,.06) 1px,transparent 1px); background-size:64px 64px; mask-image:linear-gradient(to bottom,black,transparent); }
+  .ambient { position:fixed; width:42vw; height:42vw; border-radius:50%; filter:blur(100px); opacity:.16; pointer-events:none; }
+  .ambient.a { background:#4e9df4; top:-20%; right:-8%; } .ambient.b { background:#8ba8ff; bottom:-25%; left:-10%; }
+  .wrap { position:relative; z-index:2; min-height:100vh; padding:10vh 8vw 6vh; display:grid; grid-template-columns:1fr 1fr; align-items:center; gap:6vw; }
+  .eyebrow { display:flex; align-items:center; gap:10px; color:var(--signal); font-size:12px; font-weight:800; letter-spacing:.2em; text-transform:uppercase; opacity:0; }
+  .eyebrow i { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--signal); box-shadow:0 0 18px var(--signal); }
+  h1 { margin:24px 0 22px; max-width:720px; font-size:clamp(56px,8.6vw,132px); line-height:.92; letter-spacing:-.075em; font-weight:900; }
+  h1 span { color:var(--signal); text-shadow:0 0 36px rgba(47,120,208,.18); }
+  .lead { max-width:540px; margin:0; color:#45617f; font-size:clamp(17px,1.7vw,24px); line-height:1.5; opacity:0; }
+  .lead small { display:block; margin-top:12px; color:#7188a2; font-size:.58em; line-height:1.55; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:30px; opacity:0; }
+  .chip { border:1px solid var(--line); border-radius:999px; padding:8px 12px; color:var(--muted); font-size:11px; letter-spacing:.08em; background:rgba(255,255,255,.68); }
+  .chip.active { color:var(--signal); border-color:rgba(47,120,208,.34); background:rgba(47,120,208,.09); }
+  .scene { position:relative; min-height:560px; display:flex; align-items:center; justify-content:center; opacity:0; transform:translateY(24px); }
+  .halo { position:absolute; width:430px; height:430px; border:1px solid rgba(47,120,208,.22); border-radius:50%; box-shadow:0 0 80px rgba(47,120,208,.12),inset 0 0 80px rgba(47,120,208,.06); }
+  .halo::after { content:""; position:absolute; inset:34px; border:1px dashed rgba(47,120,208,.18); border-radius:50%; }
+  .three-stage { position:relative; width:min(520px,48vw); height:560px; display:flex; align-items:center; justify-content:center; filter:drop-shadow(0 28px 34px rgba(36,89,147,.18)); }
+  #hanger3dCanvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  .model-badge { position:absolute; top:58px; left:50%; z-index:4; transform:translateX(-50%); padding:8px 12px; border:1px solid rgba(47,120,208,.34); border-radius:999px; color:#2567b2; background:rgba(246,251,255,.84); backdrop-filter:blur(12px); font-size:10px; font-weight:850; letter-spacing:.14em; white-space:nowrap; opacity:0; }
+  .three-stage.is-ready .model-badge { opacity:1; }
+  .model-label { position:absolute; z-index:4; padding:7px 9px; border:1px solid rgba(27,83,145,.18); border-radius:9px; color:#466988; background:rgba(246,251,255,.78); backdrop-filter:blur(10px); font-size:9px; font-weight:750; letter-spacing:.08em; white-space:nowrap; opacity:0; }
+  .model-label::before { content:""; display:inline-block; width:5px; height:5px; margin:0 6px 1px 0; border-radius:50%; background:#2f78d0; box-shadow:0 0 10px rgba(47,120,208,.55); }
+  .model-label.nfc { right:0; top:205px; color:#245e9d; }
+  .model-label.esp { left:0; top:330px; color:#245e9d; }
+  .model-label.led { right:4px; top:360px; color:#245e9d; }
+  .model-label.power { left:0; top:170px; color:#245e9d; }
+  .three-stage.is-ready .model-label { opacity:1; }
+  .css-fallback { position:absolute; left:50%; top:50%; width:290px; height:390px; transform:translate(-50%,-50%); }
+  .fallback-triangle { position:absolute; inset:28px 20px 12px; background:linear-gradient(135deg,#234f82,#0f2d54); clip-path:polygon(50% 0,100% 100%,0 100%); filter:drop-shadow(0 18px 22px rgba(24,67,112,.22)); }
+  .fallback-triangle::after { content:""; position:absolute; inset:18px; background:#eef6ff; clip-path:polygon(50% 0,100% 100%,0 100%); }
+  .fallback-hook { position:absolute; z-index:2; left:50%; top:-24px; width:24px; height:68px; transform:translateX(-50%); border:5px solid #587896; border-bottom:0; border-radius:22px 22px 0 0; }
+  .fallback-board { position:absolute; z-index:3; left:50%; top:132px; width:106px; height:150px; transform:translateX(-50%); border-radius:9px; background:linear-gradient(145deg,#1765a9,#0b376b); box-shadow:0 12px 22px rgba(8,42,82,.28); }
+  .fallback-board::before { content:""; position:absolute; left:50%; top:28px; width:48px; height:48px; transform:translateX(-50%); border:6px solid #eef6ff; border-radius:50%; }
+  .fallback-board i { position:absolute; left:50%; top:47px; width:23px; height:23px; transform:translate(-50%,-50%); border:3px solid #eef6ff; border-radius:50%; }
+  .fallback-led { position:absolute; z-index:4; left:50%; bottom:70px; width:10px; height:10px; transform:translateX(-50%); border-radius:50%; background:#55b8ff; box-shadow:0 0 0 8px rgba(85,184,255,.15),0 0 24px rgba(85,184,255,.8); }
+  .rail { position:relative; width:min(470px,46vw); height:250px; }
+  .rail::before { content:""; position:absolute; left:8%; right:8%; top:55px; height:7px; border-radius:8px; background:linear-gradient(90deg,#33577b,#8ab6e6 50%,#33577b); box-shadow:0 0 20px rgba(64,126,190,.22); }
+  .hanger { position:absolute; top:20px; width:122px; height:210px; }
+  .hanger:nth-child(1){left:3%; transform:rotate(-5deg)} .hanger:nth-child(2){left:36%; top:5px; transform:rotate(1deg)} .hanger:nth-child(3){right:3%; transform:rotate(5deg)}
+  .hook { position:absolute; left:50%; top:0; width:22px; height:60px; transform:translateX(-50%); border:4px solid #6a8baa; border-bottom:0; border-radius:20px 20px 0 0; }
+  .garment { position:absolute; left:4px; right:4px; top:43px; bottom:0; border:1px solid rgba(255,255,255,.25); clip-path:polygon(28% 0,72% 0,100% 20%,83% 30%,78% 100%,22% 100%,17% 30%,0 20%); background:linear-gradient(135deg,#283240,#0f151d); }
+  .hanger:nth-child(2) .garment { background:linear-gradient(135deg,#4ba8f5,#164478); box-shadow:0 0 45px rgba(47,120,208,.38); }
+  .hanger:nth-child(3) .garment { background:linear-gradient(135deg,#8d9aab,#313b49); }
+  .signal { position:absolute; left:50%; top:95px; width:7px; height:7px; border-radius:50%; background:var(--signal); transform:translateX(-50%); box-shadow:0 0 0 0 rgba(47,120,208,.65); animation:signal 1.7s infinite; }
+  @keyframes signal { 70% { box-shadow:0 0 0 26px rgba(47,120,208,0); } 100% { box-shadow:0 0 0 0 rgba(47,120,208,0); } }
+  .target-label { position:absolute; left:50%; bottom:-32px; transform:translateX(-50%); color:var(--signal); font-size:11px; font-weight:800; letter-spacing:.16em; white-space:nowrap; }
+  .footer { position:fixed; left:8vw; right:8vw; bottom:28px; z-index:3; display:flex; justify-content:space-between; align-items:end; color:var(--muted); font-size:11px; letter-spacing:.08em; }
+  .team { display:flex; gap:15px; } .team span { color:#d7dee7; } .team span:not(:last-child)::after { content:" /"; color:#526071; margin-left:15px; }
+  .tools { color:rgba(255,255,255,.32); }
+  @media(max-width:850px) { .wrap{grid-template-columns:1fr; padding-top:14vh; gap:5vh; overflow:auto; height:100vh}.scene{min-height:300px; transform:scale(.72); margin-top:-45px}.three-stage{width:520px;max-width:115vw}.footer{font-size:9px}.team{display:none}.tools{margin-left:auto} }
+</style>
+<link rel="stylesheet" href="../presentation-theme.css">
+<style id="opening-blue-theme">
+  :root { --ink:#eef6ff; --signal:#2f78d0; --muted:#6c819c; --line:rgba(27,83,145,.18); }
+  html, body { background:#eef6ff !important; color:#10233d !important; }
+  body::before { opacity:.42 !important; background-image:linear-gradient(rgba(43,112,190,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(43,112,190,.06) 1px,transparent 1px) !important; }
+  .ambient { opacity:.16 !important; }
+  .ambient.a { background:#4e9df4 !important; }
+  .ambient.b { background:#8ba8ff !important; }
+  .lead { color:#45617f !important; }
+  .lead small { color:#7188a2 !important; }
+  .footer { color:#6c819c !important; }
+  .team span { color:#315271 !important; }
+  .tools { color:#7891aa !important; }
+</style>
+</head>
+<body>
+  <div class="ambient a"></div><div class="ambient b"></div>
+  <main class="wrap">
+    <section>
+      <div class="eyebrow"><i></i> OPENING CHALLENGE / SMART WARDROBE</div>
+      <h1>스마트<br><span>옷장.</span></h1>
+      <p class="lead">찾고 싶은 옷이, 먼저 빛난다.<small>옷을 걸면 자동으로 기록되고, 찾으면 해당 옷걸이가 직접 대답합니다.</small></p>
+      <div class="chips"><span class="chip active">NFC TAG</span><span class="chip">ESP-NOW</span><span class="chip">REAL-TIME PWA</span></div>
+    </section>
+    <section class="scene">
+      <div class="halo"></div>
+      <div class="three-stage">
+        <canvas id="hanger3dCanvas" aria-label="스마트 옷걸이 3D 모델"></canvas>
+        <div class="model-badge">PN532 / RED PCB V3-STYLE</div>
+        <div class="model-label nfc">PN532 NFC RFID CARD SENSOR</div>
+        <div class="model-label esp">XIAO ESP32-C6</div>
+        <div class="model-label led">LED / 330 Ω</div>
+        <div class="model-label power">POGO / +5V ×2</div>
+        <div class="css-fallback">
+          <div class="fallback-triangle">
+            <div class="fallback-hook"></div>
+            <div class="fallback-board"><i></i></div>
+            <div class="fallback-led"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+  <footer class="footer"><div class="team"><span>권효준</span><span>서예성</span><span>이정운</span><span>조성준</span></div><div class="tools">GSAP × anime.js</div></footer>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/animejs@3.2.1/lib/anime.min.js"></script>
+  <script>
+    function initHanger3D() {
+      var canvas = document.getElementById('hanger3dCanvas');
+      var stage = document.querySelector('.three-stage');
+      var fallback = document.querySelector('.css-fallback');
+      if (!canvas || !stage || !window.THREE) return;
+
+      try {
+        var THREE = window.THREE;
+        var renderer = new THREE.WebGLRenderer({ canvas:canvas, alpha:true, antialias:true });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        renderer.setClearColor(0x000000, 0);
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.15;
+        if ('outputColorSpace' in renderer) renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+        var scene = new THREE.Scene();
+        var camera = new THREE.PerspectiveCamera(30, 1, .1, 100);
+        camera.position.set(0, .12, 9.2);
+        camera.lookAt(0, .1, 0);
+
+        var root = new THREE.Group();
+        root.position.y = -.05;
+        root.rotation.x = -.08;
+        root.rotation.y = -.12;
+        scene.add(root);
+
+        scene.add(new THREE.HemisphereLight(0xeaf4ff, 0x142944, 2.2));
+        var key = new THREE.DirectionalLight(0xffffff, 3.1);
+        key.position.set(4, 5, 7);
+        scene.add(key);
+        var rim = new THREE.PointLight(0x4ca8ff, 5.5, 7, 2);
+        rim.position.set(-3, .8, 3);
+        scene.add(rim);
+        var fill = new THREE.PointLight(0x8caeff, 1.8, 5, 2);
+        fill.position.set(3, -2, 2);
+        scene.add(fill);
+
+        var metalMat = new THREE.MeshStandardMaterial({ color:0x7894ad, metalness:.9, roughness:.2 });
+        var darkMetalMat = new THREE.MeshStandardMaterial({ color:0x142a42, metalness:.86, roughness:.24 });
+        var shellMat = new THREE.MeshStandardMaterial({ color:0x123e70, metalness:.42, roughness:.28 });
+        var shellEdgeMat = new THREE.MeshStandardMaterial({ color:0x3f8ed7, metalness:.52, roughness:.22 });
+        var signalMat = new THREE.MeshStandardMaterial({ color:0x55b8ff, emissive:0x227fd0, emissiveIntensity:3.6, metalness:.15, roughness:.2 });
+        var blueMat = new THREE.MeshStandardMaterial({ color:0x2f78c8, emissive:0x102e68, emissiveIntensity:1.2, metalness:.35, roughness:.26 });
+        var goldMat = new THREE.MeshStandardMaterial({ color:0xd8a650, metalness:.8, roughness:.22 });
+        var whiteMat = new THREE.MeshStandardMaterial({ color:0xf4f9ff, metalness:.1, roughness:.35 });
+        var pcbMat = new THREE.MeshStandardMaterial({ color:0x0e4f91, metalness:.32, roughness:.32 });
+        var pcbEdgeMat = new THREE.MeshStandardMaterial({ color:0x2471bd, metalness:.45, roughness:.28 });
+        var traceMat = new THREE.MeshStandardMaterial({ color:0x65aee8, metalness:.42, roughness:.24 });
+        var chipMat = new THREE.MeshStandardMaterial({ color:0x101d2e, metalness:.72, roughness:.3 });
+        var capMat = new THREE.MeshStandardMaterial({ color:0x25384f, metalness:.35, roughness:.32 });
+
+        function tube(points, radius, material, closed) {
+          var curve = new THREE.CatmullRomCurve3(points, !!closed, 'centripetal', .18);
+          var geometry = new THREE.TubeGeometry(curve, 72, radius, 12, !!closed);
+          var mesh = new THREE.Mesh(geometry, material);
+          root.add(mesh);
+          return mesh;
+        }
+        function box(size, position, material, rotation) {
+          var mesh = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), material);
+          mesh.position.set(position[0], position[1], position[2]);
+          if (rotation) mesh.rotation.set(rotation[0], rotation[1], rotation[2]);
+          root.add(mesh);
+          return mesh;
+        }
+        function cylinder(radius, depth, position, material, rotation) {
+          var mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, depth, 24), material);
+          mesh.position.set(position[0], position[1], position[2]);
+          if (rotation) mesh.rotation.set(rotation[0], rotation[1], rotation[2]);
+          root.add(mesh);
+          return mesh;
+        }
+        function polyTube(points, radius, material) {
+          var path = new THREE.CurvePath();
+          for (var i = 0; i < points.length; i++) {
+            path.add(new THREE.LineCurve3(points[i], points[(i + 1) % points.length]));
+          }
+          var geometry = new THREE.TubeGeometry(path, 18 * points.length, radius, 12, false);
+          var mesh = new THREE.Mesh(geometry, material);
+          root.add(mesh);
+          return mesh;
+        }
+        function roundedBoard(width, height, radius, depth, material, position) {
+          var halfW = width / 2;
+          var halfH = height / 2;
+          var shape = new THREE.Shape();
+          shape.moveTo(-halfW + radius, -halfH);
+          shape.lineTo(halfW - radius, -halfH);
+          shape.quadraticCurveTo(halfW, -halfH, halfW, -halfH + radius);
+          shape.lineTo(halfW, halfH - radius);
+          shape.quadraticCurveTo(halfW, halfH, halfW - radius, halfH);
+          shape.lineTo(-halfW + radius, halfH);
+          shape.quadraticCurveTo(-halfW, halfH, -halfW, halfH - radius);
+          shape.lineTo(-halfW, -halfH + radius);
+          shape.quadraticCurveTo(-halfW, -halfH, -halfW + radius, -halfH);
+          var geometry = new THREE.ExtrudeGeometry(shape, { depth:depth, bevelEnabled:true, bevelThickness:.018, bevelSize:.018, bevelSegments:2 });
+          geometry.translate(0, 0, -depth / 2);
+          var mesh = new THREE.Mesh(geometry, material);
+          mesh.position.set(position[0], position[1], position[2]);
+          root.add(mesh);
+          return mesh;
+        }
+
+        // The hanger is intentionally a clean triangular silhouette.
+        tube([
+          new THREE.Vector3(0, 1.18, 0), new THREE.Vector3(0, 1.72, 0),
+          new THREE.Vector3(-.02, 2.25, 0), new THREE.Vector3(.18, 2.55, 0),
+          new THREE.Vector3(.55, 2.58, 0), new THREE.Vector3(.72, 2.34, 0),
+          new THREE.Vector3(.65, 2.08, 0), new THREE.Vector3(.43, 1.97, 0)
+        ], .075, metalMat, false);
+        var triangle = [
+          new THREE.Vector3(0, 1.20, 0),
+          new THREE.Vector3(-1.52, -1.52, 0),
+          new THREE.Vector3(1.52, -1.52, 0)
+        ];
+        polyTube(triangle, .105, darkMetalMat);
+        polyTube(triangle.map(function(point){ return new THREE.Vector3(point.x, point.y, point.z + .055); }), .038, shellEdgeMat);
+
+        // The only internal parts shown are the documented PN532 + C6 hardware.
+        var pcbBack = roundedBoard(1.24, 1.72, .11, .05, pcbEdgeMat, [0, -.25, .18]);
+        var pcb = roundedBoard(1.16, 1.64, .09, .12, pcbMat, [0, -.25, .27]);
+        box([.66, .018, .012], [-.12, .48, .35], traceMat, [0, 0, 0]);
+        box([.42, .018, .012], [.20, .39, .35], traceMat, [0, 0, 0]);
+        box([.68, .016, .012], [-.06, -.34, .35], traceMat, [0, 0, 0]);
+
+        // PN532 antenna/coil: the most recognizable detail from the supplied board reference.
+        var coil = new THREE.Mesh(new THREE.TorusGeometry(.285, .032, 16, 64), whiteMat);
+        coil.position.set(0, .22, .39);
+        root.add(coil);
+        var coilInner = new THREE.Mesh(new THREE.TorusGeometry(.205, .022, 14, 56), whiteMat);
+        coilInner.position.set(0, .22, .395);
+        root.add(coilInner);
+        var coilCore = new THREE.Mesh(new THREE.CylinderGeometry(.145, .145, .028, 48), pcbMat);
+        coilCore.rotation.x = Math.PI / 2;
+        coilCore.position.set(0, .22, .41);
+        root.add(coilCore);
+
+        // Small, readable electronics: controller, capacitor, LED and two pogo contacts.
+        var pn532Chip = box([.20, .20, .06], [0, -.20, .40], chipMat, [0, 0, 0]);
+        var c6Board = box([.70, .22, .055], [0, -.63, .40], pcbEdgeMat, [0, 0, 0]);
+        var c6Chip = box([.18, .16, .035], [0, -.63, .445], chipMat, [0, 0, 0]);
+        var capacitor = cylinder(.075, .20, [-.40, -.63, .42], capMat, [0, 0, 0]);
+        cylinder(.078, .018, [-.40, -.63, .53], goldMat, [0, 0, 0]);
+        var led = new THREE.Mesh(new THREE.SphereGeometry(.075, 20, 14), signalMat);
+        led.position.set(.43, -.63, .46);
+        root.add(led);
+        var ledRing = new THREE.Mesh(new THREE.TorusGeometry(.14, .018, 10, 40), signalMat);
+        ledRing.position.set(.43, -.63, .46);
+        root.add(ledRing);
+        // The two +5 V pogo contacts belong on the hanger hook/neck, not under the PCB.
+        box([.36, .14, .14], [0, 1.39, .08], darkMetalMat, [0, 0, 0]);
+        cylinder(.045, .16, [-.12, 1.39, .18], goldMat, [Math.PI / 2, 0, 0]);
+        cylinder(.045, .16, [.12, 1.39, .18], goldMat, [Math.PI / 2, 0, 0]);
+
+        var led = new THREE.Mesh(new THREE.SphereGeometry(.115, 24, 16), signalMat);
+        led.position.set(0, -1.27, .31);
+        root.add(led);
+        var ledRing = new THREE.Mesh(new THREE.TorusGeometry(.22, .025, 10, 48), signalMat);
+        ledRing.position.set(0, -1.27, .31);
+        root.add(ledRing);
+
+        function resize() {
+          var width = Math.max(1, stage.clientWidth);
+          var height = Math.max(1, stage.clientHeight);
+          renderer.setSize(width, height, false);
+          camera.aspect = width / height;
+          camera.updateProjectionMatrix();
+        }
+        resize();
+        window.addEventListener('resize', resize, { passive:true });
+        stage.classList.add('is-ready');
+        if (fallback) fallback.style.display = 'none';
+
+        if (window.anime) {
+          anime.timeline({ easing:'easeOutCubic', autoplay:true })
+            .add({ targets:root.scale, x:[.78,1], y:[.78,1], z:[.78,1], duration:900, delay:220, easing:'easeOutBack' })
+            .add({ targets:[pcbBack.scale, pcb.scale], x:[.84,1], y:[.84,1], z:[.84,1], duration:620, easing:'easeOutBack' }, '-=590')
+            .add({ targets:[coil.scale, coilInner.scale, coilCore.scale], x:[.35,1], y:[.35,1], z:[.35,1], duration:620, delay:40, easing:'easeOutElastic(1, .7)' }, '-=430')
+            .add({ targets:[pn532Chip.scale, c6Board.scale, c6Chip.scale], x:[.72,1], y:[.72,1], z:[.72,1], duration:500, delay:20, easing:'easeOutBack' }, '-=470')
+            .add({ targets:[led.scale, ledRing.scale], x:[.25,1], y:[.25,1], z:[.25,1], duration:420, easing:'easeOutBack' }, '-=330');
+          anime({ targets:'.model-badge, .model-label', opacity:[0,1], translateY:[10,0], delay:anime.stagger(115, { start:520 }), duration:460, easing:'easeOutCubic' });
+          anime({ targets:ledRing.scale, x:[1,1.28], y:[1,1.28], z:[1,1.28], duration:1450, easing:'easeInOutSine', direction:'alternate', loop:true });
+          anime({ targets:signalMat, emissiveIntensity:[2.6,5.1], duration:1450, easing:'easeInOutSine', direction:'alternate', loop:true });
+          anime({ targets:rim, intensity:[4.4,6.2], duration:2800, easing:'easeInOutSine', direction:'alternate', loop:true });
+        } else if (window.gsap) {
+          gsap.from(root.scale, { x:0.78, y:0.78, z:0.78, duration:1.15, ease:'back.out(1.35)' });
+          gsap.from([coil, coilInner, led], { scale:.82, duration:.8, stagger:.08, ease:'back.out(1.5)' });
+        }
+        function render(time) {
+          var seconds = time * .001;
+          if (!window.anime) {
+            signalMat.emissiveIntensity = 4.4 + Math.sin(seconds * 3.4) * 1.1;
+            var pulse = 1 + (Math.sin(seconds * 3.4) + 1) * .13;
+            ledRing.scale.set(pulse, pulse, pulse);
+          }
+          renderer.render(scene, camera);
+          requestAnimationFrame(render);
+        }
+        requestAnimationFrame(render);
+      } catch (error) {
+        canvas.style.display = 'none';
+        console.warn('3D hanger unavailable; CSS fallback kept.', error);
+      }
+    }
+
+    if (window.gsap) {
+      gsap.timeline({ defaults:{ ease:'power3.out' } })
+        .to('.eyebrow',{opacity:1,duration:.55})
+        .from('h1',{y:42,opacity:0,duration:1.05},'-=.2')
+        .to('.lead',{opacity:1,y:0,duration:.6},'-=.45')
+        .to('.chips',{opacity:1,y:0,duration:.5},'-=.3')
+        .to('.scene',{opacity:1,y:0,duration:1},'-=.65');
+    } else {
+      document.querySelectorAll('.eyebrow,.lead,.chips,.scene').forEach(function(el){el.style.opacity=1});
+    }
+    if (window.anime) {
+      anime({targets:'.halo',scale:[.97,1.03],duration:6000,easing:'easeInOutSine',direction:'alternate',loop:true});
+      anime({targets:'.ambient',scale:[.9,1.12],opacity:[.08,.18],duration:7000,easing:'easeInOutSine',direction:'alternate',loop:true});
+    }
+    initHanger3D();
+  </script>
+</body>
+</html>

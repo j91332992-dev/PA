@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #define WIFI_SSID "YOUR_2_4_GHZ_WIFI"
 #define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
 #define CLOUD_BASE_URL "http://192.168.0.100:8787"

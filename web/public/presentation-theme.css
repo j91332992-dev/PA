@@ -1,0 +1,186 @@
+/*
+  Presentation light theme
+  모든 발표 슬라이드에서 공유하는 밝은 paper / sage 톤입니다.
+*/
+:root {
+  --ink: #eef6ff;
+  --line: rgba(27, 83, 145, .16);
+  --muted: #607b99;
+  --signal: #2f78d0;
+  --blue: #4d8fe0;
+  --orange: #d7812d;
+}
+
+html, body {
+  background: var(--ink) !important;
+  color: #132b48 !important;
+}
+
+body::before,
+.grid {
+  opacity: .42 !important;
+  background-image:
+    linear-gradient(rgba(43, 112, 190, .06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(43, 112, 190, .06) 1px, transparent 1px) !important;
+}
+
+.ambient,
+.glow {
+  opacity: .12 !important;
+  background: #6eaaf4 !important;
+}
+
+.topbar {
+  color: #132b48 !important;
+}
+
+.top-meta,
+.mini,
+.meta,
+.subhead,
+.ready,
+.tools,
+.bottom,
+.foot,
+.footer,
+.caption {
+  color: var(--muted) !important;
+}
+
+.lead,
+.sub,
+.question,
+.time-card p,
+.step p,
+.callout p,
+.state p {
+  color: #607b99 !important;
+}
+
+.note {
+  color: #607b99 !important;
+}
+
+.note b {
+  color: #173e68 !important;
+}
+
+.time-card,
+.step,
+.callout,
+.state,
+.phone-panel,
+.dashboard,
+.app-panel {
+  background: rgba(255, 255, 255, .76) !important;
+  border-color: var(--line) !important;
+  box-shadow: 0 24px 70px rgba(42, 83, 132, .14) !important;
+}
+
+.deck-btn,
+.auto-toggle {
+  background: rgba(255, 255, 255, .78) !important;
+  color: #173e68 !important;
+  border-color: var(--line) !important;
+}
+
+.auto-toggle {
+  color: var(--signal) !important;
+  background: rgba(47, 120, 208, .10) !important;
+}
+
+.auto-toggle.off {
+  color: var(--muted) !important;
+  background: rgba(255, 255, 255, .62) !important;
+}
+
+.panel-head {
+  color: #173e68 !important;
+  background: rgba(255, 255, 255, .72) !important;
+  border-color: var(--line) !important;
+}
+
+.phone-screen {
+  box-shadow: inset 0 0 0 1px rgba(27, 83, 145, .10);
+}
+
+.signal,
+.signal i {
+  color: var(--signal);
+}
+
+/* Blue accent overrides for the slides that still carry their original green tokens. */
+.step:nth-child(3),
+.state.present {
+  border-color: rgba(47, 120, 208, .30) !important;
+}
+.step:nth-child(3) .step-icon {
+  background: rgba(47, 120, 208, .13) !important;
+  box-shadow: 0 0 28px rgba(47, 120, 208, .14) !important;
+}
+.stage::before {
+  background: radial-gradient(ellipse, rgba(47, 120, 208, .18), transparent 67%) !important;
+}
+.c-mcu {
+  background: linear-gradient(135deg, #1f67aa, #4ca4ee) !important;
+  color: #081d36 !important;
+}
+.callout.signal::before {
+  background: var(--signal) !important;
+  box-shadow: 0 0 0 5px rgba(47, 120, 208, .10), 0 0 18px var(--signal) !important;
+}
+.badge.ready,
+.console-step.active {
+  color: #2465aa !important;
+  border-color: rgba(47, 120, 208, .34) !important;
+  background: rgba(47, 120, 208, .09) !important;
+}
+.console-step.active i {
+  background: var(--signal) !important;
+  box-shadow: 0 0 12px rgba(47, 120, 208, .5) !important;
+}
+.console-step.active b {
+  color: #2465aa !important;
+}
+
+/* The live-demo placeholders stay readable against the blue paper background. */
+.phone-body {
+  background: linear-gradient(145deg, #e3effd, #f7fbff) !important;
+}
+.phone {
+  border-color: #294965 !important;
+  background: #0c1f35 !important;
+  box-shadow: 0 25px 60px rgba(20, 61, 104, .24) !important;
+}
+.embed-placeholder,
+.app-placeholder {
+  background: linear-gradient(145deg, #f8fbff, #e8f2fd) !important;
+  color: #315d88 !important;
+}
+.slot-icon {
+  background: #d8eafd !important;
+  color: var(--signal) !important;
+}
+.app-body {
+  border-color: rgba(27, 83, 145, .14) !important;
+  background: #fbfdff !important;
+}
+.demo-button {
+  border-color: rgba(47, 120, 208, .30) !important;
+  background: #e2effd !important;
+  color: #2465aa !important;
+}
+.console-step {
+  border-color: rgba(27, 83, 145, .10) !important;
+  background: #f5f9fe !important;
+  color: #7890a8 !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

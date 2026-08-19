@@ -1,11 +1,1122 @@
-<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#19352b"><link rel="manifest" href="/manifest.json"><link rel="stylesheet" href="/style.css"><title>Smart Wardrobe</title></head><body>
-<div id="auth" class="auth"><form id="authForm"><p class="eyebrow">SMART WARDROBE</p><h1 id="authTitle">첫 관리자 만들기</h1><input name="name" placeholder="이름"><input name="email" type="email" placeholder="이메일" required><input name="password" type="password" minlength="10" placeholder="비밀번호 10자 이상" required><button>계속</button><p id="authError" class="error"></p></form></div>
-<div id="app" hidden><header><div><p class="eyebrow">ESP-NOW · REAL TIME</p><h1>내 스마트 옷장</h1></div><div class="connection"><i id="dot"></i><span id="connection">연결 중</span><button id="logout" class="ghost">로그아웃</button></div></header>
-<nav><button data-view="dashboard" class="active">대시보드</button><button data-view="clothes">옷</button><button data-view="hangers">옷걸이</button><button data-view="outfit">코디 찾기</button><button data-view="history">이벤트</button><button data-view="setup">설정/진단</button></nav>
-<main><section id="dashboard" class="view"><div id="summary" class="summary"></div><div class="grid2"><article class="panel"><div class="title"><h2>현재 옷장</h2><button data-open-garment>+ 새 옷</button></div><div id="recentGarments" class="cards"></div></article><article class="panel"><h2>최근 이벤트</h2><ol id="recentEvents" class="events"></ol></article></div></section>
-<section id="clothes" class="view" hidden><div class="title"><div><h2>옷 목록</h2><p>등록된 NFC 태그와 현재 위치</p></div><button data-open-garment>+ 새 옷 등록</button></div><div class="filters"><input id="search" placeholder="이름, 분류, 색상 검색"><select id="stateFilter"><option value="">전체 상태</option><option>IN_WARDROBE</option><option>OUT</option></select></div><div id="garments" class="cards wide"></div></section>
-<section id="hangers" class="view" hidden><div class="title"><div><h2>옷걸이</h2><p>30초 이상 신호가 없으면 OFFLINE</p></div></div><div id="hangerCards" class="cards wide"></div></section>
-<section id="outfit" class="view" hidden><div class="title"><div><h2>코디 한 번에 찾기</h2><p>최대 16개 옷걸이 LED를 동시에 점멸합니다.</p></div><button id="multiFind">선택한 옷 찾기</button></div><div id="outfitCards" class="cards wide"></div></section>
-<section id="history" class="view" hidden><h2>이벤트 기록</h2><ol id="allEvents" class="events panel"></ol></section>
-<section id="setup" class="view" hidden><h2>설정과 진단</h2><div id="diagnostics" class="diag"></div><article class="panel"><h3>게이트웨이 연결 정보</h3><p>펌웨어의 <code>config.h</code>에 서버 URL과 DEVICE_TOKEN을 동일하게 설정하세요. 비밀번호와 토큰은 Git에 올리지 마세요.</p></article></section></main></div>
-<dialog id="garmentDialog"><form id="garmentForm"><div class="title"><h2>새 옷 등록</h2><button type="button" id="closeDialog" class="ghost">닫기</button></div><label>옷 이름<input name="name" required placeholder="예: 네이비 셔츠"></label><label>NTAG213 UID<input name="tagUid" required placeholder="예: 04 A1 B2 C3 D4 E5 F6"></label><div class="form2"><label>분류<input name="category" placeholder="셔츠"></label><label>색상<input name="color" placeholder="네이비"></label><label>계절<input name="season" placeholder="봄/가을"></label><label>브랜드<input name="brand"></label></div><label>사진 URL<input name="imageUrl" type="url"></label><label>메모<textarea name="memo"></textarea></label><button>등록</button><p id="formError" class="error"></p></form></dialog><div id="toast"></div><script src="/app.js"></script></body></html>
+﻿<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff">
+<title>스마트 옷장</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Pretendard', 'Apple SD Gothic Neo', sans-serif;
+  background: #ffffff;
+  color: #191919;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+  padding-bottom: 96px;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 24px 20px 8px;
+  padding-top: calc(24px + env(safe-area-inset-top));
+}
+.greeting h1 {
+  font-size: 22px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.greeting p {
+  font-size: 12px;
+  color: #8e8e93;
+}
+.header-icons {
+  display: flex;
+  gap: 12px;
+}
+.icon-btn {
+  width: 40px;
+  height: 40px;
+  border: none;
+  background: transparent;
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.icon-btn:hover {
+  background: #f2f2f7;
+}
+
+.main {
+  padding: 0 20px;
+}
+
+.section-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.section-subtitle {
+  font-size: 13px;
+  color: #8e8e93;
+  margin-bottom: 28px;
+}
+
+.wardrobe-card {
+  background: #f5f5f7;
+  border-radius: 28px;
+  padding: 40px 24px;
+  margin-bottom: 20px;
+  min-height: 320px;
+  position: relative;
+  overflow: hidden;
+}
+
+.wardrobe-card.empty .wardrobe-box {
+  border: 2px dashed #d1d1d6;
+  border-radius: 20px;
+  height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,0.5);
+}
+
+.wardrobe-empty-text {
+  text-align: center;
+  color: #8e8e93;
+}
+.wardrobe-empty-text .icon {
+  font-size: 48px;
+  margin-bottom: 8px;
+  opacity: 0.4;
+}
+.wardrobe-empty-text p {
+  font-size: 13px;
+}
+
+.wardrobe-box {
+  position: relative;
+  width: 100%;
+  height: 240px;
+}
+
+.cloth-item {
+  position: absolute;
+  width: 80px;
+  height: 100px;
+  background: white;
+  border-radius: 14px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.08);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  opacity: 0;
+  transform: scale(0.3) translateY(-30px);
+  animation: dropIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+.cloth-item:hover {
+  transform: scale(1.05) !important;
+}
+.cloth-item .cloth-emoji {
+  font-size: 36px;
+  margin-bottom: 4px;
+}
+.cloth-item .cloth-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #191919;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 90%;
+  padding: 0 4px;
+}
+.cloth-item .cloth-photo {
+  width: 100%;
+  height: 72px;
+  object-fit: cover;
+  flex-shrink: 0;
+  border-radius: 14px 14px 0 0;
+  background: #f0f0f0;
+}
+.cloth-item .cat-mini-emoji {
+  font-size: 9px;
+}
+
+@keyframes dropIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.3) translateY(-80px);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.1) translateY(0);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-4px) scale(1); }
+}
+
+.cloth-item.settled {
+  animation: float 3s ease-in-out infinite;
+}
+
+.info-card {
+  background: white;
+  border-radius: 20px;
+  padding: 20px;
+  margin-bottom: 24px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+}
+.info-card .message {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 14px;
+  line-height: 1.4;
+}
+.progress-bar {
+  height: 6px;
+  background: #f2f2f7;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #191919, #4a4a4a);
+  border-radius: 3px;
+  width: 0%;
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.progress-text {
+  font-size: 12px;
+  color: #8e8e93;
+  text-align: right;
+}
+
+.add-btn {
+  width: 100%;
+  background: #191919;
+  color: white;
+  border: none;
+  padding: 18px;
+  border-radius: 16px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s;
+  font-family: inherit;
+}
+.add-btn:active {
+  transform: scale(0.98);
+}
+
+/* Bottom Nav */
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(255,255,255,0.95);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid #f2f2f7;
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  padding: 12px 0;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  z-index: 100;
+}
+.nav-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  background: none;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  color: #8e8e93;
+  font-family: inherit;
+}
+.nav-item.active {
+  color: #191919;
+}
+.nav-item .icon {
+  font-size: 22px;
+}
+.nav-item .label {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.nav-fab {
+  width: 56px;
+  height: 56px;
+  border-radius: 28px;
+  background: #191919;
+  border: none;
+  color: white;
+  font-size: 32px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  margin-top: -16px;
+  transition: transform 0.2s;
+  font-weight: 300;
+}
+.nav-fab:active {
+  transform: scale(0.92);
+}
+
+/* Toast */
+.toast {
+  position: fixed;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-100px);
+  background: rgba(25,25,25,0.95);
+  color: white;
+  padding: 14px 24px;
+  border-radius: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  z-index: 1000;
+  pointer-events: none;
+}
+.toast.show {
+  transform: translateX(-50%) translateY(0);
+}
+
+/* Responsive */
+@media (min-width: 600px) {
+  body {
+    max-width: 480px;
+    margin: 0 auto;
+    box-shadow: 0 0 40px rgba(0,0,0,0.05);
+  }
+}
+
+/* ===== Add Modal ===== */
+.add-modal {
+  width: 100%;
+  max-width: 480px;
+  height: 100vh;
+  max-height: 100vh;
+  margin: 0 auto;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  background: #ffffff;
+  overflow: hidden;
+}
+.add-modal::backdrop {
+  background: rgba(0,0,0,0.4);
+  backdrop-filter: blur(4px);
+}
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  border-bottom: 1px solid #f2f2f7;
+  position: sticky;
+  top: 0;
+  background: white;
+  z-index: 5;
+}
+.modal-header h2 {
+  font-size: 17px;
+  font-weight: 600;
+}
+.close-btn {
+  background: none;
+  border: none;
+  color: #8e8e93;
+  font-size: 14px;
+  padding: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  min-width: 60px;
+  text-align: left;
+}
+.modal-body {
+  padding: 20px 16px;
+  overflow-y: auto;
+  height: calc(100vh - 130px);
+}
+.modal-footer {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 14px 16px;
+  padding-bottom: calc(14px + env(safe-area-inset-bottom));
+  background: white;
+  border-top: 1px solid #f2f2f7;
+}
+
+.upload-area {
+  margin-bottom: 20px;
+}
+.upload-placeholder {
+  background: #f9f9fb;
+  border: 2px dashed #e5e5ea;
+  border-radius: 16px;
+  padding: 36px 20px;
+  text-align: center;
+  transition: all 0.2s;
+}
+.upload-placeholder.dragover {
+  background: #f0f8ff;
+  border-color: #4a90e2;
+}
+.upload-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+.upload-text {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: #191919;
+}
+.upload-btn {
+  background: #191919;
+  color: white;
+  border: none;
+  padding: 14px 28px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  margin-bottom: 8px;
+}
+.upload-btn:active {
+  transform: scale(0.97);
+}
+.upload-hint {
+  font-size: 12px;
+  color: #8e8e93;
+  margin-top: 8px;
+}
+
+.preview-area {
+  position: relative;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #f9f9fb;
+  border: 1px solid #f2f2f7;
+}
+.preview-area img {
+  width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  display: block;
+}
+.retake-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(255,255,255,0.9);
+  border: none;
+  padding: 8px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  backdrop-filter: blur(8px);
+}
+
+.ai-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: #f0f8ff;
+  border-radius: 12px;
+  margin-bottom: 16px;
+}
+.ai-status .spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #cce5ff;
+  border-top-color: #4a90e2;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+.ai-status p {
+  font-size: 14px;
+  color: #4a90e2;
+  font-weight: 500;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.ai-result {
+  background: linear-gradient(135deg, #f0fff4, #e8f5e9);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 20px;
+  animation: slideUp 0.4s ease;
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.result-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.result-icon {
+  font-size: 20px;
+}
+.result-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1a8a3a;
+}
+.category-display {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.category-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  background: white;
+  border: 2px solid #1a8a3a;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1a8a3a;
+}
+.category-chip .cat-emoji {
+  font-size: 18px;
+}
+.category-chip.sleeve {
+  border-color: #4a90e2;
+  color: #4a90e2;
+}
+.category-chip.season {
+  border-color: #f39c12;
+  color: #d68910;
+}
+.change-category-btn {
+  background: none;
+  border: 1px solid #d1d1d6;
+  color: #8e8e93;
+  padding: 8px 14px;
+  border-radius: 18px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.ai-fail {
+  background: #fff8e7;
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 20px;
+  animation: slideUp 0.4s ease;
+}
+.fail-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.fail-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.fail-text {
+  font-size: 13px;
+  color: #8b6914;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.fail-hint {
+  font-size: 12px;
+  color: #8e8e93;
+  margin: 8px 0;
+}
+.manual-categories {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.manual-cat-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px 8px;
+  background: white;
+  border: 2px solid #e5e5ea;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+.manual-cat-btn:active {
+  transform: scale(0.96);
+}
+.manual-cat-btn.selected {
+  border-color: #191919;
+  background: #f9f9fb;
+}
+.manual-cat-btn .cat-emoji {
+  font-size: 32px;
+}
+.manual-cat-btn .cat-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #191919;
+}
+
+.uid-section {
+  padding-top: 12px;
+  border-top: 1px solid #f2f2f7;
+}
+.field-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #191919;
+  margin-bottom: 8px;
+}
+.uid-input-row {
+  display: flex;
+  gap: 8px;
+}
+.uid-input {
+  flex: 1;
+  padding: 12px 14px;
+  border: 1px solid #e5e5ea;
+  border-radius: 10px;
+  font-size: 14px;
+  font-family: monospace;
+  background: #f9f9fb;
+}
+.uid-input:focus {
+  outline: none;
+  border-color: #4a90e2;
+  background: white;
+}
+.scan-btn {
+  background: #f2f2f7;
+  border: none;
+  padding: 12px 16px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.field-hint {
+  font-size: 11px;
+  color: #8e8e93;
+  margin-top: 6px;
+}
+
+.save-btn {
+  width: 100%;
+  background: #191919;
+  color: white;
+  border: none;
+  padding: 16px;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s;
+}
+.save-btn:disabled {
+  background: #d1d1d6;
+  cursor: not-allowed;
+}
+.save-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+/* ===== Pages ===== */
+.page {
+  display: none;
+  animation: fadeIn 0.3s ease;
+}
+.page.active {
+  display: block;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* 스타일링 시작 버튼 */
+.start-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  background: linear-gradient(135deg, #4a90e2, #357abd);
+  color: white;
+  border: none;
+  padding: 18px;
+  border-radius: 28px;
+  font-size: 15px;
+  font-weight: 600;
+  margin-top: 12px;
+  box-shadow: 0 4px 16px rgba(74,144,226,0.3);
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s;
+  animation: pulseGlow 2s ease-in-out infinite;
+}
+.start-btn:active {
+  transform: scale(0.98);
+}
+.start-emoji {
+  font-size: 20px;
+}
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 4px 16px rgba(74,144,226,0.3); }
+  50% { box-shadow: 0 6px 24px rgba(74,144,226,0.5); }
+}
+
+/* ===== 옷장 페이지 ===== */
+.closet-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 20px;
+  padding-top: calc(14px + env(safe-area-inset-top));
+  position: sticky;
+  top: 0;
+  background: white;
+  z-index: 10;
+}
+.closet-dropdown {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  font-size: 22px;
+  font-weight: 700;
+  color: #191919;
+  cursor: pointer;
+  font-family: inherit;
+}
+.dropdown-arrow {
+  font-size: 14px;
+  opacity: 0.6;
+}
+.closet-icons {
+  display: flex;
+  gap: 8px;
+}
+
+.closet-tabs {
+  display: flex;
+  gap: 24px;
+  padding: 4px 20px 12px;
+  border-bottom: 1px solid #f2f2f7;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+.closet-tabs::-webkit-scrollbar { display: none; }
+.closet-tab {
+  background: none;
+  border: none;
+  padding: 8px 0;
+  font-size: 15px;
+  color: #8e8e93;
+  font-weight: 500;
+  position: relative;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.closet-tab.active {
+  color: #191919;
+  font-weight: 700;
+}
+.closet-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: -13px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #191919;
+}
+
+.closet-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 20px 12px;
+}
+.closet-section-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0;
+}
+.closet-sort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #8e8e93;
+}
+.sort-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: #8e8e93;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.sort-btn.active {
+  color: #191919;
+  font-weight: 600;
+}
+.sort-sep {
+  color: #c7c7cc;
+}
+
+.closet-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1px;
+  background: #f2f2f7;
+}
+@media (min-width: 600px) {
+  .closet-grid { grid-template-columns: repeat(3, 1fr); }
+}
+@media (min-width: 900px) {
+  .closet-grid { grid-template-columns: repeat(4, 1fr); }
+}
+.closet-item {
+  background: white;
+  aspect-ratio: 3 / 4;
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+}
+.closet-item-img {
+  flex: 1;
+  width: 100%;
+  background: #f5f5f7;
+  object-fit: cover;
+  display: block;
+}
+.closet-item-noimg {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 64px;
+  background: #f5f5f7;
+}
+.closet-item-info {
+  padding: 12px;
+}
+.closet-item-brand {
+  font-size: 14px;
+  color: #191919;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+.closet-item-date {
+  font-size: 12px;
+  color: #8e8e93;
+}
+
+/* 스타일링 시작 버튼 (옷장 페이지) */
+.closet-start-wrap {
+  padding: 20px;
+  display: flex;
+  justify-content: center;
+}
+
+/* ===== Placeholder Page ===== */
+.placeholder-page {
+  text-align: center;
+  padding: 80px 20px;
+}
+.placeholder-icon {
+  font-size: 80px;
+  margin-bottom: 20px;
+  opacity: 0.3;
+}
+.placeholder-page h2 {
+  font-size: 22px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+.placeholder-page p {
+  font-size: 15px;
+  color: #8e8e93;
+  margin-bottom: 8px;
+}
+.placeholder-hint {
+  font-size: 13px;
+  color: #c7c7cc;
+}
+</style>
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="greeting">
+      <h1>안녕하세요, Guest</h1>
+      <p id="date"></p>
+    </div>
+    <div class="header-icons">
+      <button class="icon-btn">📅</button>
+      <button class="icon-btn">🔔</button>
+      <button class="icon-btn">👤</button>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <main class="main">
+    <!-- 홈 화면 (옷 추가 전: 자동 데모) -->
+    <section class="page page-home" id="page-home">
+      <h2 class="section-title">나만의 옷장 만들기</h2>
+      <p class="section-subtitle">사진 촬영부터 뷰티파이, 태그까지 AI가 한 번에</p>
+
+      <!-- 옷장 일러스트 카드 -->
+      <div class="wardrobe-card empty" id="wardrobeCard">
+        <div class="wardrobe-empty-text" id="emptyText">
+          <div class="icon">📦</div>
+          <p>아직 옷이 없어요</p>
+        </div>
+        <div class="wardrobe-box" id="wardrobeBox"></div>
+      </div>
+
+      <!-- 안내 카드 -->
+      <div class="info-card">
+        <p class="message" id="message">
+          ✨ 아이템 5개를 추가하고<br>나만의 맞춤 스타일링을 시작해 보세요
+        </p>
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-text" id="progressText">0 / 5</div>
+      </div>
+
+      <!-- 옷 추가 버튼 -->
+      <button class="add-btn" id="addBtn">+ 옷 추가</button>
+
+      <!-- 스타일링 시작하기 버튼 (5개 도달 시 표시) -->
+      <button class="start-btn" id="startBtn" hidden>
+        <span class="start-emoji">🧑‍🎨</span>
+        <span class="start-text">아이템 스타일링</span>
+      </button>
+    </section>
+
+    <!-- 옷장 페이지 -->
+    <section class="page page-closet" id="page-closet" hidden>
+      <header class="closet-header">
+        <button class="closet-dropdown" id="closetDropdown">
+          <span id="closetTitle">아이템</span>
+          <span class="dropdown-arrow">▾</span>
+        </button>
+        <div class="closet-icons">
+          <button class="icon-btn">📅</button>
+          <button class="icon-btn">🔔</button>
+          <button class="icon-btn">👤</button>
+        </div>
+      </header>
+
+      <div class="closet-tabs">
+        <button class="closet-tab active" data-tab="all">아이템 가져오기</button>
+        <button class="closet-tab" data-tab="stats">스타일 통계</button>
+        <button class="closet-tab" data-tab="wishlist">위시리스트</button>
+        <button class="closet-tab" data-tab="beautify">뷰티파이</button>
+        <button class="closet-tab" data-tab="share">옷장 공유</button>
+      </div>
+
+      <div class="closet-toolbar">
+        <h3 class="closet-section-title">모든 옷</h3>
+        <div class="closet-sort">
+          <button class="sort-btn active" data-sort="date">등록일 순</button>
+          <span class="sort-sep">|</span>
+          <button class="sort-btn" data-sort="name">이름 순</button>
+        </div>
+      </div>
+
+      <div class="closet-grid" id="closetGrid">
+        <!-- 동적 생성 -->
+      </div>
+
+      <!-- 스타일링 시작 버튼 (5개 도달 시) -->
+      <div class="closet-start-wrap" id="closetStartWrap" hidden>
+        <button class="start-btn" id="closetStartBtn">
+          <span class="start-emoji">🧑‍🎨</span>
+          <span class="start-text">아이템 스타일링</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- 코디 페이지 (placeholder) -->
+    <section class="page page-outfit" id="page-outfit" hidden>
+      <div class="placeholder-page">
+        <div class="placeholder-icon">👗</div>
+        <h2>코디 추천</h2>
+        <p>옷장에서 아이템을 가져와 추천을 만들어드려요</p>
+        <p class="placeholder-hint">옷장이 비어있어요. 먼저 옷을 추가해보세요.</p>
+      </div>
+    </section>
+
+    <!-- 탐색 페이지 (placeholder) -->
+    <section class="page page-explore" id="page-explore" hidden>
+      <div class="placeholder-page">
+        <div class="placeholder-icon">🔍</div>
+        <h2>탐색</h2>
+        <p>스타일 트렌드와 다른 사용자의 코디를 둘러보세요</p>
+        <p class="placeholder-hint">준비 중입니다.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- Bottom Navigation -->
+  <nav class="bottom-nav" id="bottomNav">
+    <button class="nav-item active" data-nav="closet">
+      <span class="icon">👔</span>
+      <span class="label">옷장</span>
+    </button>
+    <button class="nav-fab" id="fabAdd">
+      <span>+</span>
+    </button>
+    <button class="nav-item" data-nav="outfit">
+      <span class="icon">👗</span>
+      <span class="label">코디</span>
+    </button>
+    <button class="nav-item" data-nav="explore">
+      <span class="icon">🔍</span>
+      <span class="label">탐색</span>
+    </button>
+  </nav>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <!-- 옷 추가 모달 -->
+  <dialog id="addModal" class="add-modal">
+    <header class="modal-header">
+      <button class="close-btn" id="closeAdd">취소</button>
+      <h2>새 옷 추가</h2>
+      <div style="width: 60px"></div>
+    </header>
+
+    <div class="modal-body">
+      <!-- 사진 업로드 영역 -->
+      <div class="upload-area" id="uploadArea">
+        <input type="file" id="photoInput" accept="image/*" hidden>
+        <div class="upload-placeholder" id="uploadPlaceholder">
+          <div class="upload-icon">📷</div>
+          <p class="upload-text">옷 사진 추가</p>
+          <button type="button" class="upload-btn" id="albumBtn">앨범에서 선택</button>
+          <p class="upload-hint">또는 파일을 끌어다 놓기</p>
+        </div>
+        <div class="preview-area" id="previewArea" hidden>
+          <img id="previewImg" alt="">
+          <button type="button" class="retake-btn" id="retakeBtn">↻ 다시 찍기</button>
+        </div>
+      </div>
+
+      <!-- 카테고리 선택 (사진 등록 후 표시) -->
+      <div class="category-selector" id="categorySelector" hidden>
+        <label class="field-label">카테고리 선택</label>
+        <p class="field-hint" style="margin-bottom: 12px">이 옷은 어떤 종류인가요?</p>
+        <div class="manual-categories" id="manualCategories">
+          <button class="manual-cat-btn" data-cat="outer">
+            <span class="cat-emoji">🧥</span>
+            <span class="cat-name">아우터</span>
+            <span class="cat-desc">코트, 자켓, 패딩</span>
+          </button>
+          <button class="manual-cat-btn" data-cat="top">
+            <span class="cat-emoji">👕</span>
+            <span class="cat-name">상의</span>
+            <span class="cat-desc">티셔츠, 셔츠, 니트</span>
+          </button>
+          <button class="manual-cat-btn" data-cat="bottom">
+            <span class="cat-emoji">👖</span>
+            <span class="cat-name">하의</span>
+            <span class="cat-desc">바지, 치마</span>
+          </button>
+          <button class="manual-cat-btn" data-cat="dress">
+            <span class="cat-emoji">👗</span>
+            <span class="cat-name">원피스</span>
+            <span class="cat-desc">드레스</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- UID 입력 -->
+      <div class="uid-section" id="uidSection" hidden>
+        <label class="field-label">NFC 태그 UID</label>
+        <div class="uid-input-row">
+          <input type="text" id="uidInput" placeholder="04 A1 B2 C3 D4 E5 F6" class="uid-input">
+          <button type="button" class="scan-btn" id="scanUidBtn">📡 스캔</button>
+        </div>
+        <p class="field-hint">옷걸이에 부착된 NFC 태그를 가까이 대거나 직접 입력</p>
+      </div>
+    </div>
+
+    <footer class="modal-footer">
+      <button type="button" class="save-btn" id="saveBtn" disabled>옷 추가하기</button>
+    </footer>
+  </dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

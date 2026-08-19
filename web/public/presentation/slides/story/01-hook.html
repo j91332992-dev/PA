@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WARDROBE — Opening Hook</title>
-  <link rel="stylesheet" href="../../slide.css?v=20260819-06">
+  <title>WARDROBE — Opening</title>
+  <link rel="stylesheet" href="../../slide.css?v=20260819-37">
 </head>
 <body>
   <main class="slide">
     <div class="slide-content">
-      <div class="slide-header animate-in"><div class="kicker"><i></i> 01 / OPENING HOOK</div><div class="meta">MORNING RUSH · OPENING FILM</div></div>
-      <div class="hook-layout">
+      <div class="slide-header animate-in"><div class="kicker"><i></i> 01 / OPENING</div><div class="meta">PRESS TO START · 35 SEC</div></div>
+      <div class="hook-layout opening-video-layout">
         <section class="hook-copy">
           <div class="eyebrow animate-in">THE MORNING SEARCH</div>
           <h1 class="animate-in">찾는 시간은 길어지고,<br><span class="accent">아침은 늦어진다.</span></h1>
@@ -19,7 +19,7 @@
         </section>
         <section class="hook-visual opening-video-mode animate-scale" aria-label="아침 상황 광고 영상">
           <div class="hanger-stage"><div class="hanger-halo"></div><canvas id="hanger3dCanvas" aria-label="삼각형 스마트 옷걸이 3D 모델"></canvas><div class="hanger-fallback" aria-hidden="true"><div class="fallback-hook"></div><div class="fallback-triangle"><div class="fallback-board"></div><div class="fallback-led"></div></div></div><div class="pin one" title="고리 전원 포고핀"></div><div class="pin two" title="고리 전원 포고핀"></div><span class="model-tag pogo">POGO / HOOK</span><span class="model-tag nfc">PN532 / NFC</span><span class="model-tag c6">XIAO C6</span></div>
-          <div class="slot video-slot" data-video-src="../../assets/video/morning-rush.mp4" aria-label="아침에 옷을 찾는 광고 영상"><div class="video-scan"></div><div class="slot-center"><div class="slot-icon">▶</div><strong>아침 상황 영상</strong><span>재생 버튼을 눌러 광고를 시작하세요.</span></div><div class="slot-label">OPENING FILM / MORNING RUSH</div><video playsinline></video></div>
+          <div class="slot video-slot" data-video-src="../../assets/video/morning-rush.mp4" data-video-autoplay="false" data-video-muted="false" aria-label="아침에 옷을 찾는 광고 영상"><div class="video-scan"></div><div class="slot-center"><div class="slot-icon">▶</div><strong>아침 상황 영상</strong><span>재생 버튼을 눌러 광고를 시작하세요.</span></div><button class="video-start-button" type="button" data-video-play aria-label="오프닝 영상 재생"><span class="video-start-icon">▶</span><strong>오프닝 영상 재생</strong><small>클릭해서 아침 상황을 시작하세요</small></button><div class="slot-label">OPENING FILM / MORNING RUSH</div><video playsinline preload="metadata"></video></div>
         </section>
       </div>
     </div>
@@ -55,6 +55,6 @@
       if (window.anime) anime({ targets: led.scale, x: [1,1.55,1], y: [1,1.55,1], z: [1,1.55,1], duration: 1450, loop: true, easing: 'easeInOutSine' });
       (function render(){ renderer.render(scene,camera); requestAnimationFrame(render); }());
     }());
-  </script><script src="../../slide-runtime.js"></script>
+  </script><script src="../../slide-runtime.js?v=20260819-07"></script>
 </body>
 </html>
