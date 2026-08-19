@@ -13,7 +13,10 @@
       video.src = src;
       video.controls = true;
       video.muted = true;
+      video.autoplay = true;
+      video.playsInline = true;
       slot.classList.add('has-video');
+      video.play?.().catch(function () {});
     });
   }
 
