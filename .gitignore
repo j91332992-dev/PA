@@ -6,3 +6,5 @@ data/*.bak
 data/*.tmp
 .pio/
 dist/
+*.pdf
+
