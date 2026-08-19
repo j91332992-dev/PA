@@ -2,11 +2,11 @@
   'use strict';
 
   const slides = [
-    { name: '오프닝 훅 / 아침 영상', short: 'HOOK', time: '0:35', file: 'slides/story/01-hook.html' },
+    { name: '오프닝 훅 / 아침 영상', short: 'HOOK', time: '0:35', file: 'slides/story/01-hook.html?v=20260819-06' },
     { name: '핵심 질문', short: 'QUESTION', time: '0:35', file: 'slides/story/02-question.html' },
     { name: '제목·팀 소개', short: 'INTRO', time: '0:25', file: 'slides/story/03-intro-clean.html' },
     { name: '문제 정의', short: 'PROBLEM MAP', time: '0:20', file: 'slides/story/04-problem-definition.html' },
-    { name: '문제 01 / 위치', short: 'LOCATION', time: '0:30', file: 'slides/story/05-location-problem.html' },
+    { name: '문제 01 / 위치', short: 'LOCATION', time: '0:30', file: 'slides/story/05-location-problem.html?v=20260819-05' },
     { name: '사용자 조사', short: 'EVIDENCE', time: '0:35', file: 'slides/story/06-evidence.html' },
     { name: '문제 02 / 기억', short: 'MEMORY', time: '0:30', file: 'slides/story/07-memory-problem.html' },
     { name: '시장 분석', short: 'MARKET', time: '0:40', file: 'slides/story/08-market.html' },
