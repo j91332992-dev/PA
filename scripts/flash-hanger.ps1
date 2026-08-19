@@ -1,1 +1,1 @@
-param([string]$Port='');$ErrorActionPreference='Stop';$Root=Split-Path -Parent $PSScriptRoot;Set-Location "$Root\firmware\hanger";$args=@('run','-t','upload');if($Port){$args+=@('--upload-port',$Port)};python -m platformio @args
+﻿param([string]$Port='');$ErrorActionPreference='Stop';$Root=Split-Path -Parent $PSScriptRoot;Set-Location "$Root\firmware\hanger";$args=@('run','-t','upload');if($Port){$args+=@('--upload-port',$Port)};python -m platformio @args

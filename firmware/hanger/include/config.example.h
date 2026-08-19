@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #define NFC_SCAN_INTERVAL_MS 220
 #define NFC_PRESENT_CONFIRM_COUNT 3
 #define NFC_EMPTY_CONFIRM_COUNT 8

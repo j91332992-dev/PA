@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WARDROBE - Solution</title>
+<style>
+  :root{--ink:#070a0f;--line:rgba(255,255,255,.12);--muted:#8b96a8;--signal:#2f78d0;--blue:#74a7ff}
+  *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--ink);color:#f5f7f8;font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo",sans-serif}
+  .grid{position:fixed;inset:0;opacity:.28;background:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-size:62px 62px;mask-image:linear-gradient(to bottom,black,transparent 92%)}
+  .top{position:relative;z-index:2;padding:10vh 8vw 0;display:flex;justify-content:space-between;align-items:start}.kicker{color:var(--signal);font-size:11px;font-weight:800;letter-spacing:.2em;opacity:0}.mini{color:var(--muted);font-size:11px;letter-spacing:.12em}
+  .wrap{position:relative;z-index:2;min-height:76vh;padding:7vh 8vw 6vh;display:grid;grid-template-columns:1fr 1.15fr;gap:6vw;align-items:center}
+  h1{margin:0;font-size:clamp(48px,6.6vw,104px);line-height:.96;letter-spacing:-.075em;font-weight:900;opacity:0}h1 span{color:var(--signal)}
+  .sub{max-width:420px;margin:25px 0 0;color:#bdc7d2;font-size:17px;line-height:1.6;opacity:0}
+  .constraints{display:flex;flex-wrap:wrap;gap:8px;margin-top:32px;opacity:0}.constraint{padding:8px 11px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:11px}.constraint b{color:#f5f7f8}
+  .flow{position:relative;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;align-items:stretch}.flow::before{content:"";position:absolute;left:10%;right:10%;top:50%;height:1px;background:linear-gradient(90deg,transparent,var(--signal),var(--blue),transparent);opacity:.8}
+  .step{position:relative;z-index:1;min-height:210px;padding:24px 18px;border:1px solid var(--line);border-radius:24px;background:linear-gradient(145deg,rgba(255,255,255,.09),rgba(255,255,255,.025));box-shadow:0 24px 70px rgba(0,0,0,.22);opacity:0;transform:translateY(24px)}
+  .step:nth-child(3){border-color:rgba(47,120,208,.28)}.step-num{color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.16em}.step-icon{display:grid;place-items:center;width:48px;height:48px;margin:28px 0 18px;border-radius:15px;background:rgba(255,255,255,.08);font-size:22px}.step:nth-child(3) .step-icon{background:rgba(47,120,208,.13);box-shadow:0 0 28px rgba(47,120,208,.14)}.step h2{margin:0 0 8px;font-size:21px;letter-spacing:-.04em}.step p{margin:0;color:var(--muted);font-size:12px;line-height:1.55}.wire{position:absolute;z-index:3;top:50%;width:8px;height:8px;margin-top:-4px;border-radius:50%;background:var(--signal);box-shadow:0 0 14px var(--signal);opacity:0}.wire.one{left:32.8%}.wire.two{left:66.1%}
+  .techline{position:absolute;left:8vw;right:8vw;bottom:28px;display:flex;gap:10px;align-items:center;color:var(--muted);font-size:11px;letter-spacing:.1em}.techline::before{content:"";width:34px;height:1px;background:var(--signal)}.techline b{color:#f5f7f8}
+  @media(max-width:850px){.top{padding:9vh 18px 0}.mini{display:none}.wrap{padding:7vh 18px 10vh;grid-template-columns:1fr;gap:5vh}.flow{transform:scale(.86);transform-origin:left center;width:116%}.techline{left:18px;right:18px}}
+</style>
+<link rel="stylesheet" href="../presentation-theme.css">
+</head>
+<body>
+  <div class="grid"></div>
+  <header class="top"><div class="kicker">02 / THE SOLUTION</div><div class="mini">AUTOMATIC PRESENCE · TARGETED FIND</div></header>
+  <main class="wrap">
+    <section>
+      <h1>걸면, 기록되고<br><span>찾으면, 빛난다.</span></h1>
+      <p class="sub">사용자의 습관은 바꾸지 않습니다. 옷걸이가 옷의 존재와 위치를 대신 기억합니다.</p>
+      <div class="constraints"><span class="constraint"><b>NO SLOT</b> 자유 이동</span><span class="constraint"><b>NO BATTERY</b> 봉 전원</span><span class="constraint"><b>NO PAIRING</b> 자동 연결</span></div>
+    </section>
+    <section class="flow">
+      <div class="wire one"></div><div class="wire two"></div>
+      <article class="step"><div class="step-num">01 / HANGER</div><div class="step-icon">👕</div><h2>걸다</h2><p>옷을 평소처럼<br>옷걸이에 건다</p></article>
+      <article class="step"><div class="step-num">02 / NFC + RADIO</div><div class="step-icon">⌁</div><h2>읽다</h2><p>PN532가 UID를 읽고<br>ESP-NOW로 상태를 보낸다</p></article>
+      <article class="step"><div class="step-num">03 / WEB + LED</div><div class="step-icon">✦</div><h2>찾다</h2><p>웹에서 누르면<br>대상 옷걸이만 빛난다</p></article>
+    </section>
+  </main>
+  <div class="techline">DATA PATH <b>NFC</b><span>→</span><b>ESP32-C6</b><span>→</span><b>ESP-NOW</b><span>→</span><b>WEB / PWA</b></div>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/animejs@3.2.1/lib/anime.min.js"></script>
+  <script>
+    if (window.gsap) {
+      gsap.timeline({defaults:{ease:'power3.out'}})
+        .to('.kicker',{opacity:1,duration:.45})
+        .to('h1',{opacity:1,y:0,duration:.85},'-.1')
+        .to('.sub',{opacity:1,y:0,duration:.55},'-.4')
+        .to('.constraints',{opacity:1,y:0,duration:.5},'-.2')
+        .to('.step',{opacity:1,y:0,duration:.65,stagger:.16},'-.25')
+        .to('.wire',{opacity:1,duration:.3,stagger:.2},'-.35');
+    } else document.querySelectorAll('.kicker,h1,.sub,.constraints,.step,.wire').forEach(function(el){el.style.opacity=1});
+    if (window.anime) anime({targets:'.wire',translateX:[-7,7],duration:850,easing:'easeInOutSine',direction:'alternate',loop:true,delay:anime.stagger(160)});
+  </script>
+</body>
+</html>

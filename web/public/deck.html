@@ -4,7 +4,8 @@
 <script>
   (function () {
     if (new URLSearchParams(location.search).has('legacy')) return;
-    var target = 'presentation/index.html' + location.search + location.hash;
+    var search = location.search ? location.search + '&v=20260819-03' : '?v=20260819-03';
+    var target = 'presentation/index.html' + search + location.hash;
     location.replace(target);
   }());
 </script>

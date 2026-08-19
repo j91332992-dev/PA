@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WARDROBE - Proof</title>
+<style>
+  :root{--ink:#070a0f;--line:rgba(255,255,255,.12);--muted:#8b96a8;--signal:#2f78d0;--orange:#ffb86b;--red:#ff6d7a;--blue:#74a7ff}
+  *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--ink);color:#f5f7f8;font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Apple SD Gothic Neo",sans-serif}
+  .grid{position:fixed;inset:0;opacity:.25;background:linear-gradient(rgba(255,255,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.025) 1px,transparent 1px);background-size:62px 62px}.glow{position:fixed;width:44vw;height:44vw;border-radius:50%;filter:blur(120px);background:var(--signal);opacity:.08;right:-12%;bottom:-20%}
+  .head{position:relative;z-index:2;padding:10vh 8vw 0;display:flex;justify-content:space-between}.kicker{color:var(--signal);font-size:11px;font-weight:800;letter-spacing:.2em}.meta{color:var(--muted);font-size:10px;letter-spacing:.14em}
+  .wrap{position:relative;z-index:2;min-height:78vh;padding:6vh 8vw 8vh;display:grid;grid-template-columns:.75fr 1.25fr;gap:6vw;align-items:center}
+  .headline{opacity:0}.headline h1{margin:0;font-size:clamp(70px,10vw,150px);line-height:.82;letter-spacing:-.1em;font-weight:900}.headline h1 span{color:var(--signal)}.headline p{max-width:300px;margin:28px 0 0;color:var(--muted);font-size:14px;line-height:1.6}.badges{display:flex;gap:8px;flex-wrap:wrap;margin-top:27px}.badge{padding:8px 10px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:10px}.badge.ready{color:var(--signal);border-color:rgba(47,120,208,.35);background:rgba(47,120,208,.08)}.badge.warn{color:var(--orange);border-color:rgba(255,184,107,.35);background:rgba(255,184,107,.07)}
+  .states{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.state{position:relative;min-height:170px;padding:22px;border:1px solid var(--line);border-radius:22px;background:rgba(255,255,255,.045);opacity:0;transform:translateY(20px);overflow:hidden}.state::after{content:"";position:absolute;width:110px;height:110px;right:-38px;bottom:-45px;border-radius:50%;background:var(--state);opacity:.12;filter:blur(4px)}.state small{color:var(--muted);font-size:10px;letter-spacing:.16em;font-weight:800}.state h2{margin:25px 0 7px;font-size:23px;letter-spacing:-.05em}.state p{margin:0;color:var(--muted);font-size:12px;line-height:1.5}.state.present{--state:var(--signal);border-color:rgba(47,120,208,.3)}.state.empty{--state:var(--blue)}.state.offline{--state:var(--red)}.state.unknown{--state:var(--orange)}
+  .foot{position:fixed;left:8vw;right:8vw;bottom:28px;display:flex;justify-content:space-between;color:var(--muted);font-size:10px;letter-spacing:.08em}.foot b{color:#f5f7f8}
+  @media(max-width:850px){.head{padding:9vh 18px 0}.meta{display:none}.wrap{padding:5vh 18px 10vh;grid-template-columns:1fr;gap:4vh}.headline h1{font-size:74px}.state{min-height:130px;padding:16px}.state h2{margin-top:16px}.foot{left:18px;right:18px}}
+</style>
+<link rel="stylesheet" href="../presentation-theme.css">
+</head>
+<body>
+  <div class="grid"></div><div class="glow"></div>
+  <header class="head"><div class="kicker">05 / PROOF OF SYSTEM</div><div class="meta">STATE MODEL · TEST PLAN · HONEST SCOPE</div></header>
+  <main class="wrap">
+    <section class="headline">
+      <h1><span>4</span><br>STATES</h1>
+      <p>단순히 “있다 / 없다”가 아니라, 실제 옷장 운영에 필요한 상태를 분리해서 관리합니다.</p>
+      <div class="badges"><span class="badge ready">SOFTWARE MODEL</span><span class="badge">SCALE SIMULATOR 50 / 100</span><span class="badge warn">PHYSICAL CHECK NEEDED</span></div>
+    </section>
+    <section class="states">
+      <article class="state present"><small>01 / NORMAL</small><h2>PRESENT</h2><p>태그가 인식되고<br>옷걸이가 온라인인 상태</p></article>
+      <article class="state empty"><small>02 / EMPTY</small><h2>EMPTY</h2><p>옷걸이는 살아 있지만<br>옷이 감지되지 않는 상태</p></article>
+      <article class="state offline"><small>03 / WATCH</small><h2>OFFLINE</h2><p>heartbeat가 끊겨<br>신호를 기다리는 상태</p></article>
+      <article class="state unknown"><small>04 / ALERT</small><h2>UNKNOWN TAG</h2><p>등록되지 않은 UID를<br>새 옷으로 알려주는 상태</p></article>
+    </section>
+  </main>
+  <div class="foot"><span>검증 가능한 것과 직접 측정할 것을 분리</span><b>신뢰는 상태에서 시작됩니다.</b></div>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/animejs@3.2.1/lib/anime.min.js"></script>
+  <script>
+    if(window.gsap){
+      gsap.timeline({defaults:{ease:'power3.out'}}).to('.headline',{opacity:1,y:0,duration:.75}).to('.state',{opacity:1,y:0,duration:.5,stagger:.12},'-.3');
+    } else document.querySelectorAll('.headline,.state').forEach(function(el){el.style.opacity=1});
+    if(window.anime) anime({targets:'.state::after',scale:[.8,1.15],duration:4200,easing:'easeInOutSine',direction:'alternate',loop:true});
+  </script>
+</body>
+</html>

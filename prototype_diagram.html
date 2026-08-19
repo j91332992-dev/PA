@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>B-플랜 스마트 옷장 - 전체 부품 구조도</title>
+<style>
+  body { font-family: 'Malgun Gothic', sans-serif; background: #f5f7fa; margin: 0; padding: 20px; }
+  h1, h2 { text-align: center; color: #2c3e50; }
+  h2 { margin-top: 30px; font-size: 18px; border-bottom: 2px solid #3498db; padding-bottom: 8px; }
+  .container { max-width: 1300px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+  svg { width: 100%; height: auto; display: block; }
+  table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 13px; }
+  th { background: #34495e; color: white; padding: 10px; text-align: left; }
+  td { padding: 8px 10px; border-bottom: 1px solid #ecf0f1; }
+  tr:nth-child(even) { background: #f8f9fa; }
+  tr:hover { background: #fff3cd; }
+  .category { background: #3498db; color: white; font-weight: bold; }
+  .total { background: #2ecc71; color: white; font-weight: bold; font-size: 14px; }
+  .legend { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; margin-top: 20px; padding: 15px; background: #ecf0f1; border-radius: 8px; }
+  .legend-item { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .legend-color { width: 30px; height: 4px; }
+  .notes { margin-top: 20px; padding: 15px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>B-플랜 스마트 옷장 - 전체 부품 구조도</h1>
+  <p style="text-align:center; color:#7f8c8d;">시연용 1주 프로토타입 / 모든 부품 번호 표시 / 기능·가격 포함</p>
+
+  <svg viewBox="0 0 1300 900" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrowRed" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L9,3 z" fill="#e74c3c"/>
+      </marker>
+      <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L9,3 z" fill="#3498db"/>
+      </marker>
+      <marker id="arrowBlack" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L9,3 z" fill="#2c3e50"/>
+      </marker>
+    </defs>
+
+    <!-- ========== 마스터 박스 (오른쪽) ========== -->
+    <g transform="translate(900, 60)">
+      <rect width="380" height="280" rx="10" fill="#ffffff" stroke="#2c3e50" stroke-width="2"/>
+      <text x="190" y="25" text-anchor="middle" font-size="15" font-weight="bold" fill="#2c3e50">마스터 박스</text>
+
+      <!-- 박스 본체 -->
+      <text x="190" y="260" text-anchor="middle" font-size="10" fill="#7f8c8d">ⓐ 플라스틱 박스 IP65</text>
+
+      <!-- XIAO ESP32-S3 ① -->
+      <g transform="translate(30, 50)">
+        <rect width="120" height="70" rx="6" fill="#9b59b6"/>
+        <text x="60" y="30" text-anchor="middle" font-size="13" font-weight="bold" fill="white">① XIAO</text>
+        <text x="60" y="48" text-anchor="middle" font-size="13" font-weight="bold" fill="white">ESP32-S3</text>
+        <text x="60" y="63" text-anchor="middle" font-size="9" fill="white">WiFi AP + ESP-NOW</text>
+      </g>
+
+      <!-- DC 잭 ② -->
+      <circle cx="230" cy="85" r="18" fill="#e74c3c" stroke="#c0392b" stroke-width="2"/>
+      <text x="230" y="90" text-anchor="middle" font-size="10" font-weight="bold" fill="white">DC</text>
+      <text x="305" y="80" text-anchor="middle" font-size="11" font-weight="bold">② DC 잭</text>
+      <text x="305" y="93" text-anchor="middle" font-size="9" fill="#7f8c8d">5.5×2.1mm</text>
+
+      <!-- 상태 LED ③ -->
+      <circle cx="305" cy="120" r="8" fill="#2ecc71"/>
+      <text x="305" y="143" text-anchor="middle" font-size="10">③ 상태 LED</text>
+
+      <!-- 단자대 ④ -->
+      <rect x="180" y="145" width="80" height="35" rx="3" fill="#34495e"/>
+      <text x="220" y="167" text-anchor="middle" font-size="11" font-weight="bold" fill="white">④ 단자대</text>
+      <text x="290" y="167" text-anchor="middle" font-size="10">봉 전선 연결</text>
+
+      <!-- 웹서버 -->
+      <text x="190" y="210" text-anchor="middle" font-size="11" font-weight="bold">📶 ⑤ 웹서버 (HTML)</text>
+      <text x="190" y="225" text-anchor="middle" font-size="9" fill="#7f8c8d">폰에서 192.168.4.1 접속</text>
+
+      <!-- ESP-NOW radio waves -->
+      <g transform="translate(80, 230)">
+        <path d="M 0 -5 Q 10 -15 20 -5" stroke="#9b59b6" stroke-width="2" fill="none"/>
+        <path d="M -5 5 Q 10 -5 25 5" stroke="#9b59b6" stroke-width="2" fill="none"/>
+        <text x="15" y="20" text-anchor="middle" font-size="9" fill="#9b59b6">ESP-NOW</text>
+      </g>
+    </g>
+
+    <!-- ========== 옷걸이 내부 상세 (왼쪽) ========== -->
+    <g transform="translate(30, 60)">
+      <rect width="430" height="500" rx="10" fill="#fafafa" stroke="#34495e" stroke-width="2" stroke-dasharray="5,3"/>
+      <text x="215" y="25" text-anchor="middle" font-size="15" font-weight="bold" fill="#2c3e50">옷걸이 1개 내부 (확대)</text>
+      <text x="215" y="488" text-anchor="middle" font-size="10" fill="#7f8c8d" font-style="italic">ⓑ 3D 프린트 케이스 내부</text>
+
+      <!-- ESP32-C6 ⑥ -->
+      <g transform="translate(30, 50)">
+        <rect width="100" height="80" rx="6" fill="#3498db"/>
+        <text x="50" y="32" text-anchor="middle" font-size="12" font-weight="bold" fill="white">⑥ ESP32-C6</text>
+        <text x="50" y="50" text-anchor="middle" font-size="10" fill="white">USB-C 내장</text>
+        <text x="50" y="63" text-anchor="middle" font-size="9" fill="white">WiFi+BLE</text>
+        <text x="50" y="74" text-anchor="middle" font-size="9" fill="white">(펌웨어 굽기 가능)</text>
+      </g>
+
+      <!-- RC522 ⑦ -->
+      <g transform="translate(155, 50)">
+        <rect width="100" height="80" rx="6" fill="#e67e22"/>
+        <text x="50" y="30" text-anchor="middle" font-size="12" font-weight="bold" fill="white">⑦ RC522</text>
+        <text x="50" y="50" text-anchor="middle" font-size="10" fill="white">13.56MHz</text>
+        <text x="50" y="63" text-anchor="middle" font-size="9" fill="white">NFC 태그 리더</text>
+        <text x="50" y="74" text-anchor="middle" font-size="9" fill="white">SPI 통신</text>
+      </g>
+
+      <!-- LED ⑧ -->
+      <g transform="translate(285, 65)">
+        <circle r="15" fill="#f1c40f" stroke="#f39c12" stroke-width="2"/>
+        <text y="5" text-anchor="middle" font-size="13" font-weight="bold" fill="white">LED</text>
+      </g>
+      <text x="285" y="105" text-anchor="middle" font-size="10" font-weight="bold">⑧ 5mm LED</text>
+      <text x="285" y="118" text-anchor="middle" font-size="9" fill="#7f8c8d">(찾기 신호)</text>
+
+      <!-- Resistor ⑨ -->
+      <rect x="270" y="135" width="40" height="12" fill="#8e44ad"/>
+      <text x="290" y="162" text-anchor="middle" font-size="10" font-weight="bold">⑨ 220Ω</text>
+
+      <!-- 점퍼선 ⑩ -->
+      <line x1="50" y1="170" x2="380" y2="170" stroke="#34495e" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="215" y="183" text-anchor="middle" font-size="10" font-weight="bold">⑩ 점퍼선 (모듈 간 연결)</text>
+
+      <!-- SPI connection -->
+      <line x1="130" y1="80" x2="155" y2="80" stroke="#3498db" stroke-width="2" stroke-dasharray="3,2"/>
+      <text x="142" y="73" text-anchor="middle" font-size="9" fill="#3498db">SPI</text>
+
+      <!-- Pogo pins -->
+      <g transform="translate(110, 290)">
+        <circle r="12" fill="#e74c3c"/>
+        <text y="5" text-anchor="middle" font-size="11" font-weight="bold" fill="white">P1</text>
+      </g>
+      <text x="110" y="325" text-anchor="middle" font-size="10" font-weight="bold" fill="#c0392b">⑪ 포고핀 1</text>
+      <text x="110" y="338" text-anchor="middle" font-size="9" fill="#7f8c8d">(+5V)</text>
+
+      <g transform="translate(170, 290)">
+        <circle r="12" fill="#2c3e50"/>
+        <text y="5" text-anchor="middle" font-size="11" font-weight="bold" fill="white">P2</text>
+      </g>
+      <text x="170" y="325" text-anchor="middle" font-size="10" font-weight="bold" fill="#2c3e50">⑫ 포고핀 2</text>
+      <text x="170" y="338" text-anchor="middle" font-size="9" fill="#7f8c8d">(GND)</text>
+
+      <!-- Hook ⑬ -->
+      <g transform="translate(140, 220)">
+        <path d="M 0 70 Q 0 40 -30 40 Q -45 40 -45 25 Q -45 10 -30 10 L 30 10 Q 45 10 45 25 Q 45 40 30 40 Q 0 40 0 70" fill="#bdc3c7" stroke="#7f8c8d" stroke-width="2"/>
+      </g>
+      <text x="140" y="395" text-anchor="middle" font-size="11" font-weight="bold" fill="#34495e">⑬ 금속 후크 Ø3mm</text>
+
+      <!-- Connection lines -->
+      <line x1="110" y1="278" x2="80" y2="130" stroke="#e74c3c" stroke-width="2"/>
+      <line x1="170" y1="278" x2="80" y2="130" stroke="#2c3e50" stroke-width="2"/>
+
+      <!-- 핫글루 ⑭ -->
+      <ellipse cx="140" cy="430" rx="40" ry="8" fill="#fdcb6e" opacity="0.7"/>
+      <text x="215" y="435" font-size="10" font-weight="bold">⑭ 핫글루 (기계적 고정)</text>
+    </g>
+
+    <!-- ========== 옷 + NFC 태그 ========== -->
+    <g transform="translate(490, 100)">
+      <path d="M 0 30 L 20 10 L 50 0 L 80 10 L 100 30 L 120 50 L 110 70 L 95 65 L 95 180 L 25 180 L 25 65 L 10 70 L 0 50 Z"
+            fill="#3498db" stroke="#2980b9" stroke-width="2"/>
+      <text x="60" y="110" text-anchor="middle" font-size="14" font-weight="bold" fill="white">옷</text>
+
+      <!-- NFC tag ⑮ -->
+      <rect x="40" y="125" width="40" height="40" rx="5" fill="#f1c40f" stroke="#f39c12" stroke-width="2"/>
+      <text x="60" y="148" text-anchor="middle" font-size="20" fill="#2c3e50">📡</text>
+      <text x="60" y="180" text-anchor="middle" font-size="10" font-weight="bold">⑮ NTAG215</text>
+      <text x="60" y="193" text-anchor="middle" font-size="9" fill="#7f8c8d">NFC 카드</text>
+    </g>
+
+    <!-- ========== 봉 (옷봉) ========== -->
+    <g transform="translate(30, 600)">
+      <!-- Rod body ⑯ -->
+      <rect x="0" y="0" width="1240" height="60" rx="30" fill="#bdc3c7" stroke="#7f8c8d" stroke-width="2"/>
+      <text x="620" y="35" text-anchor="middle" font-size="14" font-weight="bold" fill="#2c3e50">⑯ 스테인레스 옷봉 Ø32mm × 1m (중공)</text>
+
+      <!-- Copper tape +5V ⑰ -->
+      <rect x="50" y="-12" width="800" height="8" fill="#e74c3c"/>
+      <text x="450" y="-22" text-anchor="middle" font-size="11" font-weight="bold" fill="#c0392b">⑰ +5V 동테이프 (8mm 폭)</text>
+
+      <!-- Copper tape GND ⑱ -->
+      <rect x="50" y="64" width="800" height="8" fill="#2c3e50"/>
+      <text x="450" y="92" text-anchor="middle" font-size="11" font-weight="bold" fill="#2c3e50">⑱ GND 동테이프 (8mm 폭)</text>
+
+      <!-- Internal wire -->
+      <text x="1000" y="35" text-anchor="middle" font-size="10" fill="#34495e">봉 내부: ⑲ 2가닥 연선 (빨강/검정 22AWG)</text>
+
+      <!-- Wire exit hole ⑳ -->
+      <circle cx="1240" cy="30" r="8" fill="#e74c3c"/>
+      <text x="1200" y="10" font-size="10" fill="#c0392b">⑳ Ø5mm 구멍</text>
+
+      <!-- Wire to master -->
+      <line x1="1240" y1="30" x2="1090" y2="340" stroke="#e74c3c" stroke-width="3" marker-end="url(#arrowRed)"/>
+      <line x1="1235" y1="35" x2="1085" y2="345" stroke="#2c3e50" stroke-width="3" marker-end="url(#arrowBlack)"/>
+
+      <!-- End cap -->
+      <rect x="-15" y="0" width="15" height="60" rx="5" fill="#7f8c8d"/>
+      <text x="-50" y="35" text-anchor="middle" font-size="9" fill="#7f8c8d">㉑ 엔드캡</text>
+
+      <!-- Epoxy -->
+      <ellipse cx="200" cy="-12" rx="80" ry="4" fill="#fdcb6e" opacity="0.6"/>
+      <ellipse cx="200" cy="72" rx="80" ry="4" fill="#fdcb6e" opacity="0.6"/>
+      <text x="200" y="-25" text-anchor="middle" font-size="9" fill="#d35400">㉒ 에폭시 (테이프 고정)</text>
+
+      <!-- Hangers on rod -->
+      <g transform="translate(150, 0)">
+        <path d="M 0 -60 Q -20 -40 -20 -20 L -20 0" fill="none" stroke="#7f8c8d" stroke-width="4"/>
+        <ellipse cx="0" cy="20" rx="50" ry="15" fill="#ecf0f1" stroke="#34495e" stroke-width="2"/>
+        <text y="25" text-anchor="middle" font-size="10" font-weight="bold">옷걸이 1</text>
+      </g>
+      <g transform="translate(450, 0)">
+        <path d="M 0 -60 Q -20 -40 -20 -20 L -20 0" fill="none" stroke="#7f8c8d" stroke-width="4"/>
+        <ellipse cx="0" cy="20" rx="50" ry="15" fill="#ecf0f1" stroke="#34495e" stroke-width="2"/>
+        <text y="25" text-anchor="middle" font-size="10" font-weight="bold">옷걸이 2</text>
+      </g>
+      <g transform="translate(750, 0)">
+        <path d="M 0 -60 Q -20 -40 -20 -20 L -20 0" fill="none" stroke="#7f8c8d" stroke-width="4"/>
+        <ellipse cx="0" cy="20" rx="50" ry="15" fill="#ecf0f1" stroke="#34495e" stroke-width="2"/>
+        <text y="25" text-anchor="middle" font-size="10" font-weight="bold">옷걸이 3</text>
+      </g>
+    </g>
+
+    <!-- ========== 전원 어댑터 ㉓ ========== -->
+    <g transform="translate(70, 750)">
+      <rect width="180" height="80" rx="8" fill="#e74c3c" stroke="#c0392b" stroke-width="2"/>
+      <text x="90" y="25" text-anchor="middle" font-size="13" font-weight="bold" fill="white">㉓ 5V 5A 어댑터</text>
+      <text x="90" y="45" text-anchor="middle" font-size="11" fill="white">AC 220V → DC 5V</text>
+      <text x="90" y="62" text-anchor="middle" font-size="10" fill="white">벽 콘센트 연결</text>
+    </g>
+
+    <!-- Power line from adapter to master -->
+    <path d="M 250 790 Q 500 790 950 340" stroke="#e74c3c" stroke-width="3" fill="none" marker-end="url(#arrowRed)"/>
+    <text x="600" y="780" text-anchor="middle" font-size="11" fill="#e74c3c" font-weight="bold">DC 케이블 (전원 공급)</text>
+
+    <!-- ========== NFC read line ========== -->
+    <path d="M 540 180 Q 490 200 470 220" stroke="#e67e22" stroke-width="2" stroke-dasharray="5,3" fill="none" marker-end="url(#arrowBlue)"/>
+    <text x="500" y="195" font-size="10" fill="#e67e22">비접촉 읽기 (≤5cm)</text>
+
+    <!-- ========== WiFi signal to phone ========== -->
+    <g transform="translate(1240, 100)">
+      <rect width="50" height="100" rx="8" fill="#34495e"/>
+      <rect x="5" y="20" width="40" height="60" rx="3" fill="#ecf0f1"/>
+      <text x="25" y="50" text-anchor="middle" font-size="9" font-weight="bold">📱 앱</text>
+      <text x="25" y="70" text-anchor="middle" font-size="9">WiFi</text>
+    </g>
+
+    <!-- WiFi waves -->
+    <path d="M 1140 110 Q 1190 130 1230 130" stroke="#3498db" stroke-width="2" fill="none" marker-end="url(#arrowBlue)"/>
+    <path d="M 1140 130 Q 1190 145 1230 145" stroke="#3498db" stroke-width="1.5" fill="none" stroke-dasharray="3,2"/>
+    <text x="1180" y="105" text-anchor="middle" font-size="10" fill="#3498db">WiFi AP</text>
+
+  </svg>
+
+  <div class="legend">
+    <div class="legend-item">
+      <div class="legend-color" style="background:#e74c3c"></div>
+      <span>+5V 전원 (빨강)</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color" style="background:#2c3e50"></div>
+      <span>GND (검정)</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color" style="background:#3498db; height:2px;"></div>
+      <span>SPI / WiFi (파랑)</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color" style="background:#9b59b6"></div>
+      <span>ESP-NOW (무선)</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color" style="background:#e67e22"></div>
+      <span>NFC 무선</span>
+    </div>
+  </div>
+
+  <div class="notes">
+    <strong>💡 데이터 흐름 요약:</strong>
+    <ol style="margin: 8px 0; padding-left: 25px;">
+      <li><strong>NFC 태그 (⑮)</strong> → 비접촉 → <strong>RC522 (⑦)</strong>가 UID 읽음 (SPI로 ESP32-C6에 전달)</li>
+      <li><strong>ESP32-C6 (⑥)</strong>가 UID를 <strong>ESP-NOW</strong>로 마스터에 전송 (무선)</li>
+      <li><strong>XIAO ESP32-S3 (①)</strong>가 수신 → <strong>웹서버 (⑤)</strong>가 폰에 HTML 표시</li>
+      <li>사용자가 "찾기" 탭 → 마스터가 해당 옷걸이에 FIND 명령 전송 (ESP-NOW)</li>
+      <li><strong>LED (⑧)</strong>가 30초간 깜빡임 → 위치 확인</li>
+    </ol>
+    <strong style="display:block; margin-top:10px;">⚡ 전원 흐름:</strong>
+    어댑터 (㉓) → DC 잭 (②) → 단자대 (④) → 봉 전선 (⑲) → 동테이프 (⑰⑱) → 포고핀 (⑪⑫) → ESP32-C6 (⑥)
+  </div>
+
+  <h2>📋 전체 부품 리스트 (번호 매칭)</h2>
+
+  <table>
+    <thead>
+      <tr>
+        <th>번호</th>
+        <th>부품명</th>
+        <th>기능</th>
+        <th>수량</th>
+        <th>가격</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="category"><td colspan="5">🎯 마스터 박스 (1개)</td></tr>
+      <tr><td>①</td><td>XIAO ESP32-S3</td><td>마스터 MCU, WiFi AP, ESP-NOW 수신, 웹서버 호스팅</td><td>1개</td><td>₩9,000</td></tr>
+      <tr><td>②</td><td>DC 잭 5.5×2.1mm</td><td>5V 어댑터 입력 단자</td><td>1개</td><td>₩500</td></tr>
+      <tr><td>③</td><td>상태 LED 3mm</td><td>마스터 동작 상태 표시</td><td>1개</td><td>₩100</td></tr>
+      <tr><td>④</td><td>단자대 4P</td><td>봉 전선 연결/분리</td><td>1개</td><td>₩500</td></tr>
+      <tr><td>⑤</td><td>웹서버 (HTML)</td><td>폰 브라우저 접속용 (코드로 구현)</td><td>-</td><td>₩0</td></tr>
+      <tr><td>ⓐ</td><td>플라스틱 박스 IP65</td><td>마스터 회로 보호</td><td>1개</td><td>₩3,000</td></tr>
+
+      <tr class="category"><td colspan="5">👕 옷걸이 1개당 부품 (×3 = 시연 3개)</td></tr>
+      <tr><td>⑥</td><td>ESP32-C6 개발보드</td><td>옷걸이 두뇌, NFC 데이터 처리, ESP-NOW 송신</td><td>3개</td><td>₩2,500×3</td></tr>
+      <tr><td>⑦</td><td>RC522 NFC 모듈</td><td>13.56MHz NFC 태그 인식</td><td>3개</td><td>₩1,500×3</td></tr>
+      <tr><td>⑧</td><td>5mm 고휘도 흰색 LED</td><td>찾기 신호 표시 (깜빡임)</td><td>3개</td><td>₩100×3</td></tr>
+      <tr><td>⑨</td><td>220Ω 저항</td><td>LED 전류 제한</td><td>3개</td><td>₩50×3</td></tr>
+      <tr><td>⑩</td><td>점퍼선 세트</td><td>모듈 간 연결선</td><td>1세트(분담)</td><td>₩1,000</td></tr>
+      <tr><td>⑪</td><td>포고핀 2.5mm (+5V용)</td><td>후크→동테이프 접촉으로 +5V 공급</td><td>3개</td><td>₩200×3</td></tr>
+      <tr><td>⑫</td><td>포고핀 2.5mm (GND용)</td><td>후크→동테이프 접촉으로 GND 공급</td><td>3개</td><td>₩200×3</td></tr>
+      <tr><td>⑬</td><td>스테인레스 후크 Ø3mm</td><td>옷걸이가 봉에 걸리는 금속 갈고리</td><td>3개</td><td>₩700×3</td></tr>
+      <tr><td>⑭</td><td>핫글루</td><td>모듈/포고핀 기계적 고정</td><td>1개</td><td>₩200×3</td></tr>
+      <tr><td>ⓑ</td><td>3D 프린트 케이스</td><td>부품 담는 케이스 (본체, 엔드캡)</td><td>3개</td><td>₩5,000×3</td></tr>
+
+      <tr class="category"><td colspan="5">🚆 옷봉 (1개)</td></tr>
+      <tr><td>⑯</td><td>스테인레스 옷봉 Ø32mm × 1m</td><td>본체 (중공 파이프)</td><td>1개</td><td>₩5,000</td></tr>
+      <tr><td>⑰</td><td>+5V 구리 포일 테이프 (8mm)</td><td>옷걸이에 +5V 공급 트랙</td><td>1m</td><td>₩3,000</td></tr>
+      <tr><td>⑱</td><td>GND 구리 포일 테이프 (8mm)</td><td>옷걸이에 GND 공급 트랙</td><td>1m</td><td>₩3,000</td></tr>
+      <tr><td>⑲</td><td>2가닥 연선 (빨강/검정 22AWG)</td><td>봉 내부 전선</td><td>2m</td><td>₩2,000</td></tr>
+      <tr><td>⑳</td><td>Ø5mm 드릴 비트</td><td>전선 빼낼 구멍</td><td>1개</td><td>₩500</td></tr>
+      <tr><td>㉑</td><td>엔드캡 (실리콘/우레탄)</td><td>봉 반대편 끝 막기</td><td>1개</td><td>₩1,000</td></tr>
+      <tr><td>㉒</td><td>에폭시 본드</td><td>동테이프 봉에 부착</td><td>1개</td><td>₩3,000</td></tr>
+
+      <tr class="category"><td colspan="5">🏷️ NFC 태그 (옷 1벌당 1개)</td></tr>
+      <tr><td>⑮</td><td>NTAG215 NFC 카드</td><td>옷 고유 UID 저장</td><td>5장</td><td>₩5,000</td></tr>
+
+      <tr class="category"><td colspan="5">⚡ 전원</td></tr>
+      <tr><td>㉓</td><td>5V 5A DC 어댑터</td><td>봉에 +5V 인젝션</td><td>1개</td><td>₩8,000</td></tr>
+
+      <tr class="category"><td colspan="5">🔧 공구 (1회 구매)</td></tr>
+      <tr><td>-</td><td>인두기 60W</td><td>솔더링 도구</td><td>1개</td><td>₩25,000</td></tr>
+      <tr><td>-</td><td>솔더(납) 0.8mm</td><td>솔더링 재료</td><td>1롤</td><td>₩5,000</td></tr>
+      <tr><td>-</td><td>플럭스</td><td>솔더 잘 먹게</td><td>1개</td><td>₩2,000</td></tr>
+      <tr><td>-</td><td>와이어 스트리퍼</td><td>전선 피복 벗기기</td><td>1개</td><td>₩3,000</td></tr>
+      <tr><td>-</td><td>핫글루건 + 글루스틱</td><td>기계적 고정</td><td>1세트</td><td>₩5,000</td></tr>
+      <tr><td>-</td><td>멀티미터</td><td>전압/저항 확인</td><td>1개</td><td>₩5,000</td></tr>
+      <tr><td>-</td><td>샌드페이퍼 400번</td><td>봉 표면 거칠게</td><td>1장</td><td>₩500</td></tr>
+      <tr><td>-</td><td>열수축 튜브 세트</td><td>솔더부 절연</td><td>1세트</td><td>₩3,000</td></tr>
+
+      <tr class="total"><td colspan="4">🎯 시연 총비용 (옷걸이 3개 기준)</td><td>약 ₩77,750</td></tr>
+      <tr class="total"><td colspan="4">🔧 + 공구 (1회성)</td><td>약 ₩122,750</td></tr>
+    </tbody>
+  </table>
+
+  <div class="notes">
+    <strong>🛒 쿠팡 로켓배송 한 번에 주문 가능:</strong>
+    <p style="margin: 8px 0;">ESP32-C6 ×4, RC522 ×4, LED 10개, 저항, 포고핀 20개, 점퍼선, XIAO ESP32-S3, 옷봉, 동테이프, 5V 5A 어댑터, NTAG215 ×5, 박스/잭/단자대 — 합계 약 ₩61,000 (1~2일 배송)</p>
+  </div>
+
+</div>
+</body>
+</html>

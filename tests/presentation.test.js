@@ -36,7 +36,8 @@ test('presentation module has the separated entry files', () => {
 
 test('slide registry maps every slide to an existing HTML file', () => {
   const registry = read('slides.js');
-  const paths = [...registry.matchAll(/file:\s*'([^']+)'/g)].map((match) => match[1]);
+  const paths = [...registry.matchAll(/file:\s*'([^']+)'/g)]
+    .map((match) => match[1].split('?')[0]);
   assert.deepEqual(paths, slideFiles.map((file) => 'slides/' + file));
   for (const relativePath of paths) {
     assert.equal(fs.existsSync(path.join(presentationRoot, relativePath)), true, relativePath + ' is missing');
@@ -48,7 +49,7 @@ test('each story slide is independently renderable and uses the shared design sy
     const source = fs.readFileSync(path.join(slidesRoot, file), 'utf8');
     assert.match(source, /<html\s+lang="ko">/i, file + ' language is missing');
     assert.match(source, /<meta\s+name="viewport"/i, file + ' viewport is missing');
-    assert.match(source, /href="\.\.\/\.\.\/slide\.css"/i, file + ' shared slide css is missing');
+    assert.match(source, /href="\.\.\/\.\.\/slide\.css(?:\?[^\"]*)?"/i, file + ' shared slide css is missing');
     assert.match(source, /\.\.\/\.\.\/slide-runtime\.js/i, file + ' shared runtime is missing');
   }
 });
@@ -74,8 +75,8 @@ test('story deck keeps the 3D, GSAP and anime.js hooks', () => {
 test('market and customer slides preserve source-safe placeholders', () => {
   const market = fs.readFileSync(path.join(slidesRoot, 'story/08-market.html'), 'utf8');
   const customer = fs.readFileSync(path.join(slidesRoot, 'story/09-customer.html'), 'utf8');
-  assert.match(market, /180\.12/);
-  assert.match(market, /848\.47/);
+  assert.match(market, /1,801\.2/);
+  assert.match(market, /8,484\.7/);
   assert.match(market, /21\.40/);
   assert.match(market, /fortunebusinessinsights\.com/);
   assert.match(customer, /옷이 많은 가정/);

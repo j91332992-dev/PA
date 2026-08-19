@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 const http=require('http'),fs=require('fs'),path=require('path'),crypto=require('crypto');
 const {WebSocketServer}=require('ws');
 const ROOT=path.resolve(__dirname,'..');

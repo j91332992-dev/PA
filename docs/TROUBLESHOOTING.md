@@ -1,4 +1,4 @@
-# 장애 해결
+﻿# 장애 해결
 
 - 웹 접속 안 됨: `npm start`, 포트 8787, 방화벽, 주소를 확인합니다.
 - S3 CLOUD FAIL: PC의 LAN IP, 서버 실행, DEVICE_TOKEN, 같은 LAN 여부를 확인합니다. `localhost` 금지.

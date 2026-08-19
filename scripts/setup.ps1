@@ -1,4 +1,4 @@
-param([switch]$InstallPlatformIO)
+﻿param([switch]$InstallPlatformIO)
 $ErrorActionPreference='Stop';$Root=Split-Path -Parent $PSScriptRoot;Set-Location $Root
 if(-not(Get-Command node -ErrorAction SilentlyContinue)){throw 'Node.js 20 이상을 먼저 설치하세요: https://nodejs.org'}
 npm install
