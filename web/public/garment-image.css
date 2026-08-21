@@ -1,0 +1,12 @@
+.garment-image-field{margin:11px 0;font-weight:650}
+.image-field-title{display:block}
+.garment-image-picker{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:5px}
+.image-picker-button{display:inline-flex;align-items:center;justify-content:center;margin:0;padding:10px 14px;border:1px solid #9fbcaa;border-radius:10px;color:var(--ink);background:#eef7f0;font-size:13px;font-weight:750;cursor:pointer}
+.image-picker-button:hover{background:#e1f0e5}
+.garment-image-status{color:#708078;font-size:12px;font-weight:500}
+.garment-image-status.is-working{color:#a76a14}
+.garment-image-status.is-ready{color:#218451}
+.garment-image-status.is-error{color:#b83e37}
+.garment-image-preview{display:flex;align-items:center;gap:10px;margin-top:10px;padding:10px;border:1px solid #dce8df;border-radius:12px;background:#f7fbf7}
+.garment-image-preview img{width:104px;height:128px;object-fit:contain;border-radius:8px;background-color:#e8eee8;background-image:linear-gradient(45deg,#d1ddd2 25%,transparent 25%),linear-gradient(-45deg,#d1ddd2 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#d1ddd2 75%),linear-gradient(-45deg,transparent 75%,#d1ddd2 75%);background-position:0 0,0 8px,8px -8px,-8px 0;background-size:16px 16px}
+.image-clear-button{color:var(--ink)!important;border:1px solid #cbd4cd!important;background:#fff!important;font-size:12px;padding:7px 10px}
