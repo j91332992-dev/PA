@@ -4,5 +4,6 @@ firmware/**/include/config.h
 data/*.json
 data/*.bak
 data/*.tmp
+data/garment-images/
 .pio/
 dist/

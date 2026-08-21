@@ -1,11 +1,110 @@
-<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#19352b"><link rel="manifest" href="/manifest.json"><link rel="stylesheet" href="/style.css"><title>Smart Wardrobe</title></head><body>
-<div id="auth" class="auth"><form id="authForm"><p class="eyebrow">SMART WARDROBE</p><h1 id="authTitle">첫 관리자 만들기</h1><input name="name" placeholder="이름"><input name="email" type="email" placeholder="이메일" required><input name="password" type="password" minlength="10" placeholder="비밀번호 10자 이상" required><button>계속</button><p id="authError" class="error"></p></form></div>
+﻿<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#19352b"><link rel="manifest" href="/manifest.json"><link rel="stylesheet" href="/style.css"><title>Smart Wardrobe</title></head><body>
+<div id="auth" class="auth"><form id="authForm" data-mode="login"><p class="eyebrow">SMART WARDROBE</p><h1 id="authTitle">로그인</h1><div id="authNameGroup" style="display:none"><input name="name" id="authName" placeholder="이름"></div><input name="email" id="authEmail" type="email" placeholder="이메일" required><input name="password" id="authPassword" type="password" minlength="10" placeholder="비밀번호 10자 이상" required><button id="authSubmit">로그인</button><p id="authError" class="error"></p><div id="authSuccess" class="auth-success" style="display:none">✓ 로그인 완료</div><div class="auth-toggle"><button type="button" id="authToggle" class="ghost" style="color:var(--ink);border:1px solid #cbd4cd;font-size:13px;width:100%;margin-top:10px">계정이 없으신가요? 회원가입</button></div></form></div>
 <div id="app" hidden><header><div><p class="eyebrow">ESP-NOW · REAL TIME</p><h1>내 스마트 옷장</h1></div><div class="connection"><i id="dot"></i><span id="connection">연결 중</span><button id="logout" class="ghost">로그아웃</button></div></header>
-<nav><button data-view="dashboard" class="active">대시보드</button><button data-view="clothes">옷</button><button data-view="hangers">옷걸이</button><button data-view="outfit">코디 찾기</button><button data-view="history">이벤트</button><button data-view="setup">설정/진단</button></nav>
+<nav><button data-view="dashboard" class="active">대시보드</button><button data-view="clothes">옷</button><button data-view="hangers">옷걸이</button><button data-view="outfit">코디 찾기</button><button data-view="history">이벤트</button><button data-view="setup">설정/진단</button><button data-view="simulation" id="navSim">시뮬레이션</button></nav>
 <main><section id="dashboard" class="view"><div id="summary" class="summary"></div><div class="grid2"><article class="panel"><div class="title"><h2>현재 옷장</h2><button data-open-garment>+ 새 옷</button></div><div id="recentGarments" class="cards"></div></article><article class="panel"><h2>최근 이벤트</h2><ol id="recentEvents" class="events"></ol></article></div></section>
 <section id="clothes" class="view" hidden><div class="title"><div><h2>옷 목록</h2><p>등록된 NFC 태그와 현재 위치</p></div><button data-open-garment>+ 새 옷 등록</button></div><div class="filters"><input id="search" placeholder="이름, 분류, 색상 검색"><select id="stateFilter"><option value="">전체 상태</option><option>IN_WARDROBE</option><option>OUT</option></select></div><div id="garments" class="cards wide"></div></section>
-<section id="hangers" class="view" hidden><div class="title"><div><h2>옷걸이</h2><p>30초 이상 신호가 없으면 OFFLINE</p></div></div><div id="hangerCards" class="cards wide"></div></section>
-<section id="outfit" class="view" hidden><div class="title"><div><h2>코디 한 번에 찾기</h2><p>최대 16개 옷걸이 LED를 동시에 점멸합니다.</p></div><button id="multiFind">선택한 옷 찾기</button></div><div id="outfitCards" class="cards wide"></div></section>
+<section id="hangers" class="view" hidden><div class="title"><div><h2>옷걸이 목록</h2><p>30초 이상 신호가 없으면 OFFLINE으로 전환됩니다.</p></div></div><div class="filters"><input id="hangerSearch" placeholder="옷걸이 ID, 별칭, 태그 UID 검색"><select id="hangerFilter"><option value="">전체 상태 (전체 옷걸이)</option><option value="ONLINE">온라인 (신호 수신 중)</option><option value="PRESENT">PRESENT (의류 거치됨)</option><option value="EMPTY">EMPTY (빈 옷걸이)</option><option value="CONFLICT">CONFLICT / 경고</option><option value="OFFLINE">OFFLINE (30초 초과)</option><option value="VIRTUAL">가상 옷걸이 (HC-000001~5)</option></select></div><div id="hangerCards" class="cards wide"></div></section>
+<section id="outfit" class="view" hidden>
+  <div class="title">
+    <div>
+      <h2>스마트 코디 추천 &amp; 코디 찾기</h2>
+      <p>옷장 속 의류와 실시간 날씨·상황 데이터를 분석하여 최적의 스타일을 추천합니다.</p>
+    </div>
+    <div>
+      <button id="getOutfitRecBtn" style="background:var(--green)">✨ 맞춤 코디 새로고침</button>
+    </div>
+  </div>
+
+  <!-- A. 날씨 & 상황 컨트롤 바 -->
+  <article class="panel" style="margin-bottom:18px;padding:14px 18px">
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center;justify-content:space-between">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <label style="margin:0;font-weight:600;font-size:13px;display:flex;align-items:center;gap:6px">
+          📍 지역
+          <select id="weatherCitySelect" style="width:auto;padding:6px 10px;font-size:13px">
+            <option value="seoul">서울</option>
+            <option value="busan">부산</option>
+            <option value="daegu">대구</option>
+            <option value="incheon">인천</option>
+            <option value="daejeon">대전</option>
+            <option value="gwangju">광주</option>
+            <option value="jeju">제주</option>
+          </select>
+        </label>
+        <div id="weatherStatusBadge" class="pill" style="background:#eaf2f8;color:#2471a3;font-size:12px;padding:6px 12px;font-weight:600;margin:0">
+          ☀️ 날씨 조회 중...
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <label style="margin:0;font-weight:600;font-size:13px;display:flex;align-items:center;gap:6px">
+          👔 상황
+          <select id="occasionSelect" style="width:auto;padding:6px 10px;font-size:13px">
+            <option value="all">전체 / 데일리</option>
+            <option value="business">출근 / 비즈니스</option>
+            <option value="campus">학교 / 캠퍼스</option>
+            <option value="date">데이트 / 모임</option>
+            <option value="workout">운동 / 산책</option>
+            <option value="casual">편안한 일상</option>
+          </select>
+        </label>
+      </div>
+    </div>
+  </article>
+
+  <!-- B. 전체 코디 추천 결과 (1~3위) -->
+  <div style="margin-bottom:24px">
+    <div class="title" style="margin-bottom:8px">
+      <h3>🏆 오늘의 맞춤 전체 코디</h3>
+    </div>
+    <div id="outfitRecCards" class="cards wide"></div>
+  </div>
+
+  <!-- C. 특정 옷 기준 매칭 추천 -->
+  <article class="panel" style="margin-bottom:24px">
+    <div class="title" style="margin-bottom:12px">
+      <div>
+        <h3>🔍 특정 옷 기준 매칭 추천</h3>
+        <p style="font-size:12px;color:#688075">기준이 되는 옷을 검색/선택하면 옷장 안에서 가장 잘 어울리는 하의/아우터를 순위별로 추천합니다.</p>
+      </div>
+    </div>
+    <div style="margin-bottom:14px">
+      <div class="combobox-wrap" id="cb_single_garment">
+        <input id="singleGarmentInput" placeholder="기준 옷 검색 및 선택 (예: 네이비, 셔츠, HC-000001)" autocomplete="off">
+        <button type="button" class="combobox-arrow" tabindex="-1">▾</button>
+        <div class="combobox-dropdown" hidden></div>
+      </div>
+      <input type="hidden" id="selectedBaseGarmentId" value="">
+    </div>
+    <div id="singleMatchResults" class="cards wide" style="margin-top:10px"></div>
+  </article>
+
+  <!-- D. 대화형 코디 Assistant -->
+  <article class="panel" style="margin-bottom:24px">
+    <div class="title" style="margin-bottom:10px">
+      <div>
+        <h3>💬 스마트 코디 어시스턴트</h3>
+        <p style="font-size:12px;color:#688075">상황이나 입고 싶은 스타일을 자연어로 물어보세요. (옷장 인벤토리 기반 로컬 룰 응답)</p>
+      </div>
+    </div>
+    <form id="chatOutfitForm" style="display:flex;gap:8px;margin-bottom:12px">
+      <input id="chatOutfitInput" placeholder="예: 오늘 비 오는데 학교 갈 옷 추천해줘 / 발표할 때 입을 단정한 코디" style="flex:1">
+      <button type="submit" style="white-space:nowrap;padding:10px 18px">질문하기</button>
+    </form>
+    <div id="chatAssistantResponse" style="display:none;background:#f8faf8;border:1px solid #e2e8e2;border-radius:12px;padding:14px"></div>
+  </article>
+</section>
 <section id="history" class="view" hidden><h2>이벤트 기록</h2><ol id="allEvents" class="events panel"></ol></section>
-<section id="setup" class="view" hidden><h2>설정과 진단</h2><div id="diagnostics" class="diag"></div><article class="panel"><h3>게이트웨이 연결 정보</h3><p>펌웨어의 <code>config.h</code>에 서버 URL과 DEVICE_TOKEN을 동일하게 설정하세요. 비밀번호와 토큰은 Git에 올리지 마세요.</p></article></section></main></div>
-<dialog id="garmentDialog"><form id="garmentForm"><div class="title"><h2>새 옷 등록</h2><button type="button" id="closeDialog" class="ghost">닫기</button></div><label>옷 이름<input name="name" required placeholder="예: 네이비 셔츠"></label><label>NTAG213 UID<input name="tagUid" required placeholder="예: 04 A1 B2 C3 D4 E5 F6"></label><div class="form2"><label>분류<input name="category" placeholder="셔츠"></label><label>색상<input name="color" placeholder="네이비"></label><label>계절<input name="season" placeholder="봄/가을"></label><label>브랜드<input name="brand"></label></div><label>사진 URL<input name="imageUrl" type="url"></label><label>메모<textarea name="memo"></textarea></label><button>등록</button><p id="formError" class="error"></p></form></dialog><div id="toast"></div><script src="/app.js"></script></body></html>
+<section id="setup" class="view" hidden><h2>설정과 진단</h2><div id="diagnostics" class="diag"></div><article class="panel"><h3>게이트웨이 연결 정보</h3><p>펌웨어의 <code>config.h</code>에 서버 URL과 DEVICE_TOKEN을 동일하게 설정하세요. 비밀번호와 토큰은 Git에 올리지 마세요.</p></article></section>
+<section id="simulation" class="view" hidden><div class="title"><div><h2>가상 하드웨어 시뮬레이터 <span class="pill" style="background:#eaf6ee;color:#218451;font-weight:700">DEV / TEST</span></h2><p>실제 ESP-NOW 게이트웨이 HTTP 통신 경계를 통과하여 가상 옷걸이의 NFC 태그 및 ACK를 조작합니다.</p></div><div style="display:flex;gap:8px"><button id="simRefresh" class="ghost" style="color:var(--ink);border:1px solid #cbd4cd">새로고침</button><button id="simResetBtn" class="ghost" style="color:var(--red);border:1px solid #e78e88">시뮬레이션 데이터 초기화</button></div></div><div id="simCards" class="cards wide"></div>
+  <!-- 수동 다중 선택 코디/옷걸이 제어 테스트 (Developer / Test) -->
+  <div class="title" style="margin-top:28px">
+    <div>
+      <h3>다중 타깃 LED 동시 제어 테스트 <span class="pill" style="background:#eaf6ee;color:#218451;font-size:11px">DEV ONLY</span></h3>
+      <p style="font-size:12px;color:#688075">옷장 안의 옷을 복수 선택하여 다중 옷걸이 동시 점멸 및 소등 명령을 검증합니다.</p>
+    </div>
+    <button id="multiFind" style="padding:8px 16px;font-size:13px">선택한 옷걸이 동시 점멸</button>
+  </div>
+  <div id="outfitCards" class="cards wide"></div>
+</section></main></div>
+<dialog id="garmentDialog"><form id="garmentForm"><div class="title"><h2>새 옷 등록</h2><button type="button" id="closeDialog" class="ghost">닫기</button></div><label>옷 이름<input name="name" id="garmentName" placeholder="예: 네이비 셔츠"></label><label>최근 감지된 미등록 옷 태그 (선택 시 자동 입력)<small class="muted" style="display:block;font-weight:400;margin-top:2px">스마트 옷걸이가 감지했지만 아직 옷에 등록되지 않은 NFC 태그</small><select id="detectedTagSelect" style="font-size:13px;padding:8px;margin-top:4px"><option value="">-- 감지된 옷 태그 없음 --</option></select></label><label>NTAG213 UID (옷 태그 직접 입력 / 자동 채움)<input name="tagUid" id="garmentUid" placeholder="예: 04 A1 B2 C3 D4 E5 F6"></label><div class="form2"><label>분류 (검색 및 직접입력)<div class="combobox-wrap" id="cb_category"><input name="category" id="garmentCategory" placeholder="예: 셔츠" autocomplete="off"><button type="button" class="combobox-arrow" tabindex="-1">▾</button><div class="combobox-dropdown" hidden></div></div></label><label>색상 (검색 및 직접입력)<div class="combobox-wrap" id="cb_color"><input name="color" id="garmentColor" placeholder="예: 네이비" autocomplete="off"><button type="button" class="combobox-arrow" tabindex="-1">▾</button><div class="combobox-dropdown" hidden></div></div></label><label>계절 (검색 및 직접입력)<div class="combobox-wrap" id="cb_season"><input name="season" id="garmentSeason" placeholder="예: 봄/가을" autocomplete="off"><button type="button" class="combobox-arrow" tabindex="-1">▾</button><div class="combobox-dropdown" hidden></div></div></label><label>브랜드 (검색 및 직접입력)<div class="combobox-wrap" id="cb_brand"><input name="brand" id="garmentBrand" placeholder="예: 무신사" autocomplete="off"><button type="button" class="combobox-arrow" tabindex="-1">▾</button><div class="combobox-dropdown" hidden></div></div></label></div><label>사진 URL<input name="imageUrl" type="url"></label><label>메모<textarea name="memo"></textarea></label><button id="garmentSubmit">등록</button><p id="formError" class="error"></p><div id="garmentSuccess" class="auth-success" style="display:none">✓ 옷 등록 완료</div></form></dialog><div id="toast"></div><script src="/recommendation.js"></script><script src="/app.js"></script></body></html>
