@@ -199,3 +199,45 @@
   - 분리 후 30초 경과 시 서버 및 앱 화면에 **`OFFLINE (연결 끊김)`** 배지 정상 표시.
   - 다시 거치 시 1초 이내에 C6 부팅 후 상태를 재보고하여 **`PRESENT / IN_WARDROBE`**로 완벽 자동 복구.
 - **태그**: `REQUIRES_PHYSICAL_TEST`
+
+---
+
+## 4. 실물 하드웨어 연동 현황 요약 (Physical Verification Status — Pre-NTAG Freeze)
+
+### ✅ 실물 검증 완료 항목 (Hardware Verified PASS)
+1. **PN532 ↔ XIAO ESP32-C6 I2C 통신**:
+   - I2C Address: `0x24`
+   - PN532 DIP Switch: `1=ON (위), 2=OFF (아래)` (I2C 모드)
+   - 결선: VCC (3.3V, 모듈 사양 확인), GND, SDA (D4 / GPIO22), SCL (D5 / GPIO23), IRQ (D2 / GPIO2), RSTO (D3 / GPIO21)
+   - 펌웨어 응답: `0x32010607` 정상 수신 및 `[NFC] READY` 확인.
+2. **C6 ↔ S3 ESP-NOW 2.4GHz 무선 RF 통신**:
+   - Hanger ID: `HC-62F2A0` (XIAO ESP32-C6 MAC 기반)
+   - Gateway ID: `GW-D4DB1C` (XIAO ESP32-S3 MAC 기반)
+   - 연속 패킷 수신 및 단조 증가 시퀀스 확인.
+3. **Gateway 2.4GHz Wi-Fi 연동 및 동적 채널 동기화**:
+   - Gateway가 접속한 Wi-Fi AP 채널(예: Channel 11)을 Beacon `errorFlags`에 담아 송출.
+   - C6가 채널 스위핑 중 Gateway Beacon을 감지하면 즉시 해당 채널로 라디오를 동기화(`[CHANNEL] locked to Gateway ch=11`)하고 NVRAM에 저장.
+4. **Gateway ➔ Backend HTTP 200 상태 업로드**:
+   - `POST /api/gateway/status` 성공 (`[CLOUD] HC-62F2A0 OK`).
+   - 백엔드 스냅샷에 `HC-62F2A0`가 **ONLINE + EMPTY** 상태로 정상 등록.
+5. **양방향 FIND / LED 점멸 / ACK / LED_OFF 제어**:
+   - Web/API ➔ S3 ➔ C6 ➔ 온보드 LED(GPIO 15) 및 외장 LED(D1) 2Hz 토글 점멸 확인.
+   - C6 ➔ S3 ➔ Backend `POST /api/gateway/ack` ➔ Backend `status: ACKED` (0.0~0.5초 완료).
+   - `LED_OFF` 명령 즉시 소등 및 `ACKED` 확인.
+6. **전원 복구 및 라이프사이클**:
+   - C6 전원 차단 시 정확히 30초 후 `OFFLINE` 전환.
+   - C6 전원 인가 시 1.0초 만에 `ONLINE + EMPTY` 자동 복구.
+   - 부팅 순서(S3 먼저/C6 먼저)와 무관하게 100% 무인 자동 수렴.
+7. **연속 안정성 (Soak Test)**:
+   - 120초 연속 테스트: Heartbeat 19회 전송 / 19회 백엔드 수신 (100% 성공, 0 Crash, 0 Reset).
+
+---
+
+### ⏳ 실물 NTAG213 도착 후 검증 대기 항목 (Pending Real NTAG213 Tags)
+- [ ] 실물 NTAG213 14자리 HEX UID 판독 (`04...`)
+- [ ] 물리 의류 거치 시 `PRESENT` 및 `IN_WARDROBE` 상태 확정
+- [ ] 물리 의류 탈착 시 `EMPTY` 및 `OUT` 상태 복귀
+- [ ] 물리 감지 거리 실측 (안정 감지 0.5cm ~ 2.0cm)
+- [ ] 인접 옷걸이 오인식 차단 한계 실측 (3.0cm 이상 차단)
+- [ ] 원단(면/울/폴리) 및 의류 두께별 투과 감도 측정
+- [ ] 태그 부착 각도(0°~45°)별 인식 안정성 검증

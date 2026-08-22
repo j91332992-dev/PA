@@ -7,4 +7,8 @@ data/*.tmp
 .pio/
 dist/
 *.pdf
+tools/background-removal-demo/.venv/
+tools/background-removal-demo/.models/
+tools/background-removal-demo/__pycache__/
+data/garment-images/
 

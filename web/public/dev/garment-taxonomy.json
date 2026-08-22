@@ -1,0 +1,51 @@
+{
+  "categories": [
+    { "label": "티셔츠", "prompt": "a t-shirt" },
+    { "label": "셔츠", "prompt": "a shirt" },
+    { "label": "니트", "prompt": "a knit sweater" },
+    { "label": "후드티", "prompt": "a hoodie" },
+    { "label": "맨투맨", "prompt": "a sweatshirt" },
+    { "label": "블라우스", "prompt": "a blouse" },
+    { "label": "가디건", "prompt": "a cardigan" },
+    { "label": "자켓", "prompt": "a jacket" },
+    { "label": "코트", "prompt": "a coat" },
+    { "label": "패딩", "prompt": "a puffer jacket" },
+    { "label": "조끼", "prompt": "a vest" },
+    { "label": "청바지", "prompt": "a pair of jeans" },
+    { "label": "슬랙스", "prompt": "a pair of dress pants" },
+    { "label": "면바지", "prompt": "a pair of cotton pants" },
+    { "label": "반바지", "prompt": "a pair of shorts" },
+    { "label": "스커트", "prompt": "a skirt" },
+    { "label": "원피스", "prompt": "a dress" },
+    { "label": "트레이닝복", "prompt": "a tracksuit" },
+    { "label": "정장", "prompt": "a suit" },
+    { "label": "기타", "prompt": "a generic item of clothing" }
+  ],
+  "colors": [
+    { "label": "블랙", "prompt": "a black garment" },
+    { "label": "화이트", "prompt": "a white garment" },
+    { "label": "그레이", "prompt": "a gray garment" },
+    { "label": "네이비", "prompt": "a navy garment" },
+    { "label": "블루", "prompt": "a blue garment" },
+    { "label": "베이지", "prompt": "a beige garment" },
+    { "label": "브라운", "prompt": "a brown garment" },
+    { "label": "카키", "prompt": "a khaki garment" },
+    { "label": "그린", "prompt": "a green garment" },
+    { "label": "레드", "prompt": "a red garment" },
+    { "label": "핑크", "prompt": "a pink garment" },
+    { "label": "퍼플", "prompt": "a purple garment" },
+    { "label": "옐로우", "prompt": "a yellow garment" },
+    { "label": "오렌지", "prompt": "an orange garment" },
+    { "label": "멀티컬러", "prompt": "a multicolored garment" },
+    { "label": "기타", "prompt": "a garment with another color" }
+  ],
+  "seasons": [
+    { "label": "봄", "prompt": "clothing suitable for spring" },
+    { "label": "여름", "prompt": "clothing suitable for summer" },
+    { "label": "가을", "prompt": "clothing suitable for autumn" },
+    { "label": "겨울", "prompt": "clothing suitable for winter" },
+    { "label": "봄/가을", "prompt": "clothing suitable for spring and autumn" },
+    { "label": "가을/겨울", "prompt": "clothing suitable for autumn and winter" },
+    { "label": "사계절", "prompt": "clothing suitable for all seasons" }
+  ]
+}

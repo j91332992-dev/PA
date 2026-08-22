@@ -32,7 +32,7 @@
 | **SDA** | `PIN_SDA` | `D4` | `GPIO 22` | SDA | I2C Data Line (양방향 오픈드레인) |
 | **SCL** | `PIN_SCL` | `D5` | `GPIO 23` | SCL | I2C Clock Line (100kHz) |
 | **IRQ** | `PN532_IRQ` | `D2` | `GPIO 2` | IRQ (P70_IRQ) | 인터럽트 신호선 (데이터 준비 완료 알림) |
-| **RST** | `PN532_RESET` | `D3` | `GPIO 3` | RSTPD_N / RST | 하드웨어 리셋 신호선 (Active Low) |
+| **RST** | `PN532_RESET` | `D3` | `GPIO 21` | RSTPD_N / RSTO | 하드웨어 리셋 신호선 (Active Low) |
 | **LED** | `PIN_LED` | `D1` | `GPIO 1` | - | 옷걸이 찾기 인디케이터 LED |
 
 ---

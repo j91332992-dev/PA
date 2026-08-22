@@ -11,6 +11,18 @@ let token = localStorage.getItem('wardrobeToken'),
   currentWeather = null,
   weatherCache = {};
 
+const BLE_SERVICE_UUID = 'a4e66a10-0fb0-4dce-8be0-18cf7bc82001'; // 옷봉
+const BLE_CONFIG_UUID = 'a4e66a11-0fb0-4dce-8be0-18cf7bc82001';
+const BLE_STATUS_UUID = 'a4e66a12-0fb0-4dce-8be0-18cf7bc82001';
+const HANGER_BLE_SERVICE_UUID = 'a4e66a20-0fb0-4dce-8be0-18cf7bc82001';
+const HANGER_BLE_CONFIG_UUID = 'a4e66a21-0fb0-4dce-8be0-18cf7bc82001';
+const HANGER_BLE_STATUS_UUID = 'a4e66a22-0fb0-4dce-8be0-18cf7bc82001';
+let bleConfigCharacteristic = null;
+let nearbyWifiNetworks = [];
+let hangerBleConfigCharacteristic = null;
+const ROD_RECONNECT_WINDOW_MS = 30000;
+let rodReconnectStartedAt = Number(sessionStorage.getItem('wardrobeRodReconnectStartedAt') || 0);
+
 const CITY_COORDS = {
   seoul: { name: '서울', lat: 37.5665, lon: 126.978 },
   busan: { name: '부산', lat: 35.1796, lon: 129.0756 },
@@ -24,6 +36,29 @@ const CITY_COORDS = {
 const $ = s => document.querySelector(s),
   $$ = s => [...document.querySelectorAll(s)],
   esc = s => String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function hangerDisplayName(hanger) {
+  if (!hanger) return '옷걸이';
+  if (hanger.alias && hanger.alias !== hanger.hangerId && !/^HC-/i.test(hanger.alias)) return hanger.alias;
+  if (/^HC-00000[1-5]$/i.test(hanger.hangerId || '')) return hanger.alias || hanger.hangerId;
+  const physical = (model.hangers || [])
+    .filter(item => !/^HC-00000[1-5]$/i.test(item.hangerId || ''))
+    .sort((a, b) => Date.parse(a.createdAt || a.lastSeen || 0) - Date.parse(b.createdAt || b.lastSeen || 0));
+  const number = Math.max(0, physical.findIndex(item => item.hangerId === hanger.hangerId)) + 1;
+  return `${number || 1}번 옷걸이`;
+}
+
+function garmentNameForTag(tagUid) {
+  return (model.garments || []).find(garment => garment.tagUid === tagUid)?.name || '';
+}
+
+function hangerClothingStatus(hanger) {
+  if (hanger?.reportedState === 'PRESENT' && hanger.tagUid) {
+    const name = garmentNameForTag(hanger.tagUid);
+    return name ? `옷 감지됨 · ${name}` : '새 옷 감지됨 · 옷 목록에서 이름을 등록하세요';
+  }
+  return '걸린 옷 없음';
+}
 
 // ----------------- Korean State Label Helper -----------------
 function getKoreanState(state) {
@@ -790,7 +825,7 @@ window.deleteGarment = async (id, name) => {
 function render() {
   const h = model.hangers || [],
     g = model.garments || [],
-    online = (model.gateways || []).some(x => Date.now() - Date.parse(x.lastSeen || 0) < 30000),
+    online = physicalGatewayStatus().online,
     counts = [
       ['전체 옷', g.length],
       ['옷장 안', g.filter(x => x.currentState === 'IN_WARDROBE').length],
@@ -872,18 +907,18 @@ function render() {
 
         return `<article class="card ${isLedOn ? 'led-on' : ''}">
           <div style="display:flex;justify-content:space-between;align-items:center">
-            <h3>${esc(x.alias || x.hangerId)}</h3>
+            <h3>${esc(hangerDisplayName(x))}</h3>
             <div>
               <span class="pill ${x.state}">${getKoreanState(x.state)}</span>
               ${isLedOn ? '<span class="sim-led-badge on" style="margin-left:4px">💡 LED 점멸 중</span>' : ''}
             </div>
           </div>
           ${stateDesc}
-          <p style="margin:6px 0">UID: <b>${esc(x.tagUid || '없음')}</b></p>
+          <p style="margin:6px 0"><b>${esc(hangerClothingStatus(x))}</b></p>
           <small class="muted">
             상태: <b>${isOnline ? '🟢 온라인' : '🔴 연결 끊김'}</b> · 채널 ${x.channel || '-'} · RSSI ${x.rssi || '-'}<br>
             ${x.lastSeen ? new Date(x.lastSeen).toLocaleString() : '신호 없음'}<br>
-            FW ${esc(x.firmwareVersion)} · Seq ${x.lastSequence || 0}
+            진단 ID ${esc(x.hangerId)} · FW ${esc(x.firmwareVersion)}
           </small>
           ${
             isLedOn
@@ -932,6 +967,9 @@ function render() {
     .map(x => `<article class="panel"><small>${x[0]}</small><h3>${x[1]}</h3></article>`)
     .join('');
 
+  renderGatewayWifiHelp();
+  renderHangerConnectionHelp();
+
   $$('.selectable').forEach(
     x =>
       (x.onclick = () => {
@@ -963,6 +1001,22 @@ function connect() {
     const m = JSON.parse(e.data);
     if (m.type === 'snapshot') {
       model = m.payload;
+      render();
+    } else if (m.type === 'hanger.state') {
+      const h = m.payload;
+      const idx = (model.hangers || []).findIndex(x => x.hangerId === h.hangerId);
+      if (idx >= 0) model.hangers[idx] = h;
+      else (model.hangers = model.hangers || []).push(h);
+      // WebSocket events do not arrive through refresh(), so keep the recent
+      // event feed in sync with the same live state update.
+      model.events = model.events || [];
+      model.events.unshift({ type: 'hanger.state', payload: h, at: m.at || new Date().toISOString() });
+      model.events = model.events.slice(0, 1000);
+      for (const g of (model.garments || [])) {
+        const found = (model.hangers || []).find(x => x.tagUid === g.tagUid && x.state === 'PRESENT');
+        g.currentState = found ? 'IN_WARDROBE' : 'OUT';
+        g.currentHanger = found ? found.hangerId : null;
+      }
       render();
     } else {
       refresh();
@@ -1352,6 +1406,126 @@ $('#authForm').onsubmit = async e => {
   }
 };
 
+let garmentPhotoObjectUrl = '';
+let garmentPhotoRequestId = 0;
+
+function uploadGarmentPhoto(path, formData) {
+  return fetch(path, {
+    method: 'POST',
+    headers: token ? { authorization: 'Bearer ' + token } : {},
+    body: formData,
+  }).then(async response => {
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw Error(payload.error || `HTTP ${response.status}`);
+    return payload;
+  });
+}
+
+function resetGarmentPhoto() {
+  garmentPhotoRequestId += 1;
+  if (garmentPhotoObjectUrl) URL.revokeObjectURL(garmentPhotoObjectUrl);
+  garmentPhotoObjectUrl = '';
+  const imageInput = $('#garmentImageUrl');
+  const fileInput = $('#garmentPhotoFile');
+  const preview = $('#garmentPhotoPreview');
+  const status = $('#garmentPhotoStatus');
+  if (imageInput) imageInput.value = '';
+  if (fileInput) fileInput.value = '';
+  if (preview) { preview.hidden = true; preview.querySelector('img').removeAttribute('src'); }
+  if (status) { status.className = 'garment-photo-status'; status.textContent = '사진을 선택하면 배경을 제거하고 옷 정보를 추천합니다.'; }
+}
+
+function applyGarmentClassification(result) {
+  const predicted = result?.predictions || {};
+  const category = predicted.category?.top || '';
+  const color = predicted.color?.top || '';
+  const season = predicted.season?.top || '';
+  if (category) $('#garmentCategory').value = category;
+  if (color) $('#garmentColor').value = color;
+  if (season) $('#garmentSeason').value = season;
+  const name = $('#garmentName');
+  if (name && !name.value.trim() && (color || category)) name.value = [color, category].filter(Boolean).join(' ');
+}
+
+function setupGarmentPhotoField() {
+  const form = $('#garmentForm');
+  const urlInput = form?.querySelector('input[name="imageUrl"]');
+  if (!form || !urlInput || $('#garmentPhotoField')) return;
+  urlInput.id = 'garmentImageUrl';
+  // Processed photos use a same-site path (/api/garments/images/...).
+  // Keep that value in the submitted form, but do not apply the browser's
+  // absolute-URL validation to this internal storage path.
+  urlInput.type = 'hidden';
+  const oldLabel = urlInput.closest('label');
+  oldLabel.hidden = true;
+  const field = document.createElement('section');
+  field.id = 'garmentPhotoField';
+  field.className = 'garment-photo-field';
+  field.innerHTML = `<b>옷 사진 <small class="muted">선택 사항</small></b><div class="garment-photo-controls"><input id="garmentPhotoFile" type="file" accept="image/jpeg,image/png,image/webp" hidden><button type="button" id="garmentPhotoChoose" class="photo-secondary">사진 선택</button><span id="garmentPhotoStatus" class="garment-photo-status">사진을 선택하면 배경을 제거하고 옷 정보를 추천합니다.</span></div><div id="garmentPhotoPreview" class="garment-photo-preview" hidden><img alt="배경이 제거된 옷 사진"><button type="button" id="garmentPhotoClear" class="photo-secondary">사진 제거</button></div><p class="muted garment-photo-note">사진은 이 PC의 로컬 AI로 처리됩니다. 자동 추천값은 언제든 수정할 수 있습니다.</p>`;
+  // Keep the photo immediately after the dialog title and before the garment name.
+  const dialogTitle = form.querySelector(':scope > .title');
+  if (dialogTitle) dialogTitle.after(field);
+  else form.prepend(field);
+  const fileInput = $('#garmentPhotoFile');
+  $('#garmentPhotoChoose').onclick = () => fileInput.click();
+  $('#garmentPhotoClear').onclick = resetGarmentPhoto;
+  fileInput.onchange = async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    if (!/^image\/(jpeg|png|webp)$/.test(file.type) || file.size > 12 * 1024 * 1024) {
+      $('#garmentPhotoStatus').textContent = 'JPG, PNG, WEBP 형식의 12MB 이하 사진을 선택해주세요.';
+      $('#garmentPhotoStatus').className = 'garment-photo-status is-error';
+      return;
+    }
+    if (garmentPhotoObjectUrl) URL.revokeObjectURL(garmentPhotoObjectUrl);
+    garmentPhotoObjectUrl = URL.createObjectURL(file);
+    const preview = $('#garmentPhotoPreview');
+    preview.querySelector('img').src = garmentPhotoObjectUrl;
+    preview.hidden = false;
+    const status = $('#garmentPhotoStatus');
+    status.textContent = '배경 제거와 옷 정보 분석을 준비 중입니다. 처음 한 번은 모델 준비에 시간이 걸릴 수 있습니다.';
+    status.className = 'garment-photo-status is-working';
+    const buildData = () => { const data = new FormData(); data.append('image', file, file.name); return data; };
+    const requestId = ++garmentPhotoRequestId;
+    const imageRequest = uploadGarmentPhoto('/api/garments/image', buildData());
+    const classifyRequest = uploadGarmentPhoto('/api/garments/classify', buildData());
+    let imageReady = false;
+    let classificationReady = false;
+    imageRequest.then(result => {
+      if (requestId !== garmentPhotoRequestId) return;
+      imageReady = true;
+      $('#garmentImageUrl').value = result.imageUrl;
+      preview.querySelector('img').src = result.imageUrl;
+      status.textContent = classificationReady
+        ? '배경 제거 완료 · 종류, 색상, 계절 추천값을 입력했습니다.'
+        : '배경 제거 완료 · 옷 정보를 분석 중입니다. 기다리지 않고 아래 정보를 직접 입력하거나 등록할 수 있습니다.';
+      status.className = 'garment-photo-status is-ready';
+    }).catch(error => {
+      if (requestId !== garmentPhotoRequestId) return;
+      status.textContent = error.message || '배경 제거에 실패했습니다. 다시 시도해주세요.';
+      status.className = 'garment-photo-status is-error';
+    });
+    classifyRequest.then(result => {
+      if (requestId !== garmentPhotoRequestId) return;
+      classificationReady = true;
+      applyGarmentClassification(result);
+      status.textContent = imageReady
+        ? '배경 제거 완료 · 종류, 색상, 계절 추천값을 입력했습니다.'
+        : '옷 정보 추천을 완료했습니다. 배경 제거 결과를 기다리는 중입니다.';
+      status.className = 'garment-photo-status is-ready';
+    }).catch(error => {
+      if (requestId !== garmentPhotoRequestId || !imageReady) return;
+      status.textContent = '배경 제거는 완료됐습니다. 옷 정보는 직접 입력해주세요.';
+      status.className = 'garment-photo-status is-ready';
+    });
+  };
+}
+
+const garmentPhotoStyle = document.createElement('style');
+garmentPhotoStyle.textContent = '.garment-photo-field{margin:14px 0;padding:13px;border:1px solid #d8e5dc;border-radius:12px;background:#f8fbf8}.garment-photo-controls{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:8px}.photo-secondary{padding:8px 11px;background:#eef7f0;color:var(--ink);border:1px solid #9fbcaa;font-size:13px}.garment-photo-status{font-size:12px;color:#708078}.garment-photo-status.is-working{color:var(--amber)}.garment-photo-status.is-ready{color:#218451}.garment-photo-status.is-error{color:var(--red)}.garment-photo-preview{display:flex;gap:12px;align-items:center;margin-top:12px;padding:9px;border:1px solid #d8e5dc;border-radius:10px;background:#fff}.garment-photo-preview img{width:88px;height:112px;object-fit:contain;border-radius:7px;background:#e8eee8}.garment-photo-note{font-size:11px;margin:9px 0 0}';
+document.head.append(garmentPhotoStyle);
+setupGarmentPhotoField();
+
 $$('[data-open-garment]').forEach(x =>
   (x.onclick = () => {
     const formErr = $('#formError');
@@ -1360,6 +1534,7 @@ $$('[data-open-garment]').forEach(x =>
     if (successBox) successBox.style.display = 'none';
     const form = $('#garmentForm');
     if (form) form.reset();
+    resetGarmentPhoto();
     updateDetectedTags();
     $('#garmentDialog').showModal();
   })
@@ -1548,6 +1723,375 @@ $('#logout').onclick = () => {
   showAuth();
 };
 
+function setBleSetupMessage(message, error = false) {
+  const target = $('#bleSetupMessage');
+  if (!target) return;
+  target.textContent = message;
+  target.className = error ? 'error' : 'muted';
+}
+
+function bleErrorMessage(error, action) {
+  const detail = String(error?.message || '알 수 없는 블루투스 오류');
+  if (/GATT operation failed|Unknown reason|NetworkError/i.test(detail)) {
+    return `${action} 중 옷봉과의 블루투스 연결이 끊겼습니다. 옷봉 전원을 켠 채 PC 가까이에 두고, 옷봉 찾기부터 다시 해주세요.`;
+  }
+  if (/NotFoundError|cancel/i.test(detail)) return '블루투스 기기 선택이 취소되었습니다. 옷봉 찾기를 다시 눌러 주세요.';
+  if (/NotSupported|secure context/i.test(detail)) return '이 기능은 Bluetooth가 켜진 PC Chrome에서 http://localhost:8787 로 열어야 합니다.';
+  return `${action} 실패: ${detail}`;
+}
+
+function escapeWifiLabel(value) {
+  return String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+}
+
+function renderNearbyWifiChoices() {
+  const select = $('#nearbyWifiChoices');
+  if (!select) return;
+  const selected = select.value;
+  select.innerHTML = '<option value="">2.4 GHz Wi-Fi를 선택하세요</option>' + nearbyWifiNetworks
+    .map(network => `<option value="${escapeWifiLabel(network.ssid)}">${escapeWifiLabel(network.ssid)} · 신호 ${network.rssi} dBm · 채널 ${network.channel}</option>`)
+    .join('');
+  if (nearbyWifiNetworks.some(network => network.ssid === selected)) select.value = selected;
+}
+
+async function scanHangerWifi() {
+  if (!bleConfigCharacteristic) return setBleSetupMessage('먼저 옷봉을 블루투스로 연결하세요.', true);
+  nearbyWifiNetworks = [];
+  renderNearbyWifiChoices();
+  setBleSetupMessage('옷봉이 주변 2.4 GHz Wi-Fi를 검색 중입니다. 잠시 기다려 주세요.');
+  try {
+    const payload = new TextEncoder().encode(JSON.stringify({ action: 'scan' }));
+    if (typeof bleConfigCharacteristic.writeValueWithResponse === 'function') await bleConfigCharacteristic.writeValueWithResponse(payload);
+    else await bleConfigCharacteristic.writeValue(payload);
+  } catch (error) {
+    setBleSetupMessage(bleErrorMessage(error, 'Wi-Fi 검색 요청'), true);
+  }
+}
+
+async function connectHangerBluetooth() {
+  if (!navigator.bluetooth || !window.isSecureContext) {
+    setBleSetupMessage('이 기능은 블루투스가 켜진 Chrome에서 http://localhost:8787 로 열어야 합니다.', true);
+    return;
+  }
+  const button = $('#connectHangerBle');
+  if (button) {
+    button.disabled = true;
+    button.textContent = '옷봉 찾는 중… 잠시만 기다려 주세요';
+  }
+  try {
+    setBleSetupMessage('목록에서 Wardrobe-Rod(옷봉)를 선택하세요.');
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'Wardrobe-Rod' }],
+      optionalServices: [BLE_SERVICE_UUID],
+    });
+    const gatt = await device.gatt.connect();
+    const service = await gatt.getPrimaryService(BLE_SERVICE_UUID);
+    bleConfigCharacteristic = await service.getCharacteristic(BLE_CONFIG_UUID);
+    const status = await service.getCharacteristic(BLE_STATUS_UUID);
+    await status.startNotifications();
+    status.addEventListener('characteristicvaluechanged', event => {
+      try {
+        const text = new TextDecoder().decode(event.target.value);
+        const info = JSON.parse(text);
+        if (info.state === 'network' && info.ssid) {
+          if (!nearbyWifiNetworks.some(network => network.ssid === info.ssid)) {
+            nearbyWifiNetworks.push(info);
+            renderNearbyWifiChoices();
+          }
+          return;
+        }
+        setBleSetupMessage(info.message || '옷봉 상태를 받았습니다.', info.state === 'error');
+      } catch (_) {}
+    });
+    $('#bleDeviceName').textContent = `${device.name || '옷봉'} 연결됨`;
+    $('#bleWifiForm').hidden = false;
+    await scanHangerWifi();
+  } catch (error) {
+    setBleSetupMessage(bleErrorMessage(error, '옷봉 연결'), true);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '옷봉 찾기';
+    }
+  }
+}
+
+async function saveHangerWifi(event) {
+  event.preventDefault();
+  if (!bleConfigCharacteristic) return setBleSetupMessage('먼저 옷봉을 블루투스로 연결하세요.', true);
+  const form = new FormData(event.currentTarget);
+  const ssid = String(form.get('ssid') || '').trim();
+  const password = String(form.get('password') || '');
+  const server = String(form.get('server') || '').trim();
+  if (!ssid || !server.startsWith('http')) return setBleSetupMessage('목록에서 2.4 GHz Wi-Fi를 선택하고 서버 주소를 확인하세요.', true);
+  try {
+    const payload = new TextEncoder().encode(JSON.stringify({ ssid, password, server }));
+    if (typeof bleConfigCharacteristic.writeValueWithResponse === 'function') {
+      await bleConfigCharacteristic.writeValueWithResponse(payload);
+    } else {
+      await bleConfigCharacteristic.writeValue(payload);
+    }
+    setBleSetupMessage('설정을 저장했습니다. 옷봉이 재시작되어 Wi-Fi와 웹 서버에 연결됩니다.');
+    rodReconnectStartedAt = Date.now();
+    sessionStorage.setItem('wardrobeRodReconnectStartedAt', String(rodReconnectStartedAt));
+    $('#bleWifiForm').hidden = true;
+    $('#scanHangerWifi').hidden = true;
+    $('#connectHangerBle').hidden = true;
+    $('#bleSetupComplete').hidden = false;
+    renderGatewayWifiHelp();
+    window.setTimeout(() => $('#gatewayWifiDialog')?.close(), 2500);
+  } catch (error) {
+    setBleSetupMessage(bleErrorMessage(error, 'Wi-Fi 정보 저장'), true);
+  }
+}
+
+async function forgetHangerWifi() {
+  if (!bleConfigCharacteristic) return setBleSetupMessage('먼저 옷봉을 블루투스로 연결하세요.', true);
+  if (!window.confirm('옷봉에 저장된 Wi-Fi 연결을 제거할까요? 제거하면 옷봉은 오프라인이 되고, 다시 블루투스로 연결해야 합니다.')) return;
+  try {
+    const payload = new TextEncoder().encode(JSON.stringify({ action: 'forget' }));
+    if (typeof bleConfigCharacteristic.writeValueWithResponse === 'function') await bleConfigCharacteristic.writeValueWithResponse(payload);
+    else await bleConfigCharacteristic.writeValue(payload);
+    setBleSetupMessage('옷봉 Wi-Fi 연결을 제거했습니다. 옷봉이 재시작됩니다.');
+    rodReconnectStartedAt = 0;
+    sessionStorage.removeItem('wardrobeRodReconnectStartedAt');
+    $('#bleWifiForm').hidden = true;
+    $('#scanHangerWifi').hidden = true;
+    $('#forgetHangerWifi').hidden = true;
+    window.setTimeout(() => $('#gatewayWifiDialog')?.close(), 2500);
+  } catch (error) {
+    setBleSetupMessage(bleErrorMessage(error, '옷봉 연결 제거'), true);
+  }
+}
+
+function physicalHangerStatus() {
+  const physical = (model.hangers || []).filter(h => !String(h.hangerId || '').startsWith('HC-000'));
+  const hanger = physical.sort((a, b) => Date.parse(b.lastSeen || 0) - Date.parse(a.lastSeen || 0))[0];
+  const age = hanger ? Date.now() - Date.parse(hanger.lastSeen || 0) : Infinity;
+  return { hanger, online: !!hanger && age < 30000 };
+}
+
+function setHangerBleMessage(message, error = false) {
+  const target = $('#hangerBleMessage');
+  if (!target) return;
+  target.textContent = message;
+  target.className = error ? 'error' : 'muted';
+}
+
+function showHangerBleStatus(info) {
+  const detail = $('#hangerBleDetail');
+  if (!detail) return;
+  detail.hidden = false;
+  const nfc = info.nfcReady ? '정상 준비됨' : '준비 중 또는 결선 확인 필요';
+  const garment = garmentNameForTag(info.tagUid);
+  const tag = info.tagPresent && info.tagUid ? (garment ? `옷 감지됨 · ${garment}` : '새 옷 감지됨 · 옷 목록에서 이름을 등록하세요') : '걸린 옷 없음';
+  const gateway = info.gatewayId ? '정상 통신 중' : (info.discoveredGatewayId ? '옷봉 신호 확인됨' : '옷봉 신호 탐색 중');
+  const linked = info.gatewayId ? '내 옷봉에 등록됨' : '아직 등록되지 않음';
+  const knownHanger = (model.hangers || []).find(item => item.hangerId === info.hangerId);
+  detail.innerHTML = `<p><b>BLE:</b> 이 PC와 연결됨</p><p><b>옷걸이:</b> ${esc(hangerDisplayName(knownHanger || { hangerId: info.hangerId }))}</p><p><b>내 옷봉 등록:</b> ${esc(linked)} · <b>ESP-NOW:</b> ${esc(gateway)}</p><p><b>PN532 리더:</b> ${nfc}</p><p><b>옷 상태:</b> ${esc(tag)}</p><small class="muted">진단 ID: ${esc(info.hangerId || '-')} · 옷봉 ID: ${esc(info.gatewayId || info.discoveredGatewayId || '-')}</small>`;
+}
+
+function handleHangerBleStatus(value) {
+  try {
+    const info = JSON.parse(new TextDecoder().decode(value));
+    setHangerBleMessage(info.message || '옷걸이 상태를 받았습니다.', info.state === 'error');
+    showHangerBleStatus(info);
+  } catch (_) {
+    setHangerBleMessage('옷걸이 상태를 읽지 못했습니다.', true);
+  }
+}
+
+async function writeHangerBle(action) {
+  if (!hangerBleConfigCharacteristic) return setHangerBleMessage('먼저 옷걸이를 블루투스로 연결하세요.', true);
+  try {
+    const payload = new TextEncoder().encode(JSON.stringify({ action }));
+    if (typeof hangerBleConfigCharacteristic.writeValueWithResponse === 'function') await hangerBleConfigCharacteristic.writeValueWithResponse(payload);
+    else await hangerBleConfigCharacteristic.writeValue(payload);
+  } catch (error) {
+    setHangerBleMessage(bleErrorMessage(error, '옷걸이 요청'), true);
+  }
+}
+
+async function connectPhysicalHangerBluetooth() {
+  if (!navigator.bluetooth || !window.isSecureContext) {
+    setHangerBleMessage('이 기능은 블루투스가 켜진 Chrome에서 http://localhost:8787 로 열어야 합니다.', true);
+    return;
+  }
+  const button = $('#connectPhysicalHangerBle');
+  if (button) {
+    button.disabled = true;
+    button.textContent = '옷걸이 찾는 중… 잠시만 기다려 주세요';
+  }
+  try {
+    setHangerBleMessage('목록에서 Wardrobe-Hanger-로 시작하는 옷걸이를 선택하세요.');
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'Wardrobe-Hanger-' }],
+      optionalServices: [HANGER_BLE_SERVICE_UUID],
+    });
+    const gatt = await device.gatt.connect();
+    const service = await gatt.getPrimaryService(HANGER_BLE_SERVICE_UUID);
+    hangerBleConfigCharacteristic = await service.getCharacteristic(HANGER_BLE_CONFIG_UUID);
+    const status = await service.getCharacteristic(HANGER_BLE_STATUS_UUID);
+    await status.startNotifications();
+    status.addEventListener('characteristicvaluechanged', event => handleHangerBleStatus(event.target.value));
+    const knownHanger = (model.hangers || []).find(hanger => device.name?.includes(hanger.hangerId));
+    $('#hangerBleDeviceName').textContent = `${hangerDisplayName(knownHanger || { hangerId: device.name || '' })} 연결됨`;
+    handleHangerBleStatus(await status.readValue());
+    $('#pairPhysicalHanger').hidden = false;
+    $('#forgetPhysicalHanger').hidden = false;
+    await writeHangerBle('status');
+  } catch (error) {
+    setHangerBleMessage(bleErrorMessage(error, '옷걸이 연결'), true);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '옷걸이 찾기';
+    }
+  }
+}
+
+async function forgetPhysicalHanger() {
+  if (!hangerBleConfigCharacteristic) return setHangerBleMessage('먼저 옷걸이를 블루투스로 연결하세요.', true);
+  if (!window.confirm('이 옷걸이의 옷봉 연결을 제거할까요? 제거 후에는 태그 상태가 웹에 전송되지 않습니다.')) return;
+  await writeHangerBle('forget');
+  setTimeout(refresh, 1500);
+}
+
+function renderHangerConnectionHelp() {
+  const panel = $('#hangerConnectionHelp');
+  if (!panel) return;
+  const { hanger, online } = physicalHangerStatus();
+  if (!hanger) {
+    panel.innerHTML = '<h3>옷걸이 연결 상태</h3><p><b class="OFFLINE">연결 대기</b> · 아직 실제 옷걸이 신호를 받지 못했습니다.</p><p class="muted">옷걸이 전원을 켠 뒤 블루투스로 옷봉 연결과 PN532·NTAG 상태를 확인하세요.</p><button type="button" id="openHangerConnection">옷걸이 찾기</button>';
+  } else if (online) {
+    const tag = hangerClothingStatus(hanger);
+    const nfc = Number(hanger.errorFlags || 0) === 0 ? 'PN532 정상' : 'PN532 확인 필요';
+    panel.innerHTML = `<h3>${esc(hangerDisplayName(hanger))} 연결 상태</h3><p><b class="PRESENT">연결됨</b> · 옷봉과 ESP-NOW로 통신 중입니다.</p><p>${nfc} · ${esc(tag)}</p><p class="muted">마지막 신호: ${Math.max(0, Math.floor((Date.now() - Date.parse(hanger.lastSeen)) / 1000))}초 전</p><button type="button" id="openHangerConnection">옷걸이 연결·옷 상태 확인</button><button type="button" class="ghost" id="forgetPhysicalHangerQuick">옷걸이 연결 제거</button>`;
+  } else {
+    panel.innerHTML = '<h3>옷걸이 연결 상태</h3><p><b class="OFFLINE">연결 끊김</b> · 옷걸이 신호가 30초 이상 들어오지 않았습니다.</p><p class="muted">전원·옷봉 근처 위치를 확인한 뒤, 필요하면 블루투스로 다시 연결하세요.</p><button type="button" id="openHangerConnection">옷걸이 연결·태그 진단</button>';
+  }
+  $('#openHangerConnection').onclick = window.showHangerBleHelp;
+  const quickForget = $('#forgetPhysicalHangerQuick');
+  if (quickForget) quickForget.onclick = () => {
+    window.showHangerBleHelp();
+    setHangerBleMessage('연결 제거를 하려면 먼저 옷걸이 찾기로 블루투스에 연결한 뒤 아래 제거 버튼을 누르세요.');
+  };
+}
+
+function installGatewayWifiSetup() {
+  const setupView = $('#setup');
+  if (!setupView || $('#gatewayWifiHelp')) return;
+  setupView.innerHTML = setupView.innerHTML.replaceAll('C3', '옷봉 게이트웨이');
+  [...setupView.querySelectorAll('article.panel')]
+    .filter(panel => /게이트웨이 Wi-Fi 연결|연결 정보/.test(panel.textContent))
+    .forEach(panel => panel.remove());
+
+  const panel = document.createElement('article');
+  panel.className = 'panel';
+  panel.id = 'gatewayWifiHelp';
+  panel.innerHTML = '<h3>옷봉 인터넷 연결</h3><p>PC의 Wi-Fi를 바꾸지 않고 <b>블루투스</b>로 옷봉에 실제 사용할 2.4 GHz Wi-Fi를 전달합니다. 연결 후에는 이 카드에 <b>연결됨</b> 상태가 표시됩니다.</p><button type="button" id="openGatewayWifiHelp">옷봉 연결하기</button>';
+  setupView.append(panel);
+  const hangerPanel = document.createElement('article');
+  hangerPanel.className = 'panel';
+  hangerPanel.id = 'hangerConnectionHelp';
+  hangerPanel.innerHTML = '<h3>옷걸이 연결 상태</h3><p>옷걸이 상태를 불러오는 중입니다.</p>';
+  setupView.append(hangerPanel);
+
+  const dialog = document.createElement('dialog');
+  dialog.id = 'gatewayWifiDialog';
+  dialog.innerHTML = '<div class="title"><h2>옷봉 인터넷 연결</h2><button type="button" class="ghost" id="closeGatewayWifiHelp">닫기</button></div><p><b>설정하는 PC는 지금 5 GHz Wi-Fi에 그대로 있어도 됩니다.</b> 옷봉만 2.4 GHz에 연결합니다. 단, PC와 옷봉의 2.4/5 GHz는 같은 공유기(같은 내부망)여야 합니다.</p><h3>연결 순서</h3><ol><li><b>옷봉 찾기</b>를 누릅니다.</li><li>브라우저 목록에서 <code>Wardrobe-Hanger</code>(옷봉)를 선택하고 연결을 허용합니다.</li><li>옷봉이 실제로 검색한 주변 <b>2.4 GHz Wi-Fi</b> 중 하나를 목록에서 선택합니다.</li><li>선택한 Wi-Fi의 비밀번호만 입력합니다.</li><li>서버 주소는 이 PC에서 대시보드를 열고 있다면 기본값을 그대로 둡니다.</li><li><b>옷봉에 저장하고 연결</b>을 누릅니다. 옷봉이 약 10초 동안 재시작·Wi-Fi 연결을 한 후, 이 대시보드의 옷봉 상태가 연결됨으로 바뀝니다.</li></ol><p class="muted">PC나 휴대폰의 Wi-Fi를 바꾸는 단계는 없습니다. 비밀번호는 옷봉에만 저장됩니다.</p><button type="button" id="connectHangerBle">옷봉 찾기</button><p id="bleDeviceName" class="muted"></p><p id="bleSetupMessage" class="muted">블루투스 연결을 시작하세요.</p><form id="bleWifiForm" hidden><label>주변 2.4 GHz Wi-Fi<select name="ssid" id="nearbyWifiChoices" required><option value="">옷봉을 연결하면 목록이 표시됩니다</option></select></label><button type="button" id="scanHangerWifi">주변 Wi-Fi 다시 검색</button><label>선택한 Wi-Fi 비밀번호<input name="password" type="password" required></label><label>서버 주소<input name="server" required value="http://192.168.0.49:8787"></label><button>옷봉에 저장하고 연결</button><button type="button" class="ghost" id="forgetHangerWifi">옷봉 Wi-Fi 연결 제거</button></form><section id="bleSetupComplete" hidden><h3>설정 저장 완료</h3><p>옷봉이 재시작되어 Wi-Fi에 연결됩니다. 잠시 후 대시보드 상태가 갱신됩니다.</p><button type="button" id="closeAfterSave">대시보드로 돌아가기</button></section>';
+  dialog.innerHTML = dialog.innerHTML.replaceAll('Wardrobe-Hanger', 'Wardrobe-Rod');
+  document.body.append(dialog);
+  const showGatewayWifiHelp = () => {
+    try {
+      if (typeof dialog.showModal === 'function') {
+        if (!dialog.open) dialog.showModal();
+        return;
+      }
+    } catch (_) {
+      // Fall through to the browser-native prompt below.
+    }
+    window.alert('PC의 블루투스를 켠 뒤 옷봉 찾기를 누르고 Wardrobe-Rod를 선택하세요. 이후 실제 사용할 2.4 GHz Wi-Fi 정보를 입력합니다.');
+  };
+  window.showGatewayWifiHelp = showGatewayWifiHelp;
+  const directPortalLink = setupView.querySelector('a[href="http://192.168.4.1"]');
+  if (directPortalLink) {
+    directPortalLink.textContent = 'Wi-Fi 연결 방법 보기';
+    directPortalLink.style.cssText = 'display:inline-block;border-radius:10px;padding:10px 14px;background:#347454;color:white;text-decoration:none;font-weight:700';
+    directPortalLink.onclick = event => {
+      event.preventDefault();
+      showGatewayWifiHelp();
+    };
+  }
+  $('#openGatewayWifiHelp').onclick = showGatewayWifiHelp;
+  $('#closeGatewayWifiHelp').onclick = () => dialog.close();
+  $('#connectHangerBle').onclick = connectHangerBluetooth;
+  $('#scanHangerWifi').onclick = scanHangerWifi;
+  $('#forgetHangerWifi').onclick = forgetHangerWifi;
+  $('#closeAfterSave').onclick = () => dialog.close();
+  $('#bleWifiForm').onsubmit = saveHangerWifi;
+
+  const hangerDialog = document.createElement('dialog');
+  hangerDialog.id = 'hangerBleDialog';
+  hangerDialog.innerHTML = '<div class="title"><h2>옷걸이 연결·태그 진단</h2><button type="button" class="ghost" id="closeHangerBleHelp">닫기</button></div><p><b>옷걸이는 Wi-Fi를 설정하지 않습니다.</b> 옷봉과 ESP-NOW로 자동 통신합니다. 이 화면은 최초 연결·해제와 PN532/NTAG 인식 상태를 확인하는 용도입니다.</p><ol><li><b>옷걸이 찾기</b>를 누릅니다.</li><li>목록에서 <code>Wardrobe-Hanger-...</code> 옷걸이를 선택합니다.</li><li><b>옷봉과 연결</b>을 누르면 현재 옷봉에 연결됩니다.</li><li>태그를 PN532에 대면 NTAG UID와 인식 상태가 표시됩니다.</li></ol><button type="button" id="connectPhysicalHangerBle">옷걸이 찾기</button><p id="hangerBleDeviceName" class="muted"></p><p id="hangerBleMessage" class="muted">블루투스 연결을 시작하세요.</p><section id="hangerBleDetail" class="panel" style="padding:12px" hidden></section><button type="button" id="pairPhysicalHanger" hidden>옷봉과 연결</button><button type="button" class="ghost" id="forgetPhysicalHanger" hidden>옷걸이 연결 제거</button>';
+  document.body.append(hangerDialog);
+  const showHangerBleHelp = () => {
+    if (typeof hangerDialog.showModal === 'function' && !hangerDialog.open) hangerDialog.showModal();
+  };
+  window.showHangerBleHelp = showHangerBleHelp;
+  $('#closeHangerBleHelp').onclick = () => hangerDialog.close();
+  $('#connectPhysicalHangerBle').onclick = connectPhysicalHangerBluetooth;
+  $('#pairPhysicalHanger').onclick = () => writeHangerBle('pair');
+  $('#forgetPhysicalHanger').onclick = forgetPhysicalHanger;
+}
+
+function physicalGatewayStatus() {
+  const now = Date.now();
+  const physical = (model.gateways || []).filter(g => !String(g.gatewayId || '').startsWith('GW-SIM'));
+  const latest = physical.sort((a, b) => Date.parse(b.lastSeen || 0) - Date.parse(a.lastSeen || 0))[0];
+  return { gateway: latest, online: !!latest && now - Date.parse(latest.lastSeen || 0) < 30000 };
+}
+
+function renderGatewayWifiHelp() {
+  const panel = $('#gatewayWifiHelp');
+  if (!panel) return;
+  const { gateway, online } = physicalGatewayStatus();
+  const lastSeenAgeMs = gateway ? Math.max(0, Date.now() - Date.parse(gateway.lastSeen || 0)) : Infinity;
+  if (online) {
+    rodReconnectStartedAt = 0;
+    sessionStorage.removeItem('wardrobeRodReconnectStartedAt');
+    panel.innerHTML = `<h3>옷봉 연결 상태</h3><p><b class="PRESENT">연결됨</b> · 옷봉이 2.4 GHz Wi-Fi 채널 ${gateway.channel || '-'}로 웹 서버와 통신 중입니다.</p><p class="muted">PC·휴대폰은 기존 5 GHz Wi-Fi를 계속 사용해도 됩니다.</p><button type="button" id="changeHangerWifi">옷봉 Wi-Fi 설정 변경</button><button type="button" class="ghost" id="removeHangerWifi">옷봉 Wi-Fi 연결 제거</button>`;
+    $('#changeHangerWifi').onclick = window.showGatewayWifiHelp;
+    $('#removeHangerWifi').onclick = () => {
+      window.showGatewayWifiHelp();
+      setBleSetupMessage('Wi-Fi 연결을 제거하려면 먼저 “옷봉 찾기”로 블루투스에 연결한 뒤, 아래의 “옷봉 Wi-Fi 연결 제거”를 누르세요.');
+    };
+    return;
+  }
+  const reconnectElapsed = Date.now() - rodReconnectStartedAt;
+  if (rodReconnectStartedAt && reconnectElapsed < ROD_RECONNECT_WINDOW_MS) {
+    const remaining = Math.max(1, Math.ceil((ROD_RECONNECT_WINDOW_MS - reconnectElapsed) / 1000));
+    panel.innerHTML = `<h3>옷봉 연결 상태</h3><p><b>연결 중 — 잠시만 기다려 주세요</b></p><p>옷봉이 재시작한 뒤 2.4 GHz Wi-Fi와 웹 서버에 연결하고 있습니다. 최대 약 ${remaining}초 걸릴 수 있습니다.</p><p class="muted">30초 뒤에도 연결되지 않으면 전원과 2.4 GHz Wi-Fi를 확인하세요.</p><button type="button" id="checkRodConnection">연결 상태 다시 확인</button>`;
+    $('#checkRodConnection').onclick = refresh;
+    return;
+  }
+  if (gateway && lastSeenAgeMs < 90000) {
+    const seconds = Math.max(1, Math.floor(lastSeenAgeMs / 1000));
+    panel.innerHTML = `<h3>옷봉 연결 상태</h3><p><b>재연결 확인 중</b> · 마지막 신호가 ${seconds}초 전 들어왔습니다.</p><p class="muted">전원 재연결 또는 Wi-Fi 복구 중일 수 있습니다. 최대 1분 정도 기다려 주세요.</p><button type="button" id="checkRodConnection">연결 상태 다시 확인</button>`;
+    $('#checkRodConnection').onclick = refresh;
+    return;
+  }
+  if (gateway) {
+    panel.innerHTML = '<h3>옷봉 연결 상태</h3><p><b class="OFFLINE">연결 끊김</b> · 옷봉의 신호가 1분 이상 들어오지 않았습니다.</p><p class="muted">옷봉 전원, 2.4 GHz Wi-Fi, 그리고 서버 주소를 확인한 뒤 잠시 기다려 주세요.</p><button type="button" id="openGatewayWifiHelp">옷봉 연결 점검·설정</button>';
+  } else {
+    panel.innerHTML = '<h3>옷봉 연결 상태</h3><p><b class="OFFLINE">연결 필요</b> · 아직 옷봉이 웹 서버에 연결되지 않았습니다.</p><p class="muted">PC Wi-Fi는 바꾸지 말고, 블루투스로 옷봉에 사용할 2.4 GHz Wi-Fi를 전달하세요.</p><button type="button" id="openGatewayWifiHelp">블루투스로 옷봉 연결하기</button>';
+  }
+  $('#openGatewayWifiHelp').onclick = window.showGatewayWifiHelp;
+}
+
+installGatewayWifiSetup();
+setInterval(renderGatewayWifiHelp, 1000);
+setInterval(renderHangerConnectionHelp, 1000);
 initAllComboboxes();
 token ? enter() : showAuth();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
