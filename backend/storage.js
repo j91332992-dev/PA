@@ -94,7 +94,11 @@ function postgresStorage(connectionString, initial){
       return {...out,schemaVersion:3};
     }finally{client.release();}
   }
-  async function save(data){
+  // A device event, the offline checker and the initial cloud import can all
+  // request a save at nearly the same moment.  Snapshot replacement is safe
+  // only when those transactions run one at a time.
+  let writes=Promise.resolve();
+  async function persist(data){
     const client=await pool.connect();
     try{
       await client.query('begin');
@@ -115,7 +119,19 @@ function postgresStorage(connectionString, initial){
       throw error;
     }finally{client.release();}
   }
-  return {mode:'postgres',load,save,close:()=>pool.end()};
+  function save(data){
+    // The in-memory object keeps changing while queued device events arrive,
+    // so retain the exact state that this save request intended to persist.
+    const snapshot=JSON.parse(JSON.stringify(data));
+    const job=writes.catch(()=>{}).then(()=>persist(snapshot));
+    writes=job.catch(()=>{});
+    return job;
+  }
+  async function close(){
+    await writes.catch(()=>{});
+    await pool.end();
+  }
+  return {mode:'postgres',load,save,close};
 }
 
 function createStorage({file,initial}){
