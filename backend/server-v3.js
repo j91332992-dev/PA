@@ -38,17 +38,24 @@ function migrate(){
   // name the owner has already chosen in the dashboard.
   for(const w of db.wardrobes){const owner=db.users.find(u=>u.id===w.userId),ownerName=owner?.name||'내';const gateways=db.gateways.filter(g=>g.wardrobeId===w.id&&!simulated(g));for(const g of gateways)if(!g.name||g.name==='새 옷봉'||g.name==='Gateway')g.name=`${ownerName}의 옷봉`;const hangers=db.hangers.filter(h=>h.wardrobeId===w.id&&!simulated(h)).sort((a,b)=>String(a.createdAt||a.hangerId).localeCompare(String(b.createdAt||b.hangerId)));hangers.forEach((h,index)=>{if(!h.alias||/^HC-/i.test(h.alias))h.alias=`${ownerName}의 옷걸이 ${index+1}번`})}
   for(const c of db.commands)if(!c.wardrobeId){const h=db.hangers.find(h=>c.targets?.includes(h.hangerId));c.wardrobeId=h?.wardrobeId||byUser.get(c.requestedBy)||null;}
-  for(const e of db.events)if(!e.wardrobeId){const p=e.payload||{},h=db.hangers.find(h=>h.hangerId===p.hangerId);e.wardrobeId=h?.wardrobeId||ownerByTag.get(p.tagUid)||null;}
-  db.schemaVersion=3;
+  const changed = db.schemaVersion !== 3;
+  db.schemaVersion = 3;
+  return changed;
 }
-function storageConnectionDiagnostic(){
-  if(!process.env.DATABASE_URL)return 'DATABASE_URL is not set';
-  try{
-    const connection=new URL(process.env.DATABASE_URL);
-    return `host=${connection.host} user=${connection.username} db=${connection.pathname} passwordLength=${connection.password.length} placeholder=${connection.password.includes('YOUR-PASSWORD')} whitespace=${/\s/.test(process.env.DATABASE_URL)}`;
-  }catch{return 'DATABASE_URL is not a valid URI';}
-}
-const ready=storage.load().then(loaded=>{db=loaded;migrate();return save()}).then(()=>console.log(`[STORAGE] ${storage.mode} ready`)).catch(error=>{console.error(`[STORAGE] ${storage.mode} init failed: ${error.message}; ${storageConnectionDiagnostic()}`);throw error});
+let isReady = false;
+let storageInitError = null;
+const loadStartTime = Date.now();
+const ready = storage.load().then(loaded => {
+  db = loaded;
+  const dirty = migrate();
+  if (dirty) return save();
+}).then(() => {
+  isReady = true;
+  console.log(`[STORAGE] ${storage.mode} ready in ${Date.now() - loadStartTime}ms`);
+}).catch(error => {
+  storageInitError = error.message;
+  console.error(`[STORAGE] ${storage.mode} init failed: ${error.message}`);
+});
 function token(user){const p=Buffer.from(JSON.stringify({sub:user.id,exp:Date.now()+604800000})).toString('base64url');return `${p}.${crypto.createHmac('sha256',SECRET).update(p).digest('base64url')}`}
 function getUser(req){const [p,s]=String(req.headers.authorization||'').replace(/^Bearer /,'').split('.');if(!p||!s||!safe(s,crypto.createHmac('sha256',SECRET).update(p).digest('base64url')))return null;try{const x=JSON.parse(Buffer.from(p,'base64url'));return x.exp>Date.now()?db.users.find(u=>u.id===x.sub):null}catch{return null}}
 function needUser(req){const u=getUser(req);if(!u)throw error(401,'로그인이 필요합니다.');return u}
@@ -71,7 +78,18 @@ function json(res,status,data){res.writeHead(status,{'content-type':'application
 function body(req){return new Promise((ok,no)=>{let s='';req.on('data',x=>{s+=x;if(s.length>1e6)req.destroy()});req.on('end',()=>{try{ok(s?JSON.parse(s):{})}catch{no(error(400,'JSON 형식 오류'))}});req.on('error',no)})}
 const match=(url,re)=>new URL(url,'http://x').pathname.match(re);
 function staticFile(req,res){const p=decodeURIComponent(new URL(req.url,'http://x').pathname),c=path.resolve(PUBLIC,p==='/'?'index.html':p.slice(1)),f=c.startsWith(PUBLIC+path.sep)&&fs.existsSync(c)&&fs.statSync(c).isFile()?c:path.join(PUBLIC,'index.html'),type={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.svg':'image/svg+xml'}[path.extname(f)]||'application/octet-stream';res.writeHead(200,{'content-type':type});fs.createReadStream(f).pipe(res)}
-const server=http.createServer(async(req,res)=>{try{await ready;if(await garmentImageService.handle(req,res,{needUser}))return;const p=new URL(req.url,'http://x').pathname;if(req.method==='OPTIONS')return json(res,204);if(p==='/api/health')return json(res,200,{ok:true,storage:storage.mode,setupRequired:!db.users.length,gatewayOnline:db.gateways.some(g=>Date.now()-Date.parse(g.lastSeen||0)<OFFLINE),simulationEnabled:SIM,serverTime:now()});if(p==='/api/auth/status'){const u=getUser(req);return json(res,200,{setupRequired:!db.users.length,user:u&&{id:u.id,email:u.email,name:u.name}})}
+const server=http.createServer(async(req,res)=>{try{
+  const p=new URL(req.url,'http://x').pathname;
+  if(req.method==='OPTIONS')return json(res,204);
+  if(p==='/api/health'){
+    if(storageInitError)return json(res,503,{ok:false,status:'error',storage:storage.mode,ready:false,error:'storage_init_failed',serverTime:now()});
+    if(!isReady)return json(res,200,{ok:true,status:'initializing',storage:storage.mode,ready:false,serverTime:now()});
+    return json(res,200,{ok:true,status:'ready',storage:storage.mode,ready:true,setupRequired:!db.users.length,gatewayOnline:db.gateways.some(g=>Date.now()-Date.parse(g.lastSeen||0)<OFFLINE),simulationEnabled:SIM,serverTime:now()});
+  }
+  if(storageInitError)throw error(503,'스토리지 초기화에 실패했습니다.');
+  if(!isReady)await ready;
+  if(await garmentImageService.handle(req,res,{needUser}))return;
+  if(p==='/api/auth/status'){const u=getUser(req);return json(res,200,{setupRequired:!db.users.length,user:u&&{id:u.id,email:u.email,name:u.name}})}
 if(p==='/api/auth/signup'&&req.method==='POST'){const x=await body(req);if(!/^\S+@\S+\.\S+$/.test(x.email||'')||String(x.password||'').length<10)throw error(400,'이메일과 10자 이상 비밀번호가 필요합니다.');if(db.users.some(u=>u.email===String(x.email).toLowerCase()))throw error(409,'이미 등록된 이메일입니다.');const u={id:id('usr'),email:String(x.email).toLowerCase(),name:String(x.name||'사용자').slice(0,40),passwordHash:hash(x.password),createdAt:now()};db.users.push(u);makeWardrobe(u);await save();return json(res,201,{token:token(u),user:{id:u.id,email:u.email,name:u.name}})}
 if(p==='/api/auth/login'&&req.method==='POST'){const x=await body(req),u=db.users.find(v=>v.email===String(x.email||'').toLowerCase());if(!u||!safe(hash(x.password,u.passwordHash.split(':')[0]),u.passwordHash))throw error(401,'이메일 또는 비밀번호가 맞지 않습니다.');return json(res,200,{token:token(u),user:{id:u.id,email:u.email,name:u.name}})}
 if(p==='/api/snapshot'){const u=needUser(req);return json(res,200,snapshot(u))}
