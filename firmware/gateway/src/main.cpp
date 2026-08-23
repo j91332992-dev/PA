@@ -34,6 +34,8 @@ uint32_t rebootAt = 0;
 BLECharacteristic* bleStatusCharacteristic = nullptr;
 bool bleProvisioningActive = false;
 bool bleWifiScanRequested = false;
+String provisionState = "ready";
+String provisionMessage = "블루투스로 옷봉을 연결하세요.";
 
 constexpr char BLE_SERVICE_UUID[] = "a4e66a10-0fb0-4dce-8be0-18cf7bc82001";
 constexpr char BLE_CONFIG_UUID[] = "a4e66a11-0fb0-4dce-8be0-18cf7bc82001";
@@ -70,7 +72,14 @@ String configuredPassword() {
   return saved.length() ? saved : String(WIFI_PASSWORD);
 }
 
+String bleDisplayName() {
+  String saved = wifiPrefs.getString("displayName", "");
+  return saved.length() ? saved : String("새 옷봉");
+}
+
 void setBleStatus(const char* state, const char* message) {
+  provisionState = state;
+  provisionMessage = message;
   if (!bleStatusCharacteristic) return;
   JsonDocument status;
   status["state"] = state;
@@ -90,6 +99,10 @@ class BleConfigCallbacks : public BLECharacteristicCallbacks {
       return;
     }
     const String action = request["action"] | "";
+    if (action == "status") {
+      setBleStatus(provisionState.c_str(), provisionMessage.c_str());
+      return;
+    }
     if (action == "scan") {
       bleWifiScanRequested = true;
       setBleStatus("scanning", "옷봉이 주변 2.4 GHz Wi-Fi를 찾는 중입니다.");
@@ -107,6 +120,7 @@ class BleConfigCallbacks : public BLECharacteristicCallbacks {
     const String ssid = request["ssid"] | "";
     const String password = request["password"] | "";
     const String server = request["server"] | "";
+    const String displayName = request["displayName"] | "";
     if (!ssid.length() || !server.startsWith("http")) {
       setBleStatus("error", "2.4 GHz Wi-Fi 이름과 서버 주소를 확인하세요.");
       return;
@@ -114,6 +128,7 @@ class BleConfigCallbacks : public BLECharacteristicCallbacks {
     wifiPrefs.putString("ssid", ssid);
     wifiPrefs.putString("pass", password);
     wifiPrefs.putString("server", server);
+    if (displayName.length()) wifiPrefs.putString("displayName", displayName);
     wifiPrefs.putBool("disabled", false);
     setBleStatus("saved", "저장되었습니다. 옷봉을 다시 연결합니다.");
     // Let the GATT write response and the final status notification reach the
@@ -125,7 +140,8 @@ class BleConfigCallbacks : public BLECharacteristicCallbacks {
 
 void startBleProvisioning() {
   if (bleProvisioningActive) return;
-  BLEDevice::init("Wardrobe-Rod");
+  const String displayName = bleDisplayName();
+  BLEDevice::init(displayName.c_str());
   BLEServer* server = BLEDevice::createServer();
   server->setCallbacks(new GatewayBleServerCallbacks());
   BLEService* service = server->createService(BLE_SERVICE_UUID);
@@ -140,7 +156,7 @@ void startBleProvisioning() {
   BLEDevice::startAdvertising();
   bleProvisioningActive = true;
   setBleStatus("ready", "블루투스로 2.4 GHz Wi-Fi를 설정하세요.");
-  Serial.println("[BLE] Ready: Wardrobe-Rod");
+  Serial.printf("[BLE] Ready: %s\n", displayName.c_str());
 }
 
 void scanNearbyWifiForBle() {
@@ -291,7 +307,7 @@ bool connectWifi(const String& ssid, const String& password, uint32_t timeoutMs 
   return WiFi.status() == WL_CONNECTED;
 }
 
-void diagnoseWifi(const String& targetSsid) {
+bool diagnoseWifi(const String& targetSsid) {
   Serial.printf("[WIFI] Diagnosing saved network: %s\n", targetSsid.c_str());
   // Clear the failed association before scanning.  Otherwise the ESP32-S3 can
   // return an empty scan after an unsuccessful WPA connection attempt.
@@ -307,7 +323,7 @@ void diagnoseWifi(const String& targetSsid) {
   Serial.printf("[WIFI] Full 2.4 GHz scan result: %d network(s)\n", count);
   if (count < 0) {
     Serial.println("[WIFI] Scan could not start; retrying after BLE setup.");
-    return;
+    return false;
   }
   bool found = false;
   for (int i = 0; i < count; ++i) {
@@ -317,6 +333,7 @@ void diagnoseWifi(const String& targetSsid) {
   }
   if (!found) Serial.println("[WIFI] Saved network is not visible. Check its exact name, 2.4 GHz setting, and distance.");
   WiFi.scanDelete();
+  return found;
 }
 
 void startSetupPortal() {
@@ -441,10 +458,17 @@ void gatewayHeartbeat() {
   d["firmwareVersion"] = "1.0.0";
   String body, out;
   serializeJson(d, body);
-  if (request("/api/gateway/heartbeat", "POST", body, out, 350)) {
+  int httpCode = 0;
+  if (request("/api/gateway/heartbeat", "POST", body, out, 350, &httpCode)) {
     Serial.println("[CLOUD] gateway heartbeat OK");
+    setBleStatus("server_connected", "옷봉이 인터넷과 내 옷장 서버에 연결되었습니다.");
   } else {
-    Serial.println("[CLOUD] gateway heartbeat FAIL");
+    Serial.printf("[CLOUD] gateway heartbeat FAIL http=%d\n", httpCode);
+    if (httpCode == 401 || httpCode == 403) {
+      setBleStatus("server_auth_failed", "서버 등록 정보를 확인해야 합니다. 관리자 설정이 필요합니다.");
+    } else {
+      setBleStatus("server_connection_failed", "Wi-Fi는 연결되었지만 내 옷장 서버에 닿지 못했습니다. 잠시 후 다시 확인하세요.");
+    }
   }
 }
 
@@ -501,12 +525,26 @@ void beacon() {
 
 void wifi() {
   const String ssid = configuredSsid();
-  Serial.printf("[WIFI] Connecting to %s...\n", ssid.c_str());
-  if (connectWifi(ssid, configuredPassword())) {
-    Serial.printf("[WIFI] CONNECTED IP=%s channel=%d\n", WiFi.localIP().toString().c_str(), WiFi.channel());
+  if (!ssid.length() || ssid == "YOUR_2_4_GHZ_WIFI") {
+    setBleStatus("wifi_not_configured", "처음 한 번만 옷봉에 사용할 2.4 GHz Wi-Fi를 설정해 주세요.");
     return;
   }
-  diagnoseWifi(ssid);
+  Serial.printf("[WIFI] Connecting to %s...\n", ssid.c_str());
+  setBleStatus("wifi_connecting", "선택한 2.4 GHz Wi-Fi에 연결하고 있습니다. 잠시만 기다려 주세요.");
+  if (connectWifi(ssid, configuredPassword())) {
+    Serial.printf("[WIFI] CONNECTED IP=%s channel=%d\n", WiFi.localIP().toString().c_str(), WiFi.channel());
+    setBleStatus("wifi_connected", "Wi-Fi 연결이 완료되었습니다. 서버 연결을 확인하고 있습니다.");
+    return;
+  }
+  const int failure = WiFi.status();
+  const bool networkVisible = diagnoseWifi(ssid);
+  if (!networkVisible) {
+    setBleStatus("wifi_not_found", "선택한 2.4 GHz Wi-Fi를 찾지 못했습니다. Wi-Fi 이름·거리·2.4 GHz 설정을 확인하세요.");
+  } else if (failure == WL_CONNECT_FAILED) {
+    setBleStatus("wifi_password_failed", "Wi-Fi 인증에 실패했습니다. 선택한 Wi-Fi의 비밀번호를 다시 확인하세요.");
+  } else {
+    setBleStatus("wifi_connection_failed", "선택한 Wi-Fi에 연결하지 못했습니다. 전원과 네트워크 상태를 확인한 뒤 다시 시도하세요.");
+  }
   Serial.println("[WIFI] No usable Wi-Fi. Starting BLE provisioning.");
 }
 

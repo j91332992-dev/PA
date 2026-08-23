@@ -7,6 +7,7 @@
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
+#include <ArduinoJson.h>
 #include <Adafruit_PN532.h>
 #if __has_include("config.h")
 #include "config.h"
@@ -28,6 +29,7 @@ Adafruit_PN532 nfc(PIN_NFC_SS, &SPI);
 String hanger;
 String pairedGateway;
 String discoveredGateway;
+String displayName;
 bool hangerLinkDisabled = false;
 volatile bool reportAfterGatewayBeacon = false;
 uint32_t sequence = 0, bootId = 0, lastHeartbeat = 0, lastScan = 0, lastBeacon = 0, ledUntil = 0;
@@ -90,7 +92,10 @@ void report(bool event);
 class HangerBleConfigCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* characteristic) override {
     const String request = characteristic->getValue();
-    if (request.indexOf("\"action\":\"pair\"") >= 0) {
+    JsonDocument config;
+    deserializeJson(config, request);
+    const String action = config["action"] | "";
+    if (action == "pair") {
       if (!discoveredGateway.length()) {
         setHangerBleStatus("waiting_gateway", "옷봉 신호를 찾는 중입니다. 옷봉 전원과 거리를 확인하세요.");
         return;
@@ -98,12 +103,14 @@ class HangerBleConfigCallbacks : public BLECharacteristicCallbacks {
       pairedGateway = discoveredGateway;
       hangerLinkDisabled = false;
       prefs.putString("gateway", pairedGateway);
+      const String requestedName = config["displayName"] | "";
+      if (requestedName.length()) prefs.putString("displayName", requestedName);
       prefs.putBool("linkDisabled", false);
-      setHangerBleStatus("paired", "옷봉과 연결했습니다. NTAG 태그 상태를 확인할 수 있습니다.");
+      setHangerBleStatus("paired", "옷봉과 연결했습니다. 이제 옷 태그 상태를 확인할 수 있습니다.");
       report(true);
       return;
     }
-    if (request.indexOf("\"action\":\"forget\"") >= 0) {
+    if (action == "forget") {
       pairedGateway = "";
       hangerLinkDisabled = true;
       prefs.remove("gateway");
@@ -111,7 +118,7 @@ class HangerBleConfigCallbacks : public BLECharacteristicCallbacks {
       setHangerBleStatus("unpaired", "옷봉 연결을 제거했습니다. 다시 연결하려면 옷걸이 찾기를 누르세요.");
       return;
     }
-    if (request.indexOf("\"action\":\"status\"") >= 0) {
+    if (action == "status") {
       setHangerBleStatus(hangerLinkDisabled ? "unpaired" : "ready", "옷걸이 상태를 불러왔습니다.");
       return;
     }
@@ -128,7 +135,7 @@ class HangerBleServerCallbacks : public BLEServerCallbacks {
 
 void startHangerBle() {
   if (bleActive) return;
-  BLEDevice::init(("Wardrobe-Hanger-" + hanger).c_str());
+  BLEDevice::init(displayName.c_str());
   BLEServer* server = BLEDevice::createServer();
   server->setCallbacks(new HangerBleServerCallbacks());
   BLEService* service = server->createService(HANGER_BLE_SERVICE_UUID);
@@ -142,8 +149,8 @@ void startHangerBle() {
   advertising->setScanResponse(true);
   BLEDevice::startAdvertising();
   bleActive = true;
-  setHangerBleStatus(hangerLinkDisabled ? "unpaired" : "ready", "블루투스로 옷걸이 연결과 NTAG 상태를 확인하세요.");
-  Serial.printf("[BLE] Ready: Wardrobe-Hanger-%s\n", hanger.c_str());
+  setHangerBleStatus(hangerLinkDisabled ? "unpaired" : "ready", "블루투스로 옷걸이 연결과 옷 태그 상태를 확인하세요.");
+  Serial.printf("[BLE] Ready: %s\n", displayName.c_str());
 }
 
 void led(bool on) {
@@ -206,7 +213,7 @@ void transition(sw::State s) {
   for (uint8_t i = 0; i < currentLen; i++) snprintf(uHex + i * 2, 3, "%02X", currentUid[i]);
   Serial.printf("\n⚡ [STATE-CHANGE] state=%u (UID=%s len=%u)\n", unsigned(state), uHex, currentLen);
   setHangerBleStatus(state == sw::State::PRESENT ? "tag_present" : "tag_empty",
-                     state == sw::State::PRESENT ? "NTAG 태그를 인식했습니다." : "현재 인식된 NTAG 태그가 없습니다.");
+                     state == sw::State::PRESENT ? "옷 태그를 인식했습니다." : "현재 인식된 옷 태그가 없습니다.");
   report(true);
 }
 
@@ -290,7 +297,7 @@ bool tryInitNfc() {
   // The first PN532 attempt can happen before the module has fully powered
   // up. Notify an already-open BLE diagnostics screen when a later retry
   // succeeds, rather than leaving it at the stale "check needed" state.
-  setHangerBleStatus("nfc_ready", "PN532가 정상 준비되었습니다. 이제 NTAG 태그를 대보세요.");
+  setHangerBleStatus("nfc_ready", "옷 태그 읽기 장치가 준비되었습니다. 옷 태그를 대보세요.");
   return true;
 }
 
@@ -309,7 +316,7 @@ int scanCard(uint8_t* uid, uint8_t& uidLen) {
     if (!nfc.getFirmwareVersion()) {
       nfcReady = false;
       Serial.println("[NFC] LINK LOST: PN532 power/connection changed; retrying init");
-      setHangerBleStatus("nfc_reconnecting", "PN532 전원을 다시 확인 중입니다. 잠시 기다려 주세요.");
+      setHangerBleStatus("nfc_reconnecting", "옷 태그 읽기 장치를 다시 연결하고 있습니다. 잠시 기다려 주세요.");
       return -1;
     }
   }
@@ -415,6 +422,8 @@ void setup() {
   prefs.begin("wardrobe", false);
   channel = prefs.getUChar("channel", 1);
   pairedGateway = prefs.getString("gateway", "");
+  displayName = prefs.getString("displayName", "");
+  if (!displayName.length()) displayName = "새 옷걸이";
   hangerLinkDisabled = prefs.getBool("linkDisabled", false);
   tryInitNfc();
   WiFi.mode(WIFI_STA);
