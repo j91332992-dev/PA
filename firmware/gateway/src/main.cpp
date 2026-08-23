@@ -558,7 +558,7 @@ void upload(const sw::Packet& p) {
   String body, out;
   serializeJson(d, body);
   int httpCode = 0;
-  const uint16_t timeoutMs = 3500;
+  const uint16_t timeoutMs = 8000;
   if (request("/api/gateway/status", "POST", body, out, timeoutMs, &httpCode)) {
     Serial.printf("[CLOUD] %s OK\n", p.hangerId);
   } else {
@@ -577,7 +577,7 @@ void gatewayHeartbeat() {
   String body, out;
   serializeJson(d, body);
   int httpCode = 0;
-  if (request("/api/gateway/heartbeat", "POST", body, out, 3500, &httpCode)) {
+  if (request("/api/gateway/heartbeat", "POST", body, out, 8000, &httpCode)) {
     Serial.println("[CLOUD] gateway heartbeat OK");
     setBleStatus("server_connected", "옷봉이 인터넷과 내 옷장 서버에 연결되었습니다.");
   } else {
