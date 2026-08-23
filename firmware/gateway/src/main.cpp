@@ -413,6 +413,11 @@ bool request(const String& path, const char* method, const String& payload, Stri
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-Gateway-Id", gateway);
   int code = !strcmp(method, "GET") ? http.GET() : http.POST(payload);
+  if (code <= 0 && secure) {
+    char detail[128]{};
+    tls.lastError(detail, sizeof detail);
+    Serial.printf("[CLOUD] HTTPS transport error=%d detail=%s time=%lld\n", code, detail, static_cast<long long>(time(nullptr)));
+  }
   if (statusCode) *statusCode = code;
   if (code > 0) response = http.getString();
   http.end();
