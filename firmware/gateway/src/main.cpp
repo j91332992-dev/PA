@@ -8,6 +8,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <Preferences.h>
+#include <time.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <ArduinoJson.h>
@@ -58,7 +59,16 @@ SeenPacket seenPackets[SEEN_Q];
 
 String cloudBaseUrl() {
   String saved = wifiPrefs.getString("server", "");
-  return saved.length() ? saved : String(CLOUD_BASE_URL);
+  if (saved.length()) {
+    // Older firmware stored a local http:// address.  Once secure cloud mode
+    // is enabled, keeping that value would make a perfectly healthy gateway
+    // look offline forever.  Keep valid HTTPS settings, but self-heal the
+    // obsolete insecure value using the configured production URL.
+    if (saved.startsWith("https://") || ALLOW_INSECURE_HTTP) return saved;
+    wifiPrefs.putString("server", CLOUD_BASE_URL);
+    Serial.println("[CLOUD] Replaced legacy HTTP server URL with secure default");
+  }
+  return String(CLOUD_BASE_URL);
 }
 
 String configuredSsid() {
@@ -523,6 +533,19 @@ void beacon() {
   send(p);
 }
 
+bool syncTlsClock() {
+  // TLS certificate validation needs a real clock.  A newly powered ESP32 has
+  // no battery-backed time, so HTTPS otherwise fails with the unhelpful -1.
+  if (time(nullptr) > 1700000000) return true;
+  Serial.println("[TIME] Syncing clock for secure server connection...");
+  configTime(9 * 3600, 0, "time.google.com", "pool.ntp.org");
+  const uint32_t started = millis();
+  while (time(nullptr) <= 1700000000 && millis() - started < 8000) delay(150);
+  const bool ready = time(nullptr) > 1700000000;
+  Serial.println(ready ? "[TIME] Clock ready" : "[TIME] Clock sync pending; will retry cloud requests");
+  return ready;
+}
+
 void wifi() {
   const String ssid = configuredSsid();
   if (!ssid.length() || ssid == "YOUR_2_4_GHZ_WIFI") {
@@ -534,6 +557,7 @@ void wifi() {
   if (connectWifi(ssid, configuredPassword())) {
     Serial.printf("[WIFI] CONNECTED IP=%s channel=%d\n", WiFi.localIP().toString().c_str(), WiFi.channel());
     setBleStatus("wifi_connected", "Wi-Fi 연결이 완료되었습니다. 서버 연결을 확인하고 있습니다.");
+    syncTlsClock();
     return;
   }
   const int failure = WiFi.status();
