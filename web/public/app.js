@@ -1784,6 +1784,16 @@ function linkedHangerCount(gatewayId) {
   return (model.hangers || []).filter(h => h.gatewayId === gatewayId && !String(h.hangerId || '').startsWith('HC-000')).length;
 }
 
+function getPn532StatusHtml(h) {
+  if (h.errorFlags === 0 || h.errorFlags === '0') {
+    return '<span style="color:#218451;font-weight:600">● PN532 정상 (준비됨)</span>';
+  }
+  if (h.errorFlags === 1 || h.errorFlags === '1') {
+    return '<span style="color:var(--red);font-weight:600">⚠️ PN532 점검 필요</span>';
+  }
+  return '<span style="color:#7b8b82">- 상태 확인 중</span>';
+}
+
 function renderNearbyWifiChoices() {
   const select = $('#nearbyWifiChoices');
   if (!select) return;
@@ -1969,7 +1979,7 @@ function startConnectionPolling(targetSsid) {
   setStageItem('stage_cloud', 'active', '클라우드 서버 통신 및 Heartbeat를 대기하고 있습니다...');
 
   let pollCount = 0;
-  const maxPolls = 25; // 25 * 2s = 50s
+  const maxPolls = 25;
 
   provisionPollInterval = setInterval(async () => {
     pollCount++;
@@ -2153,82 +2163,162 @@ async function forgetPhysicalHanger() {
   setTimeout(refresh, 1500);
 }
 
+// -------------------------------------------------------------
+// Gateway Settings & Diagnostics Modals
+// -------------------------------------------------------------
 function openGatewaySettings(gatewayId) {
   const g = (model.gateways || []).find(x => x.gatewayId === gatewayId);
   if (!g) return;
-  const action = prompt(`[옷봉 설정 - ${g.name || g.gatewayId}]\n원하시는 작업 번호를 입력하세요:\n1: 이름 변경\n2: Wi-Fi 변경\n3: 다시 연결\n4: 장비 등록 해제`, '1');
-  if (!action) return;
-  if (action === '1') {
-    const newName = prompt('새 옷봉 이름을 입력하세요.', g.name || `${ownerDisplayName()}의 옷봉`);
-    if (!newName?.trim()) return;
-    api(`/api/gateways/${encodeURIComponent(gatewayId)}`, { method: 'PATCH', body: JSON.stringify({ name: newName.trim() }) })
-      .then(() => { toast('옷봉 이름을 변경했습니다.'); refresh(); });
-  } else if (action === '2') {
-    window.showGatewayWifiHelp();
-  } else if (action === '3') {
-    toast('옷봉 상태를 다시 확인합니다.');
-    refresh();
-  } else if (action === '4') {
-    if (!confirm('이 옷봉을 내 계정에서 제거하시겠습니까? 실제 전원은 꺼지지 않으며, 나중에 다시 연결할 수 있습니다.')) return;
-    api(`/api/gateways/${encodeURIComponent(gatewayId)}`, { method: 'DELETE' })
-      .then(() => { toast('옷봉 등록을 제거했습니다.'); refresh(); });
+  const dialog = $('#gatewaySettingsDialog');
+  if (!dialog) return;
+
+  $('#gwSettingsTitle').textContent = `옷봉 설정 · ${g.name || g.gatewayId}`;
+  const nameInput = $('#inputGwName');
+  if (nameInput) nameInput.value = g.name || `${ownerDisplayName()}의 옷봉`;
+
+  const btnSaveName = $('#btnSaveGwName');
+  if (btnSaveName) {
+    btnSaveName.onclick = async () => {
+      const newName = String(nameInput.value || '').trim();
+      if (!newName) return alert('옷봉 이름을 입력해 주세요.');
+      try {
+        await api(`/api/gateways/${encodeURIComponent(gatewayId)}`, { method: 'PATCH', body: JSON.stringify({ name: newName }) });
+        toast('옷봉 이름을 변경했습니다.');
+        dialog.close();
+        refresh();
+      } catch (e) { alert(e.message); }
+    };
   }
+
+  const btnWifi = $('#btnGwChangeWifi');
+  if (btnWifi) {
+    btnWifi.onclick = () => {
+      dialog.close();
+      window.showGatewayWifiHelp();
+    };
+  }
+
+  const btnRefresh = $('#btnGwRefresh');
+  if (btnRefresh) {
+    btnRefresh.onclick = () => {
+      toast('옷봉 연결 상태를 다시 확인합니다.');
+      refresh();
+      dialog.close();
+    };
+  }
+
+  const btnRemove = $('#btnGwRemove');
+  if (btnRemove) {
+    btnRemove.onclick = async () => {
+      if (!window.confirm('이 옷봉을 내 계정에서 제거하시겠습니까? 실제 전원은 꺼지지 않으며, 나중에 다시 연결할 수 있습니다.')) return;
+      try {
+        await api(`/api/gateways/${encodeURIComponent(gatewayId)}`, { method: 'DELETE' });
+        toast('옷봉 등록을 제거했습니다.');
+        dialog.close();
+        refresh();
+      } catch (e) { alert(e.message); }
+    };
+  }
+
+  if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
 }
 
 function openGatewayDiagnostics(gatewayId) {
   const g = (model.gateways || []).find(x => x.gatewayId === gatewayId);
   if (!g) return;
-  const isOnline = Date.now() - Date.parse(g.lastSeen || 0) < 30000;
-  const diagText = `[옷봉 진단 정보 - ${g.name || g.gatewayId}]
-• 장비 ID: ${g.gatewayId}
-• 장비 상태: ${isOnline ? 'ONLINE (정상 연결됨)' : 'OFFLINE (전원/Wi-Fi 점검 필요)'}
-• Wi-Fi 상태: ${isOnline ? '연결됨' : '연결 끊김'}
-• 접속 SSID: ${g.ssid || '2.4 GHz Network'}
-• 수신 감도(RSSI): ${g.rssi ? `${g.rssi} dBm (${formatRssi(g.rssi, isOnline)})` : (isOnline ? '보통' : '-')}
-• 할당 IP: ${g.ip || (isOnline ? '정상 획득' : '-')}
-• 클라우드 통신: ${isOnline ? '정상 통신 중 (Heartbeat HTTP 200)' : '통신 두절 (최근 신호 없음)'}
-• ESP-NOW 채널: 채널 ${g.channel || '-'}
-• 마지막 연결 시각: ${g.lastSeen ? `${new Date(g.lastSeen).toLocaleTimeString()} (${timeAgo(g.lastSeen)})` : '신호 없음'}
-• 펌웨어 버전: ${g.firmwareVersion || '1.0.0'}
-• 연결된 옷걸이 수: ${linkedHangerCount(g.gatewayId)}개`;
+  const dialog = $('#gatewayDiagDialog');
+  if (!dialog) return;
 
-  alert(diagText);
+  const isOnline = Date.now() - Date.parse(g.lastSeen || 0) < 30000;
+  $('#gwDiagTitle').textContent = `옷봉 상세 진단 · ${g.name || g.gatewayId}`;
+
+  const content = $('#gwDiagContent');
+  if (content) {
+    content.innerHTML = `
+      <span class="label">장비 ID</span><span class="val">${esc(g.gatewayId)}</span>
+      <span class="label">장비 상태</span><span class="val">${isOnline ? '<b style="color:#218451">● ONLINE (정상 연결됨)</b>' : '<b style="color:var(--red)">● OFFLINE (확인 필요)</b>'}</span>
+      <span class="label">접속 SSID</span><span class="val"><b>${esc(g.ssid || '2.4 GHz Network')}</b></span>
+      <span class="label">수신 감도(RSSI)</span><span class="val">${formatRssi(g.rssi, isOnline)}</span>
+      <span class="label">할당 IP 주소</span><span class="val">${esc(g.ip || (isOnline ? '정상 획득' : '-'))}</span>
+      <span class="label">클라우드 통신</span><span class="val">${isOnline ? '정상 통신 중 (Heartbeat HTTP 200)' : '통신 두절 (신호 없음)'}</span>
+      <span class="label">Wi-Fi 채널</span><span class="val">채널 ${g.channel || '-'}</span>
+      <span class="label">마지막 Heartbeat</span><span class="val">${g.lastSeen ? `${new Date(g.lastSeen).toLocaleTimeString()} (${timeAgo(g.lastSeen)})` : '신호 없음'}</span>
+      <span class="label">펌웨어 버전</span><span class="val">${esc(g.firmwareVersion || '1.0.0')}</span>
+      <span class="label">연결된 옷걸이</span><span class="val">${linkedHangerCount(g.gatewayId)}개</span>
+    `;
+  }
+
+  if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
 }
 
+// -------------------------------------------------------------
+// Hanger Settings & Diagnostics Modals
+// -------------------------------------------------------------
 function openHangerSettings(hangerId) {
   const h = (model.hangers || []).find(x => x.hangerId === hangerId);
   if (!h) return;
-  const action = prompt(`[옷걸이 설정 - ${hangerDisplayName(h)}]\n원하시는 작업 번호를 입력하세요:\n1: 이름 변경\n2: 등록 제거`, '1');
-  if (!action) return;
-  if (action === '1') {
-    const newName = prompt('새 옷걸이 이름을 입력하세요.', h.alias || hangerDisplayName(h));
-    if (!newName?.trim()) return;
-    api(`/api/hangers/${encodeURIComponent(hangerId)}`, { method: 'PATCH', body: JSON.stringify({ name: newName.trim() }) })
-      .then(() => { toast('옷걸이 이름을 변경했습니다.'); refresh(); });
-  } else if (action === '2') {
-    if (!confirm('이 옷걸이를 내 옷장에서 등록 제거할까요? 실제 전원은 꺼지지 않으며, 다시 연결하면 재등록할 수 있습니다.')) return;
-    api(`/api/hangers/${encodeURIComponent(hangerId)}`, { method: 'DELETE' })
-      .then(() => { toast('옷걸이 등록을 제거했습니다.'); refresh(); });
+  const dialog = $('#hangerSettingsDialog');
+  if (!dialog) return;
+
+  $('#hangerSettingsTitle').textContent = `옷걸이 설정 · ${hangerDisplayName(h)}`;
+  const nameInput = $('#inputHangerName');
+  if (nameInput) nameInput.value = h.alias || hangerDisplayName(h);
+
+  const btnSaveName = $('#btnSaveHangerName');
+  if (btnSaveName) {
+    btnSaveName.onclick = async () => {
+      const newName = String(nameInput.value || '').trim();
+      if (!newName) return alert('옷걸이 이름을 입력해 주세요.');
+      try {
+        await api(`/api/hangers/${encodeURIComponent(hangerId)}`, { method: 'PATCH', body: JSON.stringify({ name: newName }) });
+        toast('옷걸이 이름을 변경했습니다.');
+        dialog.close();
+        refresh();
+      } catch (e) { alert(e.message); }
+    };
   }
+
+  const btnRemove = $('#btnHangerRemove');
+  if (btnRemove) {
+    btnRemove.onclick = async () => {
+      if (!window.confirm('이 옷걸이를 내 옷장에서 등록 제거할까요? 실제 전원은 꺼지지 않으며, 나중에 다시 연결할 수 있습니다.')) return;
+      try {
+        await api(`/api/hangers/${encodeURIComponent(hangerId)}`, { method: 'DELETE' });
+        toast('옷걸이 등록을 제거했습니다.');
+        dialog.close();
+        refresh();
+      } catch (e) { alert(e.message); }
+    };
+  }
+
+  if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
 }
 
 function openHangerDiagnostics(hangerId) {
   const h = (model.hangers || []).find(x => x.hangerId === hangerId);
   if (!h) return;
-  const isOnline = Date.now() - Date.parse(h.lastSeen || 0) < 30000;
-  const nfcStatus = Number(h.errorFlags || 0) === 0 ? 'PN532 정상 준비됨' : 'PN532 결선 오류/확인 필요';
-  const diagText = `[옷걸이 진단 정보 - ${hangerDisplayName(h)}]
-• 옷걸이 ID: ${h.hangerId}
-• 장비 상태: ${isOnline ? 'ONLINE (정상 연결됨)' : 'OFFLINE (전원/옷봉 거리 확인 필요)'}
-• PN532 리더: ${nfcStatus}
-• 감지된 태그 UID: ${h.tagUid || '태그 없음'}
-• 현재 감지 옷: ${garmentNameForHanger(h)}
-• ESP-NOW 무선 통신: ${h.gatewayId ? `옷봉(${h.gatewayId})과 정상 통신 중` : '신호 탐색 중'}
-• 통신 채널: 채널 ${h.channel || '-'}
-• 마지막 연결 시각: ${h.lastSeen ? `${new Date(h.lastSeen).toLocaleTimeString()} (${timeAgo(h.lastSeen)})` : '신호 없음'}
-• 펌웨어 버전: ${h.firmwareVersion || '1.0.0'}`;
+  const dialog = $('#hangerDiagDialog');
+  if (!dialog) return;
 
-  alert(diagText);
+  const isOnline = Date.now() - Date.parse(h.lastSeen || 0) < 30000;
+  $('#hangerDiagTitle').textContent = `옷걸이 상세 진단 · ${hangerDisplayName(h)}`;
+
+  const content = $('#hangerDiagContent');
+  if (content) {
+    content.innerHTML = `
+      <span class="label">옷걸이 ID</span><span class="val">${esc(h.hangerId)}</span>
+      <span class="label">장비 상태</span><span class="val">${isOnline ? '<b style="color:#218451">● ONLINE (정상 연결됨)</b>' : '<b style="color:var(--red)">● OFFLINE</b>'}</span>
+      <span class="label">PN532 상태</span><span class="val">${getPn532StatusHtml(h)}</span>
+      <span class="label">감지된 태그 UID</span><span class="val">${esc(h.tagUid || '태그 없음')}</span>
+      <span class="label">현재 감지 옷</span><span class="val">${esc(garmentNameForHanger(h))}</span>
+      <span class="label">ESP-NOW 통신</span><span class="val">${h.gatewayId ? `옷봉(${esc(h.gatewayId)})과 정상 통신 중` : '신호 탐색 중'}</span>
+      <span class="label">통신 채널</span><span class="val">채널 ${h.channel || '-'}</span>
+      <span class="label">마지막 신호 시각</span><span class="val">${h.lastSeen ? `${new Date(h.lastSeen).toLocaleTimeString()} (${timeAgo(h.lastSeen)})` : '신호 없음'}</span>
+      <span class="label">펌웨어 버전</span><span class="val">${esc(h.firmwareVersion || '1.0.0')}</span>
+    `;
+  }
+
+  if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
 }
 
 function renderDeviceManagement() {
@@ -2253,7 +2343,7 @@ function renderDeviceManagement() {
       const statusBadge = online
         ? '<span class="pill status-pill-online">● 온라인</span>'
         : '<span class="pill status-pill-offline">● 오프라인</span>';
-      const wifiStatus = online ? `● 연결됨 (${esc(g.ssid || '2.4 GHz')})` : '● 연결 끊김';
+      const wifiStatus = online ? (g.ssid ? `● 연결됨 (${esc(g.ssid)})` : '● 연결됨') : '● 연결 끊김';
       const cloudStatus = online ? '● 연결됨' : '● 연결 끊김';
       return `
         <div class="device-box">
@@ -2266,7 +2356,7 @@ function renderDeviceManagement() {
           </div>
           <div class="device-info-grid">
             <span class="label">장비 상태</span><span class="val">${online ? '온라인 (정상)' : '오프라인 (확인 필요)'}</span>
-            <span class="label">Wi-Fi</span><span class="val">${wifiStatus}</span>
+            <span class="label">Wi-Fi</span><span class="val"><b>${wifiStatus}</b></span>
             <span class="label">Wi-Fi 신호</span><span class="val">${formatRssi(g.rssi, online)}</span>
             <span class="label">IP 주소</span><span class="val">${esc(g.ip || (online ? '연결됨' : '-'))}</span>
             <span class="label">클라우드</span><span class="val">${cloudStatus}</span>
@@ -2296,7 +2386,6 @@ function renderDeviceManagement() {
       const statusBadge = online
         ? '<span class="pill status-pill-online">● 온라인</span>'
         : '<span class="pill status-pill-offline">● 오프라인</span>';
-      const nfcText = Number(h.errorFlags || 0) === 0 ? '● PN532 정상' : '⚠️ 점검 필요';
       return `
         <div class="device-box">
           <div class="device-box-header">
@@ -2308,14 +2397,14 @@ function renderDeviceManagement() {
           </div>
           <div class="device-info-grid">
             <span class="label">장비 상태</span><span class="val">${online ? '온라인 (통신 중)' : '오프라인'}</span>
-            <span class="label">PN532 상태</span><span class="val">${nfcText}</span>
+            <span class="label">PN532 상태</span><span class="val">${getPn532StatusHtml(h)}</span>
             <span class="label">감지 상태</span><span class="val">${esc(hangerClothingStatus(h))}</span>
             <span class="label">걸린 옷</span><span class="val">${esc(garmentNameForHanger(h))}</span>
             <span class="label">통신 채널</span><span class="val">채널 ${h.channel || '-'}</span>
             <span class="label">마지막 신호</span><span class="val">${timeAgo(h.lastSeen)}</span>
           </div>
           <div class="actions">
-            <button type="button" data-hanger-action="settings" data-id="${esc(h.hangerId)}">이름 수정 / 해제</button>
+            <button type="button" data-hanger-action="settings" data-id="${esc(h.hangerId)}">설정</button>
             <button type="button" class="ghost" style="color:var(--ink);border:1px solid #cbd4cd" data-hanger-action="diagnose" data-id="${esc(h.hangerId)}">진단</button>
           </div>
         </div>`;
@@ -2497,7 +2586,97 @@ function installGatewayWifiSetup() {
     };
   }
 
-  // Modal 2: Hanger BLE Dialog
+  // Modal 2: Gateway Settings Dialog
+  const gwSettingsDialog = document.createElement('dialog');
+  gwSettingsDialog.id = 'gatewaySettingsDialog';
+  gwSettingsDialog.innerHTML = `
+    <div class="title">
+      <h2 id="gwSettingsTitle">옷봉 설정</h2>
+      <button type="button" class="ghost" id="closeGwSettingsDialog">닫기</button>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:16px">
+      <div class="panel" style="padding:14px;background:#f8faf8">
+        <label style="margin:0 0 6px 0;font-size:13px">옷봉 이름 변경</label>
+        <div style="display:flex;gap:8px">
+          <input id="inputGwName" placeholder="새 옷봉 이름 입력" style="flex:1">
+          <button type="button" id="btnSaveGwName" class="primary">변경</button>
+        </div>
+      </div>
+      <button type="button" id="btnGwChangeWifi" class="ghost" style="color:var(--ink);border:1px solid #cbd4cd;padding:12px;text-align:left;border-radius:12px">
+        <b>📡 Wi-Fi 변경</b><br><small class="muted">블루투스로 2.4 GHz Wi-Fi 연결을 다시 설정합니다.</small>
+      </button>
+      <button type="button" id="btnGwRefresh" class="ghost" style="color:var(--ink);border:1px solid #cbd4cd;padding:12px;text-align:left;border-radius:12px">
+        <b>🔄 장비 상태 다시 확인</b><br><small class="muted">서버와 옷봉의 최신 연결 상태를 다시 불러옵니다.</small>
+      </button>
+      <div style="border-top:1px solid #e7ece8;margin-top:8px;padding-top:12px">
+        <button type="button" id="btnGwRemove" class="ghost" style="color:var(--red);border:1px solid #e78e88;width:100%;padding:11px;font-weight:600">
+          🗑️ 이 옷봉을 내 계정에서 등록 해제
+        </button>
+      </div>
+    </div>`;
+  document.body.append(gwSettingsDialog);
+  $('#closeGwSettingsDialog').onclick = () => gwSettingsDialog.close();
+
+  // Modal 3: Gateway Diagnostics Dialog
+  const gwDiagDialog = document.createElement('dialog');
+  gwDiagDialog.id = 'gatewayDiagDialog';
+  gwDiagDialog.innerHTML = `
+    <div class="title">
+      <h2 id="gwDiagTitle">옷봉 상세 진단</h2>
+      <button type="button" class="ghost" id="closeGwDiagDialog">닫기</button>
+    </div>
+    <div id="gwDiagContent" class="device-info-grid" style="grid-template-columns:120px 1fr;margin-top:16px;font-size:14px;padding:14px">
+    </div>
+    <div style="margin-top:16px;text-align:right">
+      <button type="button" id="btnCloseGwDiag" class="primary" style="width:100%">확인</button>
+    </div>`;
+  document.body.append(gwDiagDialog);
+  $('#closeGwDiagDialog').onclick = () => gwDiagDialog.close();
+  $('#btnCloseGwDiag').onclick = () => gwDiagDialog.close();
+
+  // Modal 4: Hanger Settings Dialog
+  const hangerSettingsDialog = document.createElement('dialog');
+  hangerSettingsDialog.id = 'hangerSettingsDialog';
+  hangerSettingsDialog.innerHTML = `
+    <div class="title">
+      <h2 id="hangerSettingsTitle">옷걸이 설정</h2>
+      <button type="button" class="ghost" id="closeHangerSettingsDialog">닫기</button>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:16px">
+      <div class="panel" style="padding:14px;background:#f8faf8">
+        <label style="margin:0 0 6px 0;font-size:13px">옷걸이 이름 변경</label>
+        <div style="display:flex;gap:8px">
+          <input id="inputHangerName" placeholder="새 옷걸이 이름 입력" style="flex:1">
+          <button type="button" id="btnSaveHangerName" class="primary">변경</button>
+        </div>
+      </div>
+      <div style="border-top:1px solid #e7ece8;margin-top:8px;padding-top:12px">
+        <button type="button" id="btnHangerRemove" class="ghost" style="color:var(--red);border:1px solid #e78e88;width:100%;padding:11px;font-weight:600">
+          🗑️ 이 옷걸이를 내 옷장에서 등록 해제
+        </button>
+      </div>
+    </div>`;
+  document.body.append(hangerSettingsDialog);
+  $('#closeHangerSettingsDialog').onclick = () => hangerSettingsDialog.close();
+
+  // Modal 5: Hanger Diagnostics Dialog
+  const hangerDiagDialog = document.createElement('dialog');
+  hangerDiagDialog.id = 'hangerDiagDialog';
+  hangerDiagDialog.innerHTML = `
+    <div class="title">
+      <h2 id="hangerDiagTitle">옷걸이 상세 진단</h2>
+      <button type="button" class="ghost" id="closeHangerDiagDialog">닫기</button>
+    </div>
+    <div id="hangerDiagContent" class="device-info-grid" style="grid-template-columns:120px 1fr;margin-top:16px;font-size:14px;padding:14px">
+    </div>
+    <div style="margin-top:16px;text-align:right">
+      <button type="button" id="btnCloseHangerDiag" class="primary" style="width:100%">확인</button>
+    </div>`;
+  document.body.append(hangerDiagDialog);
+  $('#closeHangerDiagDialog').onclick = () => hangerDiagDialog.close();
+  $('#btnCloseHangerDiag').onclick = () => hangerDiagDialog.close();
+
+  // Modal 6: Hanger BLE Dialog
   const hangerDialog = document.createElement('dialog');
   hangerDialog.id = 'hangerBleDialog';
   hangerDialog.innerHTML = `

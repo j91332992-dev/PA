@@ -12,6 +12,7 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <ArduinoJson.h>
+#include <esp_crt_bundle.h>
 #if __has_include("config.h")
 #include "config.h"
 #else
@@ -24,6 +25,68 @@
 #define ALLOW_INSECURE_HTTP 0
 #endif
 #include "protocol.h"
+
+const char GOOGLE_ROOT_BUNDLE[] = 
+"-----BEGIN CERTIFICATE-----\n"
+"MIIFVzCCAz+gAwIBAgINAgPlk28xsBNJiGuiFzANBgkqhkiG9w0BAQwFADBHMQsw\n"
+"CQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2VzIExMQzEU\n"
+"MBIGA1UEAxMLR1RTIFJvb3QgUjEwHhcNMTYwNjIyMDAwMDAwWhcNMzYwNjIyMDAw\n"
+"MDAwWjBHMQswCQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZp\n"
+"Y2VzIExMQzEUMBIGA1UEAxMLR1RTIFJvb3QgUjEwggIiMA0GCSqGSIb3DQEBAQUA\n"
+"A4ICDwAwggIKAoICAQC2EQKLHuOhd5s73L+UPreVp0A8of2C+X0yBoJx9vaMf/vo\n"
+"27xqLpeXo4xL+Sv2sfnOhB2x+cWX3u+58qPpvBKJXqeqUqv4IyfLpLGcY9vXmX7w\n"
+"Cl7raKb0xlpHDU0QM+NOsROjyBhsS+z8CZDfnWQpJSMHobTSPS5g4M/SCYe7zUjw\n"
+"TcLCeoiKu7rPWRnWr4+wB7CeMfGCwcDfLqZtbBkOtdh+JhpFAz2weaSUKK0Pfybl\n"
+"qAj+lug8aJRT7oM6iCsVlgmy4HqMLnXWnOunVmSPlk9orj2XwoSPwLxAwAtcvfaH\n"
+"szVsrBhQf4TgTM2S0yDpM7xSma8ytSmzJSq0SPly4cpk9+aCEI3oncKKiPo4Zor8\n"
+"Y/kB+Xj9e1x3+naH+uzfsQ55lVe0vSbv1gHR6xYKu44LtcXFilWr06zqkUspzBmk\n"
+"MiVOKvFlRNACzqrOSbTqn3yDsEB750Orp2yjj32JgfpMpf/VjsPOS+C12LOORc92\n"
+"wO1AK/1TD7Cn1TsNsYqiA94xrcx36m97PtbfkSIS5r762DL8EGMUUXLeXdYWk70p\n"
+"aDPvOmbsB4om3xPXV2V4J95eSRQAogB/mqghtqmxlbCluQ0WEdrHbEg8QOB+DVrN\n"
+"VjzRlwW5y0vtOUucxD/SVRNuJLDWcfr0wbrM7Rv1/oFB2ACYPTrIrnqYNxgFlQID\n"
+"AQABo0IwQDAOBgNVHQ8BAf8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4E\n"
+"FgQU5K8rJnEaK0gnhS9SZizv8IkTcT4wDQYJKoZIhvcNAQEMBQADggIBAJ+qQibb\n"
+"C5u+/x6Wki4+omVKapi6Ist9wTrYggoGxval3sBOh2Z5ofmmWJyq+bXmYOfg6LEe\n"
+"QkEzCzc9zolwFcq1JKjPa7XSQCGYzyI0zzvFIoTgxQ6KfF2I5DUkzps+GlQebtuy\n"
+"h6f88/qBVRRiClmpIgUxPoLW7ttXNLwzldMXG+gnoot7TiYaelpkttGsN/H9oPM4\n"
+"7HLwEXWdyzRSjeZ2axfG34arJ45JK3VmgRAhpuo+9K4l/3wV3s6MJT/KYnAK9y8J\n"
+"ZgfIPxz88NtFMN9iiMG1D53Dn0reWVlHxYciNuaCp+0KueIHoI17eko8cdLiA6Ef\n"
+"MgfdG+RCzgwARWGAtQsgWSl4vflVy2PFPEz0tv/bal8xa5meLMFrUKTX5hgUvYU/\n"
+"Z6tGn6D/Qqc6f1zLXbBwHSs09dR2CQzreExZBfMzQsNhFRAbd03OIozUhfJFfbdT\n"
+"6u9AWpQKXCBfTkBdYiJ23//OYb2MI3jSNwLgjt7RETeJ9r/tSQdirpLsQBqvFAnZ\n"
+"0E6yove+7u7Y/9waLd64NnHi/Hm3lCXRSHNboTXns5lndcEZOitHTtNCjv0xyBZm\n"
+"2tIMPNuzjsmhDYAPexZ3FL//2wmUspO8IFgV6dtxQ/PeEMMA3KgqlbbC1j+Qa3bb\n"
+"bP6MvPJwNQzcmRk13NfIRmPVNnGuV/u3gm3c\n"
+"-----END CERTIFICATE-----\n"
+"-----BEGIN CERTIFICATE-----\n"
+"MIICCTCCAY6gAwIBAgINAgPlwGjvYxqccpBQUjAKBggqhkjOPQQDAzBHMQswCQYD\n"
+"VQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2VzIExMQzEUMBIG\n"
+"A1UEAxMLR1RTIFJvb3QgUjQwHhcNMTYwNjIyMDAwMDAwWhcNMzYwNjIyMDAwMDAw\n"
+"WjBHMQswCQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2Vz\n"
+"IExMQzEUMBIGA1UEAxMLR1RTIFJvb3QgUjQwdjAQBgcqhkjOPQIBBgUrgQQAIgNi\n"
+"AATzdHOnaItgrkO4NcWBMHtLSZ37wWHO5t5GvWvVYRg1rkDdc/eJkTBa6zzuhXyi\n"
+"QHY7qca4R9gq55KRanPpsXI5nymfopjTX15YhmUPoYRlBtHci8nHc8iMai/lxKvR\n"
+"HYqjQjBAMA4GA1UdDwEB/wQEAwIBhjAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQW\n"
+"BBSATNbrdP9JNqPV2Py1PsVq8JQdjDAKBggqhkjOPQQDAwNpADBmAjEA6ED/g94D\n"
+"9J+uHXqnLrmvT/aDHQ4thQEd0dlq7A/Cr8deVl5c1RxYIigL9zC2L7F8AjEA8GE8\n"
+"p/SgguMh1YQdc4acLa/KNJvxn7kjNuK8YAOdgLOaVsjh4rsUecrNIdSUtUlD\n"
+"-----END CERTIFICATE-----\n"
+"-----BEGIN CERTIFICATE-----\n"
+"MIICjjCCAjOgAwIBAgIQf/NXaJvCTjAtkOGKQb0OHzAKBggqhkjOPQQDAjBQMSQw\n"
+"IgYDVQQLExtHbG9iYWxTaWduIEVDQyBSb290IENBIC0gUjQxEzARBgNVBAoTCkds\n"
+"b2JhbFNpZ24xEzARBgNVBAMTCkdsb2JhbFNpZ24wHhcNMjMxMjEzMDkwMDAwWhcN\n"
+"MjkwMjIwMTQwMDAwWjA7MQswCQYDVQQGEwJVUzEeMBwGA1UEChMVR29vZ2xlIFRy\n"
+"dXN0IFNlcnZpY2VzMQwwCgYDVQQDEwNXRTEwWTATBgcqhkjOPQIBBggqhkjOPQMB\n"
+"BwNCAARvzTr+Z1dHTCEDhUDCR127WEcPQMFcF4XGGTfn1XzthkubgdnXGhOlCgP4\n"
+"mMTG6J7/EFmPLCaY9eYmJbsPAvpWo4IBAjCB/zAOBgNVHQ8BAf8EBAMCAYYwHQYD\n"
+"VR0lBBYwFAYIKwYBBQUHAwEGCCsGAQUFBwMCMBIGA1UdEwEB/wQIMAYBAf8CAQAw\n"
+"HQYDVR0OBBYEFJB3kjVnxP+ozKnme9mAeXvMk/k4MB8GA1UdIwQYMBaAFFSwe61F\n"
+"uOJAf/sKbvu+M8k8o4TVMDYGCCsGAQUFBwEBBCowKDAmBggrBgEFBQcwAoYaaHR0\n"
+"cDovL2kucGtpLmdvb2cvZ3NyNC5jcnQwLQYDVR0fBCYwJDAioCCgHoYcaHR0cDov\n"
+"L2MucGtpLmdvb2cvci9nc3I0LmNybDATBgNVHSAEDDAKMAgGBmeBDAECATAKBggq\n"
+"hkjOPQQDAgNJADBGAiEAokJL0LgR6SOLR02WWxccAq3ndXp4EMRveXMUVUxMWSMC\n"
+"IQDspFWa3fj7nLgouSdkcPy1SdOR2AGm9OQWs7veyXsBwA==\n"
+"-----END CERTIFICATE-----\n";
 
 String gateway;
 uint32_t beaconAt = 0, cloudAt = 0, gatewayHeartbeatAt = 0, wifiRetryAt = 0, sequence = 0;
@@ -314,7 +377,12 @@ bool connectWifi(const String& ssid, const String& password, uint32_t timeoutMs 
   WiFi.begin(ssid.c_str(), password.c_str());
   const uint32_t started = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - started < timeoutMs) delay(100);
-  return WiFi.status() == WL_CONNECTED;
+  if (WiFi.status() == WL_CONNECTED) {
+    IPAddress dns1(8, 8, 8, 8), dns2(1, 1, 1, 1);
+    WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), dns1, dns2);
+    return true;
+  }
+  return false;
 }
 
 bool diagnoseWifi(const String& targetSsid) {
@@ -337,6 +405,9 @@ bool diagnoseWifi(const String& targetSsid) {
   }
   bool found = false;
   for (int i = 0; i < count; ++i) {
+    if (WiFi.SSID(i).length()) {
+      Serial.printf("[SCAN] %s (ch=%d, rssi=%d)\n", WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i));
+    }
     if (WiFi.SSID(i) != targetSsid) continue;
     found = true;
     Serial.printf("[WIFI] Found saved network: channel=%d RSSI=%d dBm\n", WiFi.channel(i), WiFi.RSSI(i));
@@ -375,52 +446,81 @@ void startSetupPortal() {
   Serial.printf("[SETUP] Connect to SmartWardrobe-Setup, then open http://%s\n", WiFi.softAPIP().toString().c_str());
 }
 
-bool request(const String& path, const char* method, const String& payload, String& response, uint16_t timeoutMs = 1200, int* statusCode = nullptr) {
+bool request(const String& path, const char* method, const String& payload, String& response, uint16_t timeoutMs = 5000, int* statusCode = nullptr) {
   if (WiFi.status() != WL_CONNECTED) return false;
-  HTTPClient http;
-  http.setTimeout(timeoutMs);
-  http.setConnectTimeout(timeoutMs);
-  // A fresh HTTPClient is created for every request, so reuse cannot retain a
-  // connection and may leave a stale TCP session after hotspot changes.
-  http.setReuse(false);
-  String url = cloudBaseUrl() + path;
-  const bool secure = url.startsWith("https://");
-  WiFiClientSecure tls;
-  bool begun = false;
-  if (secure) {
-    // Cloud URLs must be authenticated.  The root certificate is public (not
-    // a secret), but is deliberately configured per deployment so that an
-    // arbitrary certificate cannot impersonate the wardrobe API.
-    if (!String(CLOUD_TLS_ROOT_CA).length()) {
-      Serial.println("[CLOUD] HTTPS needs CLOUD_TLS_ROOT_CA in config.h");
-      return false;
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(timeoutMs / 1000 + 1);
+
+  String base = cloudBaseUrl();
+  String host = "smart-wardrobe-api-dhb4.onrender.com";
+  uint16_t port = 443;
+  if (base.indexOf("://") > 0) {
+    String noProto = base.substring(base.indexOf("://") + 3);
+    int slash = noProto.indexOf('/');
+    if (slash > 0) noProto = noProto.substring(0, slash);
+    int colon = noProto.indexOf(':');
+    if (colon > 0) {
+      host = noProto.substring(0, colon);
+      port = (uint16_t)noProto.substring(colon + 1).toInt();
+    } else {
+      host = noProto;
     }
-    tls.setCACert(CLOUD_TLS_ROOT_CA);
-    begun = http.begin(tls, url);
-  } else {
-#if ALLOW_INSECURE_HTTP
-    begun = http.begin(url);
-#else
-    Serial.println("[CLOUD] HTTP blocked; use an HTTPS server URL");
-    return false;
-#endif
   }
-  if (!begun) {
-    Serial.println("[CLOUD] HTTP client begin failed");
+
+  if (!client.connect(host.c_str(), port)) {
+    char err[64]{};
+    client.lastError(err, sizeof err);
+    Serial.printf("[CLOUD] TLS connect failed: %s\n", err);
+    if (statusCode) *statusCode = -1;
     return false;
   }
-  http.addHeader("Authorization", String("Bearer ") + DEVICE_TOKEN);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("X-Gateway-Id", gateway);
-  int code = !strcmp(method, "GET") ? http.GET() : http.POST(payload);
-  if (code <= 0 && secure) {
-    char detail[128]{};
-    tls.lastError(detail, sizeof detail);
-    Serial.printf("[CLOUD] HTTPS transport error=%d detail=%s time=%lld\n", code, detail, static_cast<long long>(time(nullptr)));
+
+  String req = String(method) + " " + path + " HTTP/1.1\r\n" +
+               "Host: " + host + "\r\n" +
+               "User-Agent: SmartWardrobe-Gateway\r\n" +
+               "Authorization: Bearer " + DEVICE_TOKEN + "\r\n" +
+               "X-Gateway-Id: " + gateway + "\r\n" +
+               "Content-Type: application/json\r\n" +
+               "Content-Length: " + String(payload.length()) + "\r\n" +
+               "Connection: close\r\n\r\n" +
+               payload;
+
+  client.print(req);
+  client.flush();
+
+  uint32_t start = millis();
+  while (!client.available() && millis() - start < timeoutMs) {
+    delay(10);
+  }
+  if (!client.available()) {
+    Serial.printf("[CLOUD] No response from %s (connected=%d)\n", path.c_str(), client.connected());
+    client.stop();
+    if (statusCode) *statusCode = -2;
+    return false;
+  }
+
+  String statusLine = client.readStringUntil('\n');
+  int code = 0;
+  if (statusLine.startsWith("HTTP/1.")) {
+    int sp1 = statusLine.indexOf(' ');
+    if (sp1 > 0) {
+      code = statusLine.substring(sp1 + 1, sp1 + 4).toInt();
+    }
   }
   if (statusCode) *statusCode = code;
-  if (code > 0) response = http.getString();
-  http.end();
+
+  while (client.available()) {
+    String header = client.readStringUntil('\n');
+    header.trim();
+    if (header.length() == 0) break;
+  }
+
+  response = "";
+  while (client.available()) {
+    response += (char)client.read();
+  }
+  client.stop();
   return code >= 200 && code < 300;
 }
 
@@ -458,7 +558,7 @@ void upload(const sw::Packet& p) {
   String body, out;
   serializeJson(d, body);
   int httpCode = 0;
-  const uint16_t timeoutMs = p.type == sw::Type::EVENT ? 350 : 500;
+  const uint16_t timeoutMs = 3500;
   if (request("/api/gateway/status", "POST", body, out, timeoutMs, &httpCode)) {
     Serial.printf("[CLOUD] %s OK\n", p.hangerId);
   } else {
@@ -471,10 +571,13 @@ void gatewayHeartbeat() {
   d["gatewayId"] = gateway;
   d["channel"] = WiFi.channel();
   d["firmwareVersion"] = "1.0.0";
+  d["ssid"] = WiFi.SSID();
+  d["rssi"] = WiFi.RSSI();
+  d["ip"] = WiFi.localIP().toString();
   String body, out;
   serializeJson(d, body);
   int httpCode = 0;
-  if (request("/api/gateway/heartbeat", "POST", body, out, 350, &httpCode)) {
+  if (request("/api/gateway/heartbeat", "POST", body, out, 3500, &httpCode)) {
     Serial.println("[CLOUD] gateway heartbeat OK");
     setBleStatus("server_connected", "옷봉이 인터넷과 내 옷장 서버에 연결되었습니다.");
   } else {
@@ -495,12 +598,12 @@ void ack(const sw::Packet& p) {
   d["errorCode"] = p.errorFlags;
   String body, out;
   serializeJson(d, body);
-  request("/api/gateway/ack", "POST", body, out, 350);
+  request("/api/gateway/ack", "POST", body, out, 2500);
 }
 
 void fetchCommands() {
   String out;
-  if (!request("/api/gateway/commands", "GET", "", out, 350)) return;
+  if (!request("/api/gateway/commands", "GET", "", out, 2500)) return;
   JsonDocument doc;
   if (deserializeJson(doc, out)) return;
   for (JsonObject c : doc["commands"].as<JsonArray>()) {
@@ -551,6 +654,30 @@ bool syncTlsClock() {
   return ready;
 }
 
+void testDirectTls() {
+  WiFiClientSecure client;
+  client.setInsecure();
+  Serial.println("[TEST] Connecting directly to smart-wardrobe-api-dhb4.onrender.com:443...");
+  if (!client.connect("smart-wardrobe-api-dhb4.onrender.com", 443)) {
+    char err[128]{};
+    client.lastError(err, sizeof err);
+    Serial.printf("[TEST] TLS connect failed! detail: %s\n", err);
+    return;
+  }
+  Serial.println("[TEST] TLS connected! Sending HTTP GET /api/health...");
+  client.print("GET /api/health HTTP/1.1\r\nHost: smart-wardrobe-api-dhb4.onrender.com\r\nUser-Agent: ESP32-S3\r\nConnection: close\r\n\r\n");
+  uint32_t start = millis();
+  while ((client.connected() || client.available()) && millis() - start < 6000) {
+    while (client.available()) {
+      char c = client.read();
+      Serial.write(c);
+    }
+    delay(10);
+  }
+  client.stop();
+  Serial.println("\n[TEST] Direct TLS test complete");
+}
+
 void wifi() {
   const String ssid = configuredSsid();
   if (!ssid.length() || ssid == "YOUR_2_4_GHZ_WIFI") {
@@ -563,6 +690,7 @@ void wifi() {
     Serial.printf("[WIFI] CONNECTED IP=%s channel=%d\n", WiFi.localIP().toString().c_str(), WiFi.channel());
     setBleStatus("wifi_connected", "Wi-Fi 연결이 완료되었습니다. 서버 연결을 확인하고 있습니다.");
     syncTlsClock();
+    testDirectTls();
     return;
   }
   const int failure = WiFi.status();
@@ -573,6 +701,17 @@ void wifi() {
     setBleStatus("wifi_password_failed", "Wi-Fi 인증에 실패했습니다. 선택한 Wi-Fi의 비밀번호를 다시 확인하세요.");
   } else {
     setBleStatus("wifi_connection_failed", "선택한 Wi-Fi에 연결하지 못했습니다. 전원과 네트워크 상태를 확인한 뒤 다시 시도하세요.");
+  }
+  if (!networkVisible && String(WIFI_SSID).length() && String(WIFI_SSID) != ssid && String(WIFI_SSID) != "YOUR_2_4_GHZ_WIFI") {
+    Serial.printf("[WIFI] Falling back to config.h SSID: %s\n", WIFI_SSID);
+    if (connectWifi(WIFI_SSID, WIFI_PASSWORD)) {
+      Serial.printf("[WIFI] CONNECTED IP=%s channel=%d\n", WiFi.localIP().toString().c_str(), WiFi.channel());
+      wifiPrefs.putString("ssid", WIFI_SSID);
+      wifiPrefs.putString("pass", WIFI_PASSWORD);
+      setBleStatus("wifi_connected", "Wi-Fi 연결이 완료되었습니다.");
+      syncTlsClock();
+      return;
+    }
   }
   Serial.println("[WIFI] No usable Wi-Fi. Starting BLE provisioning.");
 }
@@ -615,10 +754,19 @@ void loop() {
     scanNearbyWifiForBle();
   }
   uint32_t t = millis();
-  if (WiFi.status() != WL_CONNECTED && configuredSsid().length() && t - wifiRetryAt > 5000) {
+  static uint8_t wifiRetryCount = 0;
+  if (WiFi.status() != WL_CONNECTED && t - wifiRetryAt > 5000) {
     wifiRetryAt = t;
-    Serial.println("[WIFI] reconnecting saved network");
-    WiFi.reconnect();
+    if (++wifiRetryCount > 3) {
+      wifiRetryCount = 0;
+      Serial.println("[WIFI] Re-running network discovery and fallback");
+      wifi();
+    } else {
+      Serial.println("[WIFI] reconnecting network");
+      WiFi.reconnect();
+    }
+  } else if (WiFi.status() == WL_CONNECTED) {
+    wifiRetryCount = 0;
   }
   
   // 1. Process pending ESP-NOW EVENTs / ACKs immediately!

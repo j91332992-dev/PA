@@ -54,8 +54,8 @@ uint32_t lastRawUidLogMs = 0;
 // If the PN532 is still booting after a power reconnect, retry quickly rather
 // than leaving the hanger unavailable for multiple seconds.
 constexpr uint32_t PN532_REINIT_COOLDOWN_MS = 500;
-constexpr uint32_t NO_RESPONSE_REMOVE_MS = 800;
-constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 120;
+constexpr uint32_t NO_RESPONSE_REMOVE_MS = 350;
+constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 50;
 constexpr uint32_t PN532_HEALTH_CHECK_MS = 1000;
 // A hanger can reboot while the rod remains on another Wi-Fi channel. Do not
 // leave it isolated for the old 60-second recovery window.
@@ -402,6 +402,9 @@ void scanNfc() {
       if (now - lastSeenMs >= REMOVE_GRACE_MS) {
         memset(currentUid, 0, sizeof(currentUid));
         currentLen = 0;
+        memset(candidateUid, 0, sizeof(candidateUid));
+        candidateLen = 0;
+        candidateHits = 0;
         transition(sw::State::EMPTY);
       }
     }
@@ -410,6 +413,9 @@ void scanNfc() {
     // with no successful card read is a real removal for UI purposes.
     memset(currentUid, 0, sizeof(currentUid));
     currentLen = 0;
+    memset(candidateUid, 0, sizeof(candidateUid));
+    candidateLen = 0;
+    candidateHits = 0;
     transition(sw::State::EMPTY);
   }
 }
