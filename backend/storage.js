@@ -60,7 +60,10 @@ function postgresStorage(connectionString, initial){
       if(!check.rows[0].users||!check.rows[0].wardrobes)throw new Error('Supabase 스키마가 없습니다. supabase/schema.sql을 먼저 실행하세요.');
       const out=initial();
       for(const key of Object.keys(table)){
-        const result=await client.query(`select payload from ${table[key]} order by created_at asc`);
+        // Events are timestamped with `at`; all other persisted records use
+        // `created_at`. Keep the restore order deterministic in both cases.
+        const orderColumn=key==='events'?'at':'created_at';
+        const result=await client.query(`select payload from ${table[key]} order by ${orderColumn} asc`);
         out[key]=result.rows.map(row=>row.payload||{});
       }
       // The one-time importer intentionally runs only against an empty cloud
