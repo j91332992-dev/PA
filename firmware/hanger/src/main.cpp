@@ -7,7 +7,6 @@
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
-#include <ArduinoJson.h>
 #include <Adafruit_PN532.h>
 #if __has_include("config.h")
 #include "config.h"
@@ -87,14 +86,37 @@ void setHangerBleStatus(const char* stateName, const char* message) {
   bleStatusCharacteristic->notify();
 }
 
+// The browser only sends a short, known BLE setup object. Keeping this small
+// parser avoids adding a JSON dependency to the battery-powered hanger build.
+String bleJsonText(const String& request, const char* key) {
+  const String marker = "\"" + String(key) + "\":\"";
+  int start = request.indexOf(marker);
+  if (start < 0) return "";
+  start += marker.length();
+  String value;
+  bool escaped = false;
+  for (int i = start; i < request.length(); ++i) {
+    const char c = request[i];
+    if (escaped) {
+      value += c;
+      escaped = false;
+    } else if (c == '\\') {
+      escaped = true;
+    } else if (c == '"') {
+      return value;
+    } else {
+      value += c;
+    }
+  }
+  return "";
+}
+
 void report(bool event);
 
 class HangerBleConfigCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* characteristic) override {
     const String request = characteristic->getValue();
-    JsonDocument config;
-    deserializeJson(config, request);
-    const String action = config["action"] | "";
+    const String action = bleJsonText(request, "action");
     if (action == "pair") {
       if (!discoveredGateway.length()) {
         setHangerBleStatus("waiting_gateway", "옷봉 신호를 찾는 중입니다. 옷봉 전원과 거리를 확인하세요.");
@@ -103,7 +125,7 @@ class HangerBleConfigCallbacks : public BLECharacteristicCallbacks {
       pairedGateway = discoveredGateway;
       hangerLinkDisabled = false;
       prefs.putString("gateway", pairedGateway);
-      const String requestedName = config["displayName"] | "";
+      const String requestedName = bleJsonText(request, "displayName");
       if (requestedName.length()) prefs.putString("displayName", requestedName);
       prefs.putBool("linkDisabled", false);
       setHangerBleStatus("paired", "옷봉과 연결했습니다. 이제 옷 태그 상태를 확인할 수 있습니다.");
