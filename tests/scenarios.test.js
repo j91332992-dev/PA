@@ -12,6 +12,8 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pa-scenarios-'));
 if (!process.env.DATA_PATH) process.env.DATA_PATH = path.join(tmpDir, 'wardrobe-scenarios.json');
 if (!process.env.DEVICE_TOKEN) process.env.DEVICE_TOKEN = 'test-device';
 if (!process.env.JWT_SECRET) process.env.JWT_SECRET = 'test-secret';
+// The virtual hardware scenarios deliberately exercise simulator-only IDs.
+if (!process.env.SIMULATION_ENABLED) process.env.SIMULATION_ENABLED = 'true';
 
 const deviceToken = 'test-device';
 
@@ -527,7 +529,6 @@ test('Scenario N: Empty Hanger Physical Lifecycle (A, B, C, D) & Logout Persiste
 
   assert.ok(snapRelogin.garments.some(g => g.id === garment.id), 'Garment data is preserved after logout and relogin');
 });
-
 
 
 

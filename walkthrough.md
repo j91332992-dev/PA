@@ -38,4 +38,19 @@
 
 - Node 문법 검사(`backend/server.js`, `backend/garment-image-service.js`, `web/public/app.js`)와 Python 문법 검사를 통과했다.
 - Python 사진 서비스의 `/api/health`가 200으로 응답하는 것을 확인했다.
+
+## 계정별 옷장·실장비 관리
+
+- `backend/server-v3.js`는 기존 단일 JSON 데이터를 `사용자 → 개인 옷장 → 옷봉/옷걸이/옷/이벤트/명령` 구조로 자동 마이그레이션한다. 로그인한 계정에는 자기 옷장 데이터와 WebSocket 이벤트만 전송된다.
+- `backend/storage.js`는 기본 로컬 JSON 모드를 유지하면서 `DATABASE_URL`이 설정된 경우 Supabase PostgreSQL 저장소로 전환한다. `scripts/migrate-json-to-postgres.js`는 비어 있는 클라우드 DB에만 기존 JSON을 1회 이관한다.
+- `render.yaml`, `supabase/schema.sql`, `docs/CLOUD_BETA_DEPLOYMENT.md`는 친구 테스트용 Render/Supabase 배포 절차를 제공한다. 공개 배포에서는 C3 옷봉도 HTTPS와 배포 도메인의 공개 루트 CA를 사용해야 한다.
+- 기존 실장비가 마지막으로 `EMPTY`여서 NFC UID로 소유자를 알 수 없는 경우에는, 기존 옷을 가장 많이 등록한 계정에만 한 번 귀속한다. 이 프로젝트의 `GW-D4DB1C` 옷봉과 `HC-62F2A0` 옷걸이는 해당 규칙으로 함께 보존됐다.
+- 새 C6는 현재 펌웨어를 업로드한 뒤 옷봉에 ESP-NOW로 연결하면 된다. 웹의 **설정/진단 → 내 장비 관리**에서 옷봉과 옷걸이를 각각 보고, 이름 수정 또는 내 계정에서만 등록 제거할 수 있다.
+- 실사용 서버에서는 시뮬레이션을 기본 비활성화했고, 웹 메뉴·가상 장비 필터를 제거했다. 시뮬레이터는 테스트에서만 `SIMULATION_ENABLED=true`로 켠다.
+
+## 계정 분리 검증
+
+- `npm test` 실행 결과: 24개 테스트 모두 통과.
+- 새 `tests/tenant-isolation.test.js`는 두 계정이 같은 NFC UID를 각자 등록할 수 있고, 다른 계정의 옷·옷봉·옷걸이·LED 명령에 접근할 수 없음을 확인한다.
+- 로컬 서버를 새 버전으로 다시 기동했고 `http://localhost:8787/api/health`가 HTTP 200, `simulationEnabled:false`를 반환했다.
 - 실제 인물/의류 사진 1장으로 첫 모델 다운로드 후 배경 제거·분류 결과를 확인하면 최종 체감 검증이 끝난다.

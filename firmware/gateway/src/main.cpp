@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <BLEDevice.h>
@@ -14,6 +15,12 @@
 #include "config.h"
 #else
 #error "Copy include/config.example.h to include/config.h and fill the values"
+#endif
+#ifndef CLOUD_TLS_ROOT_CA
+#define CLOUD_TLS_ROOT_CA ""
+#endif
+#ifndef ALLOW_INSECURE_HTTP
+#define ALLOW_INSECURE_HTTP 0
 #endif
 #include "protocol.h"
 
@@ -350,7 +357,31 @@ bool request(const String& path, const char* method, const String& payload, Stri
   // connection and may leave a stale TCP session after hotspot changes.
   http.setReuse(false);
   String url = cloudBaseUrl() + path;
-  http.begin(url);
+  const bool secure = url.startsWith("https://");
+  WiFiClientSecure tls;
+  bool begun = false;
+  if (secure) {
+    // Cloud URLs must be authenticated.  The root certificate is public (not
+    // a secret), but is deliberately configured per deployment so that an
+    // arbitrary certificate cannot impersonate the wardrobe API.
+    if (!String(CLOUD_TLS_ROOT_CA).length()) {
+      Serial.println("[CLOUD] HTTPS needs CLOUD_TLS_ROOT_CA in config.h");
+      return false;
+    }
+    tls.setCACert(CLOUD_TLS_ROOT_CA);
+    begun = http.begin(tls, url);
+  } else {
+#if ALLOW_INSECURE_HTTP
+    begun = http.begin(url);
+#else
+    Serial.println("[CLOUD] HTTP blocked; use an HTTPS server URL");
+    return false;
+#endif
+  }
+  if (!begun) {
+    Serial.println("[CLOUD] HTTP client begin failed");
+    return false;
+  }
   http.addHeader("Authorization", String("Bearer ") + DEVICE_TOKEN);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-Gateway-Id", gateway);

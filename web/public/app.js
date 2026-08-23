@@ -20,6 +20,7 @@ const HANGER_BLE_STATUS_UUID = 'a4e66a22-0fb0-4dce-8be0-18cf7bc82001';
 let bleConfigCharacteristic = null;
 let nearbyWifiNetworks = [];
 let hangerBleConfigCharacteristic = null;
+const claimedDeviceIds = new Set();
 const ROD_RECONNECT_WINDOW_MS = 30000;
 let rodReconnectStartedAt = Number(sessionStorage.getItem('wardrobeRodReconnectStartedAt') || 0);
 
@@ -36,6 +37,11 @@ const CITY_COORDS = {
 const $ = s => document.querySelector(s),
   $$ = s => [...document.querySelectorAll(s)],
   esc = s => String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const setHTML = (selector, value) => {
+  const element = $(selector);
+  if (!element) throw new Error(`화면 요소를 찾지 못했습니다: ${selector}`);
+  element.innerHTML = value;
+};
 
 function hangerDisplayName(hanger) {
   if (!hanger) return '옷걸이';
@@ -835,7 +841,7 @@ function render() {
       ['경고/중복', h.filter(x => ['UNSTABLE', 'CONFLICT', 'UNKNOWN_TAG'].includes(x.state)).length],
     ];
 
-  $('#summary').innerHTML = counts.map(x => `<article><b>${x[1]}</b><span>${x[0]}</span></article>`).join('');
+  setHTML('#summary', counts.map(x => `<article><b>${x[1]}</b><span>${x[0]}</span></article>`).join(''));
 
   const garment = x => {
     const isFinding = isHangerLedActive(x.currentHanger);
@@ -869,15 +875,15 @@ function render() {
     </article>`;
   };
 
-  $('#recentGarments').innerHTML = g.slice(0, 6).map(garment).join('') || '<p class="muted">새 옷을 등록하세요.</p>';
+  setHTML('#recentGarments', g.slice(0, 6).map(garment).join('') || '<p class="muted">새 옷을 등록하세요.</p>');
 
   const q = $('#search').value.toLowerCase(),
     sf = $('#stateFilter').value;
-  $('#garments').innerHTML =
+  setHTML('#garments',
     g
       .filter(x => (!q || [x.name, x.category, x.color, x.brand].join(' ').toLowerCase().includes(q)) && (!sf || x.currentState === sf))
       .map(garment)
-      .join('') || '<p>조건에 맞는 옷이 없습니다.</p>';
+      .join('') || '<p>조건에 맞는 옷이 없습니다.</p>');
 
   const hq = ($('#hangerSearch')?.value || '').toLowerCase(),
     hf = $('#hangerFilter')?.value || '';
@@ -893,7 +899,7 @@ function render() {
     return true;
   });
 
-  $('#hangerCards').innerHTML =
+  setHTML('#hangerCards',
     filteredHangers
       .map(x => {
         let stateDesc = '';
@@ -929,43 +935,30 @@ function render() {
           }
         </article>`;
       })
-      .join('') || '<p>조건에 맞는 옷걸이가 없습니다.</p>';
-
-  $('#outfitCards').innerHTML =
-    g
-      .filter(x => x.currentState === 'IN_WARDROBE')
-      .map(
-        x =>
-          `<article class="card selectable ${selected.has(x.currentHanger) ? 'selected' : ''}" data-hanger="${esc(x.currentHanger)}"><h3>${esc(
-            x.name
-          )}</h3><p>${esc(x.category || '미분류')} · ${esc(x.currentHanger)}</p><span class="pill">${
-            selected.has(x.currentHanger) ? '선택됨' : '눌러서 선택'
-          }</span></article>`
-      )
-      .join('') || '<p>현재 옷장 안에 있는 옷이 없습니다.</p>';
+      .join('') || '<p>조건에 맞는 옷걸이가 없습니다.</p>');
 
   const cleanEvents = getMeaningfulEvents(model.events || []);
 
-  $('#recentEvents').innerHTML =
+  setHTML('#recentEvents',
     cleanEvents
       .slice(0, 8)
       .map(e => `<li>${formatEvent(e)}</li>`)
-      .join('') || '<li>이벤트 없음</li>';
+      .join('') || '<li>이벤트 없음</li>');
 
-  $('#allEvents').innerHTML =
+  setHTML('#allEvents',
     cleanEvents
       .slice(0, 100)
       .map(e => `<li>${formatEvent(e)}</li>`)
-      .join('') || '<li>이벤트 없음</li>';
+      .join('') || '<li>이벤트 없음</li>');
 
-  $('#diagnostics').innerHTML = [
+  setHTML('#diagnostics', [
     ['서버', 'ONLINE'],
     ['게이트웨이', online ? 'ONLINE' : 'OFFLINE'],
     ['실시간 연결', socket?.readyState === 1 ? 'CONNECTED' : 'DISCONNECTED'],
     ['명령 대기', (model.commands || []).filter(c => !['ACKED', 'TIMEOUT'].includes(c.status)).length],
   ]
     .map(x => `<article class="panel"><small>${x[0]}</small><h3>${x[1]}</h3></article>`)
-    .join('');
+    .join(''));
 
   renderGatewayWifiHelp();
   renderHangerConnectionHelp();
@@ -979,13 +972,11 @@ function render() {
   );
 
   updateDetectedTags();
-  renderSim();
 }
 
 async function refresh() {
   model = await api('/api/snapshot');
   render();
-  fetchSimState();
 }
 
 function connect() {
@@ -1072,26 +1063,30 @@ function switchView(viewName) {
   $$('.view').forEach(v => (v.hidden = v.id !== targetView));
   if (targetView === 'outfit') {
     renderOutfitRecs();
-  } else if (targetView === 'simulation') {
-    fetchSimState();
-    if (!simTimer) simTimer = setInterval(fetchSimState, 1500);
-  } else {
-    if (simTimer) {
-      clearInterval(simTimer);
-      simTimer = null;
-    }
+  }
+  if (simTimer) {
+    clearInterval(simTimer);
+    simTimer = null;
   }
 }
 
 async function enter() {
   try {
-    await refresh();
+    // Fetch first, but do not leave a successfully authenticated person on
+    // the login form because one optional dashboard card failed to render.
+    model = await api('/api/snapshot');
     $('#auth').hidden = true;
     $('#auth').style.display = 'none';
     $('#app').hidden = false;
     $('#app').style.display = 'block';
     switchView('dashboard');
     window.scrollTo({ top: 0, behavior: 'smooth' });
+    try {
+      render();
+    } catch (renderError) {
+      console.error('Dashboard render error:', renderError);
+      $('#dashboard').innerHTML = `<article class="panel"><h2>대시보드를 불러오는 중 문제가 발생했습니다.</h2><p class="error">${esc(renderError.message || '화면을 표시할 수 없습니다.')}</p><button type="button" onclick="location.reload()">다시 불러오기</button></article>`;
+    }
     connect();
     loadWeather($('#weatherCitySelect')?.value || 'seoul');
   } catch (err) {
@@ -1395,11 +1390,9 @@ $('#authForm').onsubmit = async e => {
       successBox.style.display = 'block';
     }
 
-    setTimeout(async () => {
-      await enter();
-      submitBtn.disabled = false;
-      if (successBox) successBox.style.display = 'none';
-    }, 650);
+    // A successful login can follow a service-worker update. Reload once so
+    // the dashboard always starts with the same JavaScript version as the API.
+    setTimeout(() => window.location.reload(), 650);
   } catch (x) {
     submitBtn.disabled = false;
     $('#authError').textContent = x.message;
@@ -1896,8 +1889,25 @@ function handleHangerBleStatus(value) {
     const info = JSON.parse(new TextDecoder().decode(value));
     setHangerBleMessage(info.message || '옷걸이 상태를 받았습니다.', info.state === 'error');
     showHangerBleStatus(info);
+    const gatewayId = info.gatewayId || info.discoveredGatewayId;
+    if (gatewayId) claimDevice('gateways', gatewayId);
+    if (info.hangerId && gatewayId) claimDevice('hangers', info.hangerId);
   } catch (_) {
     setHangerBleMessage('옷걸이 상태를 읽지 못했습니다.', true);
+  }
+}
+
+async function claimDevice(kind, deviceId) {
+  const key = `${kind}:${deviceId}`;
+  if (claimedDeviceIds.has(key)) return;
+  claimedDeviceIds.add(key);
+  try {
+    await api(`/api/${kind}/${encodeURIComponent(deviceId)}/claim`, { method: 'POST' });
+    refresh();
+  } catch (error) {
+    // A device already belonging to another wardrobe must never be silently moved.
+    if (error.status !== 404) setHangerBleMessage(error.message, true);
+    claimedDeviceIds.delete(key);
   }
 }
 
@@ -1996,6 +2006,11 @@ function installGatewayWifiSetup() {
   hangerPanel.id = 'hangerConnectionHelp';
   hangerPanel.innerHTML = '<h3>옷걸이 연결 상태</h3><p>옷걸이 상태를 불러오는 중입니다.</p>';
   setupView.append(hangerPanel);
+  const devicePanel = document.createElement('article');
+  devicePanel.className = 'panel';
+  devicePanel.id = 'deviceManagement';
+  devicePanel.innerHTML = '<h3>내 장비 관리</h3><p>장비 목록을 불러오는 중입니다.</p>';
+  setupView.append(devicePanel);
 
   const dialog = document.createElement('dialog');
   dialog.id = 'gatewayWifiDialog';
@@ -2089,9 +2104,41 @@ function renderGatewayWifiHelp() {
   $('#openGatewayWifiHelp').onclick = window.showGatewayWifiHelp;
 }
 
+function renderDeviceManagement() {
+  const panel = $('#deviceManagement');
+  if (!panel) return;
+  const gateways = (model.gateways || []).filter(g => !String(g.gatewayId || '').startsWith('GW-SIM'));
+  const hangers = (model.hangers || []).filter(h => !String(h.hangerId || '').startsWith('HC-000'));
+  const gatewayCards = gateways.map(g => `<li><b>${esc(g.name || '옷봉')}</b><small>${esc(g.gatewayId)} · ${g.state === 'ONLINE' ? '온라인' : '오프라인'}</small><span><button data-device-action="rename" data-kind="gateways" data-id="${esc(g.gatewayId)}">이름 수정</button><button class="ghost" data-device-action="remove" data-kind="gateways" data-id="${esc(g.gatewayId)}">등록 제거</button></span></li>`).join('') || '<li class="muted">등록된 옷봉이 없습니다.</li>';
+  const hangerCards = hangers.map(h => `<li><b>${esc(hangerDisplayName(h))}</b><small>${esc(h.hangerId)} · ${esc(hangerClothingStatus(h))}</small><span><button data-device-action="rename" data-kind="hangers" data-id="${esc(h.hangerId)}">이름 수정</button><button class="ghost" data-device-action="remove" data-kind="hangers" data-id="${esc(h.hangerId)}">등록 제거</button></span></li>`).join('') || '<li class="muted">등록된 옷걸이가 없습니다.</li>';
+  panel.innerHTML = `<h3>내 장비 관리</h3><p class="muted">옷봉은 Wi-Fi·서버 통신 장치이고, 옷걸이는 옷봉과 ESP-NOW로 연결됩니다. 장비마다 이름을 바꾸거나 내 옷장에서만 등록을 제거할 수 있습니다.</p><div class="actions"><button id="addGatewayDevice">+ 옷봉 연결</button><button id="addHangerDevice">+ 옷걸이 연결</button></div><h4>옷봉</h4><ul class="device-management-list">${gatewayCards}</ul><h4>옷걸이</h4><ul class="device-management-list">${hangerCards}</ul>`;
+  $('#addGatewayDevice').onclick = window.showGatewayWifiHelp;
+  $('#addHangerDevice').onclick = window.showHangerBleHelp;
+  panel.querySelectorAll('[data-device-action]').forEach(button => button.onclick = async () => {
+    const { deviceAction, kind, id: deviceId } = button.dataset;
+    const item = (kind === 'gateways' ? model.gateways : model.hangers).find(x => (kind === 'gateways' ? x.gatewayId : x.hangerId) === deviceId);
+    if (deviceAction === 'rename') {
+      const current = kind === 'gateways' ? item?.name : item?.alias || hangerDisplayName(item);
+      const name = prompt(kind === 'gateways' ? '옷봉 이름을 입력하세요.' : '옷걸이 이름을 입력하세요.', current || '');
+      if (!name?.trim()) return;
+      await api(`/api/${kind}/${encodeURIComponent(deviceId)}`, { method: 'PATCH', body: JSON.stringify({ name: name.trim() }) });
+      toast('장비 이름을 변경했습니다.');
+    } else {
+      const label = kind === 'gateways' ? '옷봉' : '옷걸이';
+      if (!confirm(`${label}을 내 옷장에서 등록 제거할까요? 실제 전원은 꺼지지 않으며, 다시 연결하면 재등록할 수 있습니다.`)) return;
+      await api(`/api/${kind}/${encodeURIComponent(deviceId)}`, { method: 'DELETE' });
+      toast(`${label} 등록을 제거했습니다.`);
+    }
+    await refresh();
+  });
+}
+
 installGatewayWifiSetup();
+$('#navSim')?.remove();
+$('#simulation')?.remove();
 setInterval(renderGatewayWifiHelp, 1000);
 setInterval(renderHangerConnectionHelp, 1000);
+setInterval(renderDeviceManagement, 1000);
 initAllComboboxes();
 token ? enter() : showAuth();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
