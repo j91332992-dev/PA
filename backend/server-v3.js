@@ -38,7 +38,14 @@ function migrate(){
   for(const e of db.events)if(!e.wardrobeId){const p=e.payload||{},h=db.hangers.find(h=>h.hangerId===p.hangerId);e.wardrobeId=h?.wardrobeId||ownerByTag.get(p.tagUid)||null;}
   db.schemaVersion=3;
 }
-const ready=storage.load().then(loaded=>{db=loaded;migrate();return save()}).then(()=>console.log(`[STORAGE] ${storage.mode} ready`));
+function storageConnectionDiagnostic(){
+  if(!process.env.DATABASE_URL)return 'DATABASE_URL is not set';
+  try{
+    const connection=new URL(process.env.DATABASE_URL);
+    return `host=${connection.host} user=${connection.username} db=${connection.pathname} passwordLength=${connection.password.length} placeholder=${connection.password.includes('YOUR-PASSWORD')} whitespace=${/\s/.test(process.env.DATABASE_URL)}`;
+  }catch{return 'DATABASE_URL is not a valid URI';}
+}
+const ready=storage.load().then(loaded=>{db=loaded;migrate();return save()}).then(()=>console.log(`[STORAGE] ${storage.mode} ready`)).catch(error=>{console.error(`[STORAGE] ${storage.mode} init failed: ${error.message}; ${storageConnectionDiagnostic()}`);throw error});
 function token(user){const p=Buffer.from(JSON.stringify({sub:user.id,exp:Date.now()+604800000})).toString('base64url');return `${p}.${crypto.createHmac('sha256',SECRET).update(p).digest('base64url')}`}
 function getUser(req){const [p,s]=String(req.headers.authorization||'').replace(/^Bearer /,'').split('.');if(!p||!s||!safe(s,crypto.createHmac('sha256',SECRET).update(p).digest('base64url')))return null;try{const x=JSON.parse(Buffer.from(p,'base64url'));return x.exp>Date.now()?db.users.find(u=>u.id===x.sub):null}catch{return null}}
 function needUser(req){const u=getUser(req);if(!u)throw error(401,'로그인이 필요합니다.');return u}
