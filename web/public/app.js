@@ -978,6 +978,9 @@ function render() {
   );
 
   updateDetectedTags();
+  renderGatewayWifiHelp();
+  renderHangerConnectionHelp();
+  renderDeviceManagement();
 }
 
 async function refresh() {
@@ -1846,10 +1849,10 @@ async function saveHangerWifi(event) {
     setBleSetupMessage('설정을 저장했습니다. 옷봉이 재시작되어 Wi-Fi와 웹 서버에 연결됩니다.');
     rodReconnectStartedAt = Date.now();
     sessionStorage.setItem('wardrobeRodReconnectStartedAt', String(rodReconnectStartedAt));
-    $('#bleWifiForm').hidden = true;
-    $('#scanHangerWifi').hidden = true;
-    $('#connectHangerBle').hidden = true;
-    $('#bleSetupComplete').hidden = false;
+    const wifiForm = $('#bleWifiForm'); if (wifiForm) wifiForm.hidden = true;
+    const scanBtn = $('#scanHangerWifi'); if (scanBtn) scanBtn.hidden = true;
+    const connectBtn = $('#connectHangerBle'); if (connectBtn) connectBtn.hidden = true;
+    const completeSec = $('#bleSetupComplete'); if (completeSec) completeSec.hidden = false;
     window.setTimeout(() => $('#gatewayWifiDialog')?.close(), 2500);
   } catch (error) {
     setBleSetupMessage(bleErrorMessage(error, 'Wi-Fi 정보 저장'), true);
@@ -1866,9 +1869,9 @@ async function forgetHangerWifi() {
     setBleSetupMessage('옷봉 Wi-Fi 연결을 제거했습니다. 옷봉이 재시작됩니다.');
     rodReconnectStartedAt = 0;
     sessionStorage.removeItem('wardrobeRodReconnectStartedAt');
-    $('#bleWifiForm').hidden = true;
-    $('#scanHangerWifi').hidden = true;
-    $('#forgetHangerWifi').hidden = true;
+    const wifiForm = $('#bleWifiForm'); if (wifiForm) wifiForm.hidden = true;
+    const scanBtn = $('#scanHangerWifi'); if (scanBtn) scanBtn.hidden = true;
+    const forgetBtn = $('#forgetHangerWifi'); if (forgetBtn) forgetBtn.hidden = true;
     window.setTimeout(() => $('#gatewayWifiDialog')?.close(), 2500);
   } catch (error) {
     setBleSetupMessage(bleErrorMessage(error, '옷봉 연결 제거'), true);
@@ -1963,10 +1966,13 @@ async function connectPhysicalHangerBluetooth() {
     await status.startNotifications();
     status.addEventListener('characteristicvaluechanged', event => handleHangerBleStatus(event.target.value));
     const knownHanger = (model.hangers || []).find(hanger => device.name?.includes(hanger.hangerId));
-    $('#hangerBleDeviceName').textContent = `${hangerDisplayName(knownHanger || { hangerId: device.name || '' })} 연결됨`;
+    const nameEl = $('#hangerBleDeviceName');
+    if (nameEl) nameEl.textContent = `${hangerDisplayName(knownHanger || { hangerId: device.name || '' })} 연결됨`;
     handleHangerBleStatus(await status.readValue());
-    $('#pairPhysicalHanger').hidden = false;
-    $('#forgetPhysicalHanger').hidden = false;
+    const pairBtn = $('#pairPhysicalHanger');
+    if (pairBtn) pairBtn.hidden = false;
+    const forgetBtn = $('#forgetPhysicalHanger');
+    if (forgetBtn) forgetBtn.hidden = false;
     await writeHangerBle('status');
   } catch (error) {
     setHangerBleMessage(bleErrorMessage(error, '옷걸이 연결'), true);
@@ -1998,12 +2004,17 @@ function renderHangerConnectionHelp() {
   } else {
     panel.innerHTML = '<h3>옷걸이 연결 상태</h3><p><b class="OFFLINE">연결 끊김</b> · 옷걸이 신호가 30초 이상 들어오지 않았습니다.</p><p class="muted">전원·옷봉 근처 위치를 확인한 뒤, 필요하면 블루투스로 다시 연결하세요.</p><button type="button" id="openHangerConnection">옷걸이 연결·태그 진단</button>';
   }
-  $('#openHangerConnection').onclick = window.showHangerBleHelp;
+  const openHangerConnectionBtn = $('#openHangerConnection');
+  if (openHangerConnectionBtn) {
+    openHangerConnectionBtn.onclick = window.showHangerBleHelp;
+  }
   const quickForget = $('#forgetPhysicalHangerQuick');
-  if (quickForget) quickForget.onclick = () => {
-    window.showHangerBleHelp();
-    setHangerBleMessage('연결 제거를 하려면 먼저 옷걸이 찾기로 블루투스에 연결한 뒤 아래 제거 버튼을 누르세요.');
-  };
+  if (quickForget) {
+    quickForget.onclick = () => {
+      window.showHangerBleHelp();
+      setHangerBleMessage('연결 제거를 하려면 먼저 옷걸이 찾기로 블루투스에 연결한 뒤 아래 제거 버튼을 누르세요.');
+    };
+  }
 }
 
 function installGatewayWifiSetup() {
@@ -2020,26 +2031,38 @@ function installGatewayWifiSetup() {
   devicePanel.innerHTML = '<h3>내 장비 관리</h3><p>장비 목록을 불러오는 중입니다.</p>';
   setupView.append(devicePanel);
 
+  const helpPanel = document.createElement('article');
+  helpPanel.className = 'panel';
+  helpPanel.id = 'gatewayWifiHelp';
+  helpPanel.innerHTML = '<h3>옷봉 연결 상태</h3><p>옷봉 상태를 확인하는 중입니다.</p>';
+  setupView.append(helpPanel);
+
+  const hangerHelpPanel = document.createElement('article');
+  hangerHelpPanel.className = 'panel';
+  hangerHelpPanel.id = 'hangerConnectionHelp';
+  hangerHelpPanel.innerHTML = '<h3>옷걸이 연결 상태</h3><p>옷걸이 상태를 확인하는 중입니다.</p>';
+  setupView.append(hangerHelpPanel);
+
   const dialog = document.createElement('dialog');
   dialog.id = 'gatewayWifiDialog';
   dialog.innerHTML = '<div class="title"><h2>옷봉 인터넷 연결</h2><button type="button" class="ghost" id="closeGatewayWifiHelp">닫기</button></div><p><b>처음 한 번만 설정하면 됩니다.</b> PC·휴대폰의 Wi-Fi는 바꾸지 않고, 옷봉에만 인터넷이 되는 2.4 GHz Wi-Fi를 저장합니다.</p><h3>연결 순서</h3><ol><li><b>옷봉 찾기</b>를 누릅니다.</li><li>브라우저가 여는 선택창에서 <b>새 옷봉</b> 또는 <b>내 이름의 옷봉</b>을 선택하고 연결을 허용합니다.</li><li>아래에 표시된, 옷봉이 직접 찾은 <b>주변 2.4 GHz Wi-Fi</b>를 선택합니다.</li><li>그 Wi-Fi의 비밀번호를 입력합니다.</li><li>서버 주소는 자동으로 채워집니다. 바꾸지 마세요.</li><li><b>옷봉에 저장하고 연결</b>을 누릅니다. 약 10초 뒤 결과가 표시됩니다.</li></ol><p class="muted">설정 뒤에는 PC·휴대폰이 5 GHz Wi-Fi를 사용해도 됩니다. Wi-Fi 비밀번호는 옷봉에만 저장됩니다.</p><button type="button" id="connectHangerBle">옷봉 찾기</button><p id="bleDeviceName" class="muted"></p><p id="bleSetupMessage" class="muted">블루투스 연결을 시작하세요.</p><form id="bleWifiForm" hidden><label>옷봉이 찾은 주변 2.4 GHz Wi-Fi<select name="ssid" id="nearbyWifiChoices" required><option value="">옷봉을 연결하면 목록이 표시됩니다</option></select></label><button type="button" id="scanHangerWifi">주변 Wi-Fi 다시 검색</button><label>선택한 Wi-Fi 비밀번호<input name="password" type="password" required></label><label>서버 주소<input name="server" required></label><button>옷봉에 저장하고 연결</button><button type="button" class="ghost" id="forgetHangerWifi">옷봉 Wi-Fi 연결 제거</button></form><section id="bleSetupComplete" hidden><h3>설정 저장 완료</h3><p>옷봉이 재시작되어 Wi-Fi와 내 옷장 서버에 연결 중입니다. 대시보드가 자동으로 갱신됩니다.</p><button type="button" id="closeAfterSave">대시보드로 돌아가기</button></section>';
-  // On the public dashboard this is the Render HTTPS origin; on local
-  // development it naturally remains the local address. Never seed a
-  // machine-specific LAN address into a new rod setup.
-  dialog.querySelector('input[name="server"]').value = window.location.origin;
+  const serverInput = dialog.querySelector('input[name="server"]');
+  if (serverInput) {
+    serverInput.value = window.location.origin;
+  }
   document.body.append(dialog);
+
   const showGatewayWifiHelp = () => {
     try {
       if (typeof dialog.showModal === 'function') {
         if (!dialog.open) dialog.showModal();
         return;
       }
-    } catch (_) {
-      // Fall through to the browser-native prompt below.
-    }
+    } catch (_) {}
     window.alert('PC의 블루투스를 켠 뒤 옷봉 찾기를 누르고 “새 옷봉” 또는 내 이름의 옷봉을 선택하세요. 이후 옷봉이 직접 찾은 2.4 GHz Wi-Fi를 선택합니다.');
   };
   window.showGatewayWifiHelp = showGatewayWifiHelp;
+
   const directPortalLink = setupView.querySelector('a[href="http://192.168.4.1"]');
   if (directPortalLink) {
     directPortalLink.textContent = 'Wi-Fi 연결 방법 보기';
@@ -2049,26 +2072,51 @@ function installGatewayWifiSetup() {
       showGatewayWifiHelp();
     };
   }
-  $('#openGatewayWifiHelp').onclick = showGatewayWifiHelp;
-  $('#closeGatewayWifiHelp').onclick = () => dialog.close();
-  $('#connectHangerBle').onclick = connectHangerBluetooth;
-  $('#scanHangerWifi').onclick = scanHangerWifi;
-  $('#forgetHangerWifi').onclick = forgetHangerWifi;
-  $('#closeAfterSave').onclick = () => dialog.close();
-  $('#bleWifiForm').onsubmit = saveHangerWifi;
+
+  const openGatewayWifiHelpBtn = $('#openGatewayWifiHelp');
+  if (openGatewayWifiHelpBtn) openGatewayWifiHelpBtn.onclick = showGatewayWifiHelp;
+
+  const closeGatewayWifiHelpBtn = $('#closeGatewayWifiHelp');
+  if (closeGatewayWifiHelpBtn) closeGatewayWifiHelpBtn.onclick = () => dialog.close();
+
+  const connectHangerBleBtn = $('#connectHangerBle');
+  if (connectHangerBleBtn) connectHangerBleBtn.onclick = connectHangerBluetooth;
+
+  const scanHangerWifiBtn = $('#scanHangerWifi');
+  if (scanHangerWifiBtn) scanHangerWifiBtn.onclick = scanHangerWifi;
+
+  const forgetHangerWifiBtn = $('#forgetHangerWifi');
+  if (forgetHangerWifiBtn) forgetHangerWifiBtn.onclick = forgetHangerWifi;
+
+  const closeAfterSaveBtn = $('#closeAfterSave');
+  if (closeAfterSaveBtn) closeAfterSaveBtn.onclick = () => dialog.close();
+
+  const bleWifiFormEl = $('#bleWifiForm');
+  if (bleWifiFormEl) bleWifiFormEl.onsubmit = saveHangerWifi;
 
   const hangerDialog = document.createElement('dialog');
   hangerDialog.id = 'hangerBleDialog';
   hangerDialog.innerHTML = '<div class="title"><h2>옷걸이 연결·옷 태그 확인</h2><button type="button" class="ghost" id="closeHangerBleHelp">닫기</button></div><p><b>옷걸이는 Wi-Fi를 설정하지 않습니다.</b> 옷봉과 자동으로 통신합니다. 이 화면은 옷걸이를 처음 연결하거나, 연결을 바꾸고 옷 태그 상태를 확인할 때만 사용합니다.</p><ol><li><b>옷걸이 찾기</b>를 누릅니다.</li><li>브라우저 선택창에서 <b>새 옷걸이</b> 또는 <b>내 이름의 옷걸이</b>를 선택합니다.</li><li><b>옷봉과 연결</b>을 누르면 현재 내 옷봉에 등록됩니다.</li><li>옷 태그를 대면 옷 감지 상태가 표시됩니다.</li></ol><button type="button" id="connectPhysicalHangerBle">옷걸이 찾기</button><p id="hangerBleDeviceName" class="muted"></p><p id="hangerBleMessage" class="muted">블루투스 연결을 시작하세요.</p><section id="hangerBleDetail" class="panel" style="padding:12px" hidden></section><button type="button" id="pairPhysicalHanger" hidden>옷봉과 연결</button><button type="button" class="ghost" id="forgetPhysicalHanger" hidden>옷걸이 연결 제거</button>';
   document.body.append(hangerDialog);
+
   const showHangerBleHelp = () => {
     if (typeof hangerDialog.showModal === 'function' && !hangerDialog.open) hangerDialog.showModal();
   };
   window.showHangerBleHelp = showHangerBleHelp;
-  $('#closeHangerBleHelp').onclick = () => hangerDialog.close();
-  $('#connectPhysicalHangerBle').onclick = connectPhysicalHangerBluetooth;
-  $('#pairPhysicalHanger').onclick = () => writeHangerBle('pair', { displayName: nextHangerDisplayName() });
-  $('#forgetPhysicalHanger').onclick = forgetPhysicalHanger;
+
+  const closeHangerBleHelpBtn = $('#closeHangerBleHelp');
+  if (closeHangerBleHelpBtn) closeHangerBleHelpBtn.onclick = () => hangerDialog.close();
+
+  const connectPhysicalHangerBleBtn = $('#connectPhysicalHangerBle');
+  if (connectPhysicalHangerBleBtn) connectPhysicalHangerBleBtn.onclick = connectPhysicalHangerBluetooth;
+
+  const pairPhysicalHangerBtn = $('#pairPhysicalHanger');
+  if (pairPhysicalHangerBtn) pairPhysicalHangerBtn.onclick = () => writeHangerBle('pair', { displayName: nextHangerDisplayName() });
+
+  const forgetPhysicalHangerBtn = $('#forgetPhysicalHanger');
+  if (forgetPhysicalHangerBtn) forgetPhysicalHangerBtn.onclick = forgetPhysicalHanger;
+
+  renderDeviceManagement();
 }
 
 function physicalGatewayStatus() {
@@ -2087,24 +2135,30 @@ function renderGatewayWifiHelp() {
     rodReconnectStartedAt = 0;
     sessionStorage.removeItem('wardrobeRodReconnectStartedAt');
     panel.innerHTML = `<h3>옷봉 연결 상태</h3><p><b class="PRESENT">연결됨</b> · 옷봉이 2.4 GHz Wi-Fi 채널 ${gateway.channel || '-'}로 웹 서버와 통신 중입니다.</p><p class="muted">PC·휴대폰은 기존 5 GHz Wi-Fi를 계속 사용해도 됩니다.</p><button type="button" id="changeHangerWifi">옷봉 Wi-Fi 설정 변경</button><button type="button" class="ghost" id="removeHangerWifi">옷봉 Wi-Fi 연결 제거</button>`;
-    $('#changeHangerWifi').onclick = window.showGatewayWifiHelp;
-    $('#removeHangerWifi').onclick = () => {
-      window.showGatewayWifiHelp();
-      setBleSetupMessage('Wi-Fi 연결을 제거하려면 먼저 “옷봉 찾기”로 블루투스에 연결한 뒤, 아래의 “옷봉 Wi-Fi 연결 제거”를 누르세요.');
-    };
+    const changeHangerWifiBtn = $('#changeHangerWifi');
+    if (changeHangerWifiBtn) changeHangerWifiBtn.onclick = window.showGatewayWifiHelp;
+    const removeHangerWifiBtn = $('#removeHangerWifi');
+    if (removeHangerWifiBtn) {
+      removeHangerWifiBtn.onclick = () => {
+        window.showGatewayWifiHelp();
+        setBleSetupMessage('Wi-Fi 연결을 제거하려면 먼저 “옷봉 찾기”로 블루투스에 연결한 뒤, 아래의 “옷봉 Wi-Fi 연결 제거”를 누르세요.');
+      };
+    }
     return;
   }
   const reconnectElapsed = Date.now() - rodReconnectStartedAt;
   if (rodReconnectStartedAt && reconnectElapsed < ROD_RECONNECT_WINDOW_MS) {
     const remaining = Math.max(1, Math.ceil((ROD_RECONNECT_WINDOW_MS - reconnectElapsed) / 1000));
     panel.innerHTML = `<h3>옷봉 연결 상태</h3><p><b>연결 중 — 잠시만 기다려 주세요</b></p><p>옷봉이 재시작한 뒤 2.4 GHz Wi-Fi와 웹 서버에 연결하고 있습니다. 최대 약 ${remaining}초 걸릴 수 있습니다.</p><p class="muted">30초 뒤에도 연결되지 않으면 전원과 2.4 GHz Wi-Fi를 확인하세요.</p><button type="button" id="checkRodConnection">연결 상태 다시 확인</button>`;
-    $('#checkRodConnection').onclick = refresh;
+    const checkRodConnBtn = $('#checkRodConnection');
+    if (checkRodConnBtn) checkRodConnBtn.onclick = refresh;
     return;
   }
   if (gateway && lastSeenAgeMs < 90000) {
     const seconds = Math.max(1, Math.floor(lastSeenAgeMs / 1000));
     panel.innerHTML = `<h3>옷봉 연결 상태</h3><p><b>재연결 확인 중</b> · 마지막 신호가 ${seconds}초 전 들어왔습니다.</p><p class="muted">전원 재연결 또는 Wi-Fi 복구 중일 수 있습니다. 최대 1분 정도 기다려 주세요.</p><button type="button" id="checkRodConnection">연결 상태 다시 확인</button>`;
-    $('#checkRodConnection').onclick = refresh;
+    const checkRodConnBtn = $('#checkRodConnection');
+    if (checkRodConnBtn) checkRodConnBtn.onclick = refresh;
     return;
   }
   if (gateway) {
@@ -2112,7 +2166,8 @@ function renderGatewayWifiHelp() {
   } else {
     panel.innerHTML = '<h3>옷봉 연결 상태</h3><p><b class="OFFLINE">연결 필요</b> · 아직 옷봉이 웹 서버에 연결되지 않았습니다.</p><p class="muted">PC Wi-Fi는 바꾸지 말고, 블루투스로 옷봉에 사용할 2.4 GHz Wi-Fi를 전달하세요.</p><button type="button" id="openGatewayWifiHelp">블루투스로 옷봉 연결하기</button>';
   }
-  $('#openGatewayWifiHelp').onclick = window.showGatewayWifiHelp;
+  const openGatewayWifiHelpBtn = $('#openGatewayWifiHelp');
+  if (openGatewayWifiHelpBtn) openGatewayWifiHelpBtn.onclick = window.showGatewayWifiHelp;
 }
 
 function renderDeviceManagement() {
@@ -2123,9 +2178,14 @@ function renderDeviceManagement() {
   const online = item => Date.now() - Date.parse(item.lastSeen || 0) < 30000;
   const gatewayCards = gateways.map(g => `<li><b>${esc(g.name || `${ownerDisplayName()}의 옷봉`)}</b><small>${online(g) ? '연결됨 · 내 옷장 서버와 통신 중' : '연결 끊김 · 전원 또는 Wi-Fi 설정 확인 필요'}</small><span><button data-device-action="rename" data-kind="gateways" data-id="${esc(g.gatewayId)}">이름 수정</button><button class="ghost" data-device-action="remove" data-kind="gateways" data-id="${esc(g.gatewayId)}">등록 제거</button></span></li>`).join('') || '<li class="muted">등록된 옷봉이 없습니다. 처음 한 번만 인터넷 연결을 진행해 주세요.</li>';
   const hangerCards = hangers.map(h => `<li><b>${esc(hangerDisplayName(h))}</b><small>${online(h) ? `연결됨 · ${esc(hangerClothingStatus(h))}` : '연결 끊김 · 전원 또는 옷봉 근처 위치 확인 필요'}</small><span><button data-device-action="rename" data-kind="hangers" data-id="${esc(h.hangerId)}">이름 수정</button><button class="ghost" data-device-action="remove" data-kind="hangers" data-id="${esc(h.hangerId)}">등록 제거</button></span></li>`).join('') || '<li class="muted">등록된 옷걸이가 없습니다.</li>';
-  panel.innerHTML = `<h3>내 장비 관리</h3><p class="muted">여기에서 모든 장비의 연결 상태와 이름을 관리합니다. 옷봉 인터넷 연결은 처음 한 번만 하면 되고, 옷걸이는 옷봉과 자동으로 통신합니다.</p><div class="actions"><button id="addGatewayDevice">+ 옷봉 첫 설정·재설정</button><button id="addHangerDevice">+ 옷걸이 연결</button></div><h4>옷봉</h4><ul class="device-management-list">${gatewayCards}</ul><h4>옷걸이</h4><ul class="device-management-list">${hangerCards}</ul>`;
-  $('#addGatewayDevice').onclick = window.showGatewayWifiHelp;
-  $('#addHangerDevice').onclick = window.showHangerBleHelp;
+  panel.innerHTML = `<h3>내 장비 관리</h3><p class="muted">여기에서 모든 장비의 연결 상태와 이름을 관리합니다. 옷봉 인터넷 연결은 처음 한 번만 하면 되고, 옷걸이는 옷봉과 자동으로 통신합니다.</p><div class="actions"><button type="button" id="addGatewayDevice">+ 옷봉 첫 설정·재설정</button><button type="button" id="addHangerDevice">+ 옷걸이 연결</button></div><h4>옷봉</h4><ul class="device-management-list">${gatewayCards}</ul><h4>옷걸이</h4><ul class="device-management-list">${hangerCards}</ul>`;
+  
+  const addGatewayDeviceBtn = $('#addGatewayDevice');
+  if (addGatewayDeviceBtn) addGatewayDeviceBtn.onclick = window.showGatewayWifiHelp;
+
+  const addHangerDeviceBtn = $('#addHangerDevice');
+  if (addHangerDeviceBtn) addHangerDeviceBtn.onclick = window.showHangerBleHelp;
+
   panel.querySelectorAll('[data-device-action]').forEach(button => button.onclick = async () => {
     const { deviceAction, kind, id: deviceId } = button.dataset;
     const item = (kind === 'gateways' ? model.gateways : model.hangers).find(x => (kind === 'gateways' ? x.gatewayId : x.hangerId) === deviceId);
@@ -2148,7 +2208,7 @@ function renderDeviceManagement() {
 installGatewayWifiSetup();
 $('#navSim')?.remove();
 $('#simulation')?.remove();
-setInterval(renderDeviceManagement, 1000);
+setInterval(renderDeviceManagement, 2000);
 initAllComboboxes();
 token ? enter() : showAuth();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
