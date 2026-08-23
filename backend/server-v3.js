@@ -61,15 +61,41 @@ function getUser(req){const [p,s]=String(req.headers.authorization||'').replace(
 function needUser(req){const u=getUser(req);if(!u)throw error(401,'로그인이 필요합니다.');return u}
 function needDevice(req){if(!safe(req.headers.authorization||'',`Bearer ${DEVICE}`))throw error(401,'옷봉 인증에 실패했습니다.')}
 const sockets=new Set();
-function emit(type,payload,severity='info',wardrobeId=payload?.wardrobeId){const e={id:id('evt'),type,severity,payload:structuredClone(payload),wardrobeId:wardrobeId||null,at:now()};db.events.unshift(e);db.events=db.events.slice(0,1000);const msg=JSON.stringify({type,payload,at:e.at});for(const ws of sockets)if(ws.readyState===1&&ws.wardrobeId===e.wardrobeId)ws.send(msg)}
+function emit(type,payload,severity='info',wardrobeId=payload?.wardrobeId){
+  const e={id:id('evt'),type,severity,payload:structuredClone(payload),wardrobeId:wardrobeId||null,at:now()};
+  db.events.unshift(e);
+  db.events=db.events.slice(0,1000);
+  const msg=JSON.stringify({type,payload,at:e.at});
+  for(const ws of sockets)if(ws.readyState===1&&(!e.wardrobeId||ws.wardrobeId===e.wardrobeId))ws.send(msg);
+}
 function reconcile(){
   const seen=new Map();for(const h of db.hangers)if(h.reportedState==='PRESENT'&&h.tagUid){const k=`${h.wardrobeId}:${h.tagUid}`,a=seen.get(k)||[];a.push(h);seen.set(k,a)}
   for(const h of db.hangers){const same=seen.get(`${h.wardrobeId}:${h.tagUid}`)||[];if(h.reportedState==='OFFLINE')h.state='OFFLINE';else if(h.reportedState==='PRESENT'&&same.length>1)h.state='CONFLICT';else if(h.reportedState==='PRESENT'&&!db.garments.some(g=>g.wardrobeId===h.wardrobeId&&g.tagUid===h.tagUid))h.state='UNKNOWN_TAG';else h.state=h.reportedState;}
   for(const g of db.garments){const h=db.hangers.find(h=>h.wardrobeId===g.wardrobeId&&h.tagUid===g.tagUid&&h.state==='PRESENT');g.currentState=h?'IN_WARDROBE':'OUT';g.currentHanger=h?.hangerId||null;if(h)g.lastSeen=h.lastSeen;}
 }
 function gatewayOwner(gatewayId){return db.gateways.find(g=>g.gatewayId===gatewayId)?.wardrobeId||null}
-function attachGateway(gatewayId){let g=db.gateways.find(x=>x.gatewayId===gatewayId);if(!g){g={gatewayId,name:'새 옷봉',createdAt:now(),wardrobeId:db.wardrobes.length===1?db.wardrobes[0].id:null};db.gateways.push(g)}return g}
-function status(x){const hangerId=String(x.hangerId||'').toUpperCase(),state=String(x.state||'').toUpperCase(),sequence=Number(x.sequence),bootId=String(x.bootId||'legacy'),gatewayId=String(x.gatewayId||'GW-UNKNOWN').toUpperCase();if(!/^HC-[0-9A-F]{6,12}$/.test(hangerId))throw error(400,'hangerId 형식 오류');if(!['PRESENT','EMPTY','UNKNOWN_TAG','UNSTABLE'].includes(state)||!Number.isSafeInteger(sequence)||sequence<0)throw error(400,'옷걸이 상태 형식 오류');const gateway=attachGateway(gatewayId);let h=db.hangers.find(v=>v.hangerId===hangerId);if(!h){h={hangerId,alias:'',createdAt:now(),lastSequence:-1,wardrobeId:gateway.wardrobeId||null};db.hangers.push(h)}if(!h.wardrobeId&&gateway.wardrobeId)h.wardrobeId=gateway.wardrobeId;if(h.bootId===bootId&&sequence<=h.lastSequence)return{hanger:h,duplicate:true};Object.assign(h,{reportedState:state,state,tagUid:uid(x.tagUid)||null,lastSeen:now(),lastSequence:sequence,bootId,channel:Number(x.channel||0),rssi:Number(x.rssi||0),errorFlags:Number(x.errorFlags||0),firmwareVersion:String(x.firmwareVersion||'unknown'),gatewayId});Object.assign(gateway,{state:'ONLINE',lastSeen:h.lastSeen,channel:h.channel,firmwareVersion:String(x.gatewayFirmwareVersion||'unknown')});reconcile();emit('hanger.state',h,'info',h.wardrobeId);return{hanger:h,duplicate:false}}
+function attachGateway(gatewayId){
+  let g=db.gateways.find(x=>x.gatewayId===gatewayId);
+  const defaultWid=db.wardrobes.length===1?db.wardrobes[0].id:null;
+  if(!g){g={gatewayId,name:'새 옷봉',createdAt:now(),wardrobeId:defaultWid};db.gateways.push(g)}
+  else if(!g.wardrobeId&&defaultWid){g.wardrobeId=defaultWid}
+  return g;
+}
+function status(x){
+  const hangerId=String(x.hangerId||'').toUpperCase(),state=String(x.state||'').toUpperCase(),sequence=Number(x.sequence),bootId=String(x.bootId||'legacy'),gatewayId=String(x.gatewayId||'GW-UNKNOWN').toUpperCase();
+  if(!/^HC-[0-9A-F]{6,12}$/.test(hangerId))throw error(400,'hangerId 형식 오류');
+  if(!['PRESENT','EMPTY','UNKNOWN_TAG','UNSTABLE'].includes(state)||!Number.isSafeInteger(sequence)||sequence<0)throw error(400,'옷걸이 상태 형식 오류');
+  const gateway=attachGateway(gatewayId);
+  let h=db.hangers.find(v=>v.hangerId===hangerId);
+  if(!h){h={hangerId,alias:'',createdAt:now(),lastSequence:-1,wardrobeId:gateway.wardrobeId||null};db.hangers.push(h)}
+  if(!h.wardrobeId)h.wardrobeId=gateway.wardrobeId||(db.wardrobes.length===1?db.wardrobes[0].id:null);
+  if(h.bootId===bootId&&sequence<=h.lastSequence)return{hanger:h,duplicate:true};
+  Object.assign(h,{reportedState:state,state,tagUid:uid(x.tagUid)||null,lastSeen:now(),lastSequence:sequence,bootId,channel:Number(x.channel||0),rssi:Number(x.rssi||0),errorFlags:Number(x.errorFlags||0),firmwareVersion:String(x.firmwareVersion||'unknown'),gatewayId});
+  Object.assign(gateway,{state:'ONLINE',lastSeen:h.lastSeen,channel:h.channel,firmwareVersion:String(x.gatewayFirmwareVersion||'unknown')});
+  reconcile();
+  emit('hanger.state',h,'info',h.wardrobeId);
+  return{hanger:h,duplicate:false};
+}
 function heartbeat(x){const gatewayId=String(x.gatewayId||'').toUpperCase();if(!/^GW-[0-9A-F]{6,12}$/.test(gatewayId))throw error(400,'gatewayId 형식 오류');const g=attachGateway(gatewayId);Object.assign(g,{state:'ONLINE',lastSeen:now(),channel:Number(x.channel||0),firmwareVersion:String(x.firmwareVersion||'unknown'),ssid:String(x.ssid||g.ssid||''),rssi:Number(x.rssi||g.rssi||0),ip:String(x.ip||g.ip||'')});emit('gateway.heartbeat',g,'info',g.wardrobeId);return g}
 function command(targets,user,duration=0,kind='LED_BLINK'){const w=wardrobeFor(user);targets=[...new Set((targets||[]).map(x=>String(x).toUpperCase()))];if(!targets.length||targets.length>16)throw error(400,'대상은 1~16개여야 합니다.');for(const t of targets)if(!db.hangers.some(h=>h.hangerId===t&&h.wardrobeId===w.id))throw error(404,`내 옷장에 없는 옷걸이: ${t}`);const c={id:id('cmd'),numericId:crypto.randomInt(1,2147483647),command:String(kind).toUpperCase()==='LED_OFF'?'LED_OFF':'LED_BLINK',targets,durationMs:Math.max(0,Math.min(120000,Number(duration)||0)),status:'QUEUED',requestedBy:user.id,wardrobeId:w.id,createdAt:now(),expiresAt:new Date(Date.now()+CMD_TIMEOUT).toISOString(),acknowledgements:{}};db.commands.unshift(c);emit('command.queued',c,'info',w.id);return c}
 function visible(list,wid){return list.filter(x=>x.wardrobeId===wid&&(SIM||!simulated(x)))}
