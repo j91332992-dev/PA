@@ -1100,6 +1100,8 @@ async function enter() {
     localStorage.removeItem('wardrobeToken');
     token = null;
     showAuth();
+    const authError = $('#authError');
+    if (authError) authError.textContent = `로그인 후 내 옷장 데이터를 불러오지 못했습니다: ${err.message || '잠시 후 다시 시도해 주세요.'}`;
   }
 }
 
@@ -1396,9 +1398,12 @@ $('#authForm').onsubmit = async e => {
       successBox.style.display = 'block';
     }
 
-    // A successful login can follow a service-worker update. Reload once so
-    // the dashboard always starts with the same JavaScript version as the API.
-    setTimeout(() => window.location.reload(), 650);
+    // Do not force a reload here. A free cloud instance can be waking up just
+    // as the login finishes, and an unconditional reload hid that failure on
+    // the login page. Enter now and show an actionable error if snapshot
+    // loading genuinely fails.
+    await enter();
+    submitBtn.disabled = false;
   } catch (x) {
     submitBtn.disabled = false;
     $('#authError').textContent = x.message;
