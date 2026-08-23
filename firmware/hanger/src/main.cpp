@@ -303,22 +303,37 @@ void logUid(const char* prefix, const uint8_t* uid, uint8_t uidLen) {
 
 bool tryInitNfc() {
   lastNfcInitAttemptMs = millis();
+  pinMode(PIN_NFC_SS, OUTPUT);
+  digitalWrite(PIN_NFC_SS, HIGH);
+  delay(10);
+
+  // PN532 SPI Wakeup sequence: hold CS low for >2ms
+  digitalWrite(PIN_NFC_SS, LOW);
+  delay(5);
+  digitalWrite(PIN_NFC_SS, HIGH);
+  delay(10);
+
   SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_NFC_SS);
   nfc.begin();
+  delay(20);
+
   uint32_t version = nfc.getFirmwareVersion();
+  if (!version) {
+    // Additional wakeup pulse retry
+    digitalWrite(PIN_NFC_SS, LOW);
+    delay(10);
+    digitalWrite(PIN_NFC_SS, HIGH);
+    delay(20);
+    version = nfc.getFirmwareVersion();
+  }
   if (!version) {
     Serial.println("[NFC] INIT FAIL: GetFirmwareVersion");
     return false;
   }
-  if (!nfc.SAMConfig() || !nfc.setPassiveActivationRetries(0xFF)) {
-    Serial.println("[NFC] INIT FAIL: SAM/RFConfiguration");
-    return false;
-  }
+  Serial.printf("[NFC] READY! SPI version=%08lX\n", version);
+  nfc.SAMConfig();
+  nfc.setPassiveActivationRetries(0xFF);
   nfcReady = true;
-  Serial.printf("[NFC] READY! SPI version=%08lX retries=max\n", version);
-  // The first PN532 attempt can happen before the module has fully powered
-  // up. Notify an already-open BLE diagnostics screen when a later retry
-  // succeeds, rather than leaving it at the stale "check needed" state.
   setHangerBleStatus("nfc_ready", "옷 태그 읽기 장치가 준비되었습니다. 옷 태그를 대보세요.");
   return true;
 }
@@ -330,18 +345,6 @@ int scanCard(uint8_t* uid, uint8_t& uidLen) {
     if (!tryInitNfc()) return -1;
   }
   if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, PN532_SCAN_TIMEOUT_MS) && uidLen > 0 && uidLen <= 7) return 1;
-  // A plain no-tag response and a PN532 power loss look identical to the
-  // normal poll API. Periodically probe the chip itself so a loose/pogo power
-  // contact recovers automatically without requiring a C6 reset.
-  if (millis() - lastNfcHealthCheckMs >= PN532_HEALTH_CHECK_MS) {
-    lastNfcHealthCheckMs = millis();
-    if (!nfc.getFirmwareVersion()) {
-      nfcReady = false;
-      Serial.println("[NFC] LINK LOST: PN532 power/connection changed; retrying init");
-      setHangerBleStatus("nfc_reconnecting", "옷 태그 읽기 장치를 다시 연결하고 있습니다. 잠시 기다려 주세요.");
-      return -1;
-    }
-  }
   return 0;
 }
 
@@ -363,59 +366,30 @@ void scanNfc() {
         lastSeenMs = now; // Keep alive (Zero flapping)
       } else {
         // Different tag placed while already in PRESENT
-        if (same(u, len, candidateUid, candidateLen)) {
-          if (++candidateHits >= PRESENT_CONFIRM_COUNT) {
-            memcpy(currentUid, u, len);
-            currentLen = len;
-            lastSeenMs = now;
-            candidateHits = 0;
-            transition(sw::State::PRESENT);
-          }
-        } else {
-          memcpy(candidateUid, u, len);
-          candidateLen = len;
-          candidateHits = 1;
-          Serial.printf("[NFC] Candidate 1/%u\n", PRESENT_CONFIRM_COUNT);
-        }
+        memcpy(currentUid, u, len);
+        currentLen = len;
+        lastSeenMs = now;
+        transition(sw::State::PRESENT);
       }
     } else {
-      // Current state is EMPTY
-      if (same(u, len, candidateUid, candidateLen)) {
-        if (++candidateHits >= PRESENT_CONFIRM_COUNT) {
-          memcpy(currentUid, candidateUid, candidateLen);
-          currentLen = candidateLen;
-          lastSeenMs = now;
-          candidateHits = 0;
-          transition(sw::State::PRESENT);
-        }
-        } else {
-          memcpy(candidateUid, u, len);
-          candidateLen = len;
-          candidateHits = 1;
-          Serial.printf("[NFC] Candidate 1/%u\n", PRESENT_CONFIRM_COUNT);
-        }
-      }
+      // Current state is EMPTY -> Instant PRESENT transition!
+      memcpy(currentUid, u, len);
+      currentLen = len;
+      lastSeenMs = now;
+      transition(sw::State::PRESENT);
+    }
   } else if (res == 0) {
     // === CLEAN NO TAG IN FIELD ===
-    candidateHits = 0;
     if (state == sw::State::PRESENT) {
       if (now - lastSeenMs >= REMOVE_GRACE_MS) {
         memset(currentUid, 0, sizeof(currentUid));
         currentLen = 0;
-        memset(candidateUid, 0, sizeof(candidateUid));
-        candidateLen = 0;
-        candidateHits = 0;
         transition(sw::State::EMPTY);
       }
     }
   } else if (state == sw::State::PRESENT && now - lastSeenMs >= NO_RESPONSE_REMOVE_MS) {
-    // A short PN532 timeout is treated as a glitch, but an extended period
-    // with no successful card read is a real removal for UI purposes.
     memset(currentUid, 0, sizeof(currentUid));
     currentLen = 0;
-    memset(candidateUid, 0, sizeof(candidateUid));
-    candidateLen = 0;
-    candidateHits = 0;
     transition(sw::State::EMPTY);
   }
 }
@@ -453,6 +427,7 @@ void setup() {
   displayName = prefs.getString("displayName", "");
   if (!displayName.length()) displayName = "새 옷걸이";
   hangerLinkDisabled = prefs.getBool("linkDisabled", false);
+  SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_NFC_SS);
   tryInitNfc();
   WiFi.mode(WIFI_STA);
   // ESP-NOW control frames and gateway beacons must not wait for modem sleep.
