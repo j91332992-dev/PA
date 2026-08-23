@@ -108,6 +108,19 @@ create index if not exists wardrobe_events_recent_idx on wardrobe_events(wardrob
 alter table app_users add column if not exists payload jsonb not null default '{}'::jsonb;
 alter table wardrobes add column if not exists payload jsonb not null default '{}'::jsonb;
 
+-- Upgrade an older beta table in place. These are additive only: no existing
+-- clothes, accounts, or device records are deleted.
+alter table garments add column if not exists category text not null default '';
+alter table garments add column if not exists color text not null default '';
+alter table garments add column if not exists season text not null default '';
+alter table garments add column if not exists brand text not null default '';
+alter table garments add column if not exists memo text not null default '';
+alter table garments add column if not exists image_url text not null default '';
+alter table garments add column if not exists current_state text not null default 'OUT';
+alter table garments add column if not exists current_hanger text;
+alter table garments add column if not exists last_seen timestamptz;
+alter table garments add column if not exists payload jsonb not null default '{}'::jsonb;
+
 -- The API connects with DATABASE_URL only on the server. Do not expose that
 -- connection string to Flutter or the browser; app-level JWT authorization
 -- remains in Node.

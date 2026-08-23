@@ -53,11 +53,29 @@ function postgresStorage(connectionString, initial){
     events:['id','wardrobeId','type','severity','payload','at'],
   };
   const table={users:'app_users',wardrobes:'wardrobes',gateways:'gateways',hangers:'hangers',garments:'garments',commands:'device_commands',events:'wardrobe_events'};
+  async function upgradeOlderGarmentsTable(client){
+    // The early beta had a smaller garments table. These additive changes are
+    // safe to run at every startup and prevent an old cloud project from
+    // blocking a first JSON import.
+    for(const statement of [
+      "alter table garments add column if not exists category text not null default ''",
+      "alter table garments add column if not exists color text not null default ''",
+      "alter table garments add column if not exists season text not null default ''",
+      "alter table garments add column if not exists brand text not null default ''",
+      "alter table garments add column if not exists memo text not null default ''",
+      "alter table garments add column if not exists image_url text not null default ''",
+      "alter table garments add column if not exists current_state text not null default 'OUT'",
+      'alter table garments add column if not exists current_hanger text',
+      'alter table garments add column if not exists last_seen timestamptz',
+      "alter table garments add column if not exists payload jsonb not null default '{}'::jsonb",
+    ])await client.query(statement);
+  }
   async function load(){
     const client=await pool.connect();
     try{
       const check=await client.query("select to_regclass('public.app_users') as users, to_regclass('public.wardrobes') as wardrobes");
       if(!check.rows[0].users||!check.rows[0].wardrobes)throw new Error('Supabase 스키마가 없습니다. supabase/schema.sql을 먼저 실행하세요.');
+      await upgradeOlderGarmentsTable(client);
       const out=initial();
       for(const key of Object.keys(table)){
         // Events are timestamped with `at`; all other persisted records use
