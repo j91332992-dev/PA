@@ -51,16 +51,19 @@ uint32_t lastNfcInitAttemptMs = 0;
 uint32_t lastNfcHealthCheckMs = 0;
 uint32_t lastRawUidLogMs = 0;
 
-// If the PN532 is still booting after a power reconnect, retry quickly rather
-// than leaving the hanger unavailable for multiple seconds.
+// Channel lock state machine
+enum class ChannelState { SEARCHING, LOCKED };
+ChannelState channelState = ChannelState::SEARCHING;
+uint8_t lastKnownGatewayChannel = 1;
+uint32_t lastBeaconMs = 0;
+uint32_t channelDwellStartMs = 0;
+
+constexpr uint32_t CHANNEL_SEARCH_DWELL_MS = 450;
+constexpr uint32_t BEACON_LOST_TIMEOUT_MS = 8000;
 constexpr uint32_t PN532_REINIT_COOLDOWN_MS = 500;
 constexpr uint32_t NO_RESPONSE_REMOVE_MS = 350;
 constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 50;
 constexpr uint32_t PN532_HEALTH_CHECK_MS = 1000;
-// A hanger can reboot while the rod remains on another Wi-Fi channel. Do not
-// leave it isolated for the old 60-second recovery window.
-constexpr uint32_t GATEWAY_LOSS_RECOVERY_MS = 3500;
-constexpr uint32_t CHANNEL_RECOVERY_DWELL_MS = 500;
 
 sw::State state = sw::State::EMPTY;
 bool nfcReady = false;
@@ -259,24 +262,34 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
   if (!sw::valid(p)) return;
   if (p.type == sw::Type::BEACON) {
     discoveredGateway = p.gatewayId;
-    if (hangerLinkDisabled || (pairedGateway.length() && pairedGateway != discoveredGateway)) return;
-    const uint32_t now = millis();
-    // When the gateway reboots/rejoins, it has no current hanger state yet.
-    // Push one status packet as soon as its beacon is heard instead of waiting
-    // for the next 5~8 second heartbeat.
-    const bool wasConnected = now - lastBeacon < 3500;
-    lastBeacon = now;
-    uint8_t gwCh = (uint8_t)p.errorFlags;
-    if (gwCh >= 1 && gwCh <= 13 && channel != gwCh) {
-      channel = gwCh;
-      setChannel(channel);
-      Serial.printf("[CHANNEL] locked to Gateway ch=%u\n", channel);
+    if (hangerLinkDisabled) return;
+    if (!pairedGateway.length()) {
+      pairedGateway = discoveredGateway;
+      prefs.putString("gateway", pairedGateway);
+      Serial.printf("[GATEWAY] adopted gatewayId=%s\n", pairedGateway.c_str());
     }
-    // Store the learned channel only when it changes; writing it on every
-    // beacon would wear the flash unnecessarily.
-    if (channel != prefs.getUChar("channel", 1)) prefs.putUChar("channel", channel);
-    if (!wasConnected) reportAfterGatewayBeacon = true;
-    if (!wasConnected) setHangerBleStatus("connected", "옷봉과 ESP-NOW로 연결되었습니다.");
+    if (pairedGateway != discoveredGateway) return;
+
+    const uint32_t now = millis();
+    const bool wasConnected = (channelState == ChannelState::LOCKED) && (now - lastBeaconMs < BEACON_LOST_TIMEOUT_MS);
+    lastBeaconMs = now;
+    uint8_t gwCh = (uint8_t)p.errorFlags;
+    if (gwCh >= 1 && gwCh <= 13) {
+      if (channel != gwCh || channelState != ChannelState::LOCKED) {
+        channel = gwCh;
+        setChannel(channel);
+        channelState = ChannelState::LOCKED;
+        if (channel != prefs.getUChar("channel", 1)) {
+          prefs.putUChar("channel", channel);
+        }
+        Serial.printf("[CHANNEL] Gateway beacon received %s ch=%u\n", discoveredGateway.c_str(), channel);
+        Serial.printf("[CHANNEL] LOCKED ch=%u\n", channel);
+      }
+    }
+    if (!wasConnected) {
+      reportAfterGatewayBeacon = true;
+      setHangerBleStatus("connected", "옷봉과 ESP-NOW로 연결되었습니다.");
+    }
     return;
   }
   if (p.type == sw::Type::COMMAND && !hangerLinkDisabled &&
@@ -394,21 +407,27 @@ void scanNfc() {
   }
 }
 
-void recoverChannel() {
-  if (millis() - lastBeacon < GATEWAY_LOSS_RECOVERY_MS) return;
-  static uint32_t changed = 0;
-  if (millis() - changed < CHANNEL_RECOVERY_DWELL_MS) return;
-  changed = millis();
-  channel = channel >= 13 ? 1 : channel + 1;
+void maintainChannel() {
+  const uint32_t now = millis();
+  if (channelState == ChannelState::LOCKED) {
+    if (now - lastBeaconMs >= BEACON_LOST_TIMEOUT_MS) {
+      channelState = ChannelState::SEARCHING;
+      channelDwellStartMs = now;
+      Serial.println("[CHANNEL] Gateway beacon lost -> SEARCHING");
+    }
+    return;
+  }
+
+  // In SEARCHING state:
+  if (now - channelDwellStartMs < CHANNEL_SEARCH_DWELL_MS) return;
+  channelDwellStartMs = now;
+  channel = (channel >= 13) ? 1 : (channel + 1);
   setChannel(channel);
-  Serial.printf("[CHANNEL] sweep %u\n", channel);
+  Serial.printf("[CHANNEL] sweep ch=%u\n", channel);
 }
 
 void setup() {
   Serial.begin(115200);
-  // USB Serial/JTAG can block for seconds when a monitor is closed while
-  // frequent NFC logs are being produced. Diagnostics must never stop tag
-  // scanning, so drop unavailable log bytes instead of waiting for the host.
   Serial.setTxTimeoutMs(0);
   delay(500);
   pinMode(PIN_LED, OUTPUT);
@@ -418,31 +437,31 @@ void setup() {
   led(false);
   uint64_t mac = ESP.getEfuseMac();
   char id[16];
-  snprintf(id, sizeof id, "HC-%06llX", mac & 0xffffff);
+  snprintf(id, sizeof id, "HC-%02X%02X%02X", (uint8_t)(mac >> 16), (uint8_t)(mac >> 8), (uint8_t)mac);
   hanger = id;
   bootId = esp_random();
-  prefs.begin("wardrobe", false);
-  channel = prefs.getUChar("channel", 1);
+  prefs.begin("hanger", false);
   pairedGateway = prefs.getString("gateway", "");
-  displayName = prefs.getString("displayName", "");
-  if (!displayName.length()) displayName = "새 옷걸이";
-  hangerLinkDisabled = prefs.getBool("linkDisabled", false);
-  SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_NFC_SS);
-  tryInitNfc();
+  lastKnownGatewayChannel = prefs.getUChar("channel", 1);
+  if (lastKnownGatewayChannel < 1 || lastKnownGatewayChannel > 13) lastKnownGatewayChannel = 1;
+  channel = lastKnownGatewayChannel;
+  channelState = ChannelState::SEARCHING;
+  channelDwellStartMs = millis();
+  Serial.printf("[CHANNEL] trying last known ch=%u\n", channel);
+
   WiFi.mode(WIFI_STA);
-  // ESP-NOW control frames and gateway beacons must not wait for modem sleep.
-  WiFi.setSleep(false);
   WiFi.disconnect();
   setChannel(channel);
   if (esp_now_init() != ESP_OK) {
-    Serial.println("[ERROR] ESP-NOW init");
-    delay(2000);
-    ESP.restart();
+    Serial.println("[BOOT] ESP-NOW init fail");
   }
   esp_now_register_recv_cb(receive);
   addBroadcast();
+
   startHangerBle();
+  tryInitNfc();
   Serial.printf("[BOOT] %s channel=%u nfc=%s\n", hanger.c_str(), channel, nfcReady ? "READY" : "PENDING");
+  setHangerBleStatus("booted", "옷걸이가 켜졌습니다. 옷봉 신호를 찾는 중입니다.");
   report(true);
 }
 
@@ -468,6 +487,6 @@ void loop() {
     report(false);
   }
   
-  recoverChannel();
+  maintainChannel();
   delay(1);
 }

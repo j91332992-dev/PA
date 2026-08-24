@@ -632,11 +632,13 @@ void fetchCommands() {
 }
 
 void beacon() {
+  const uint8_t ch = WiFi.channel();
+  if (ch < 1 || ch > 13) return;
   sw::Packet p;
   p.type = sw::Type::BEACON;
   strlcpy(p.gatewayId, gateway.c_str(), sizeof p.gatewayId);
   p.sequence = ++sequence;
-  p.errorFlags = WiFi.channel();
+  p.errorFlags = ch;
   strlcpy(p.firmware, "1.0.0", sizeof p.firmware);
   send(p);
 }
@@ -795,11 +797,18 @@ void loop() {
     gatewayHeartbeat();
   }
 
-  // 3. Beacon (every 0.5s). A hanger that rebooted or lost its channel can
-  // re-lock quickly instead of waiting for a slow heartbeat cycle.
-  if (t - beaconAt > 500) {
+  // 3. Beacon (every 250ms). Fast beaconing lets hangers lock channel instantly.
+  if (t - beaconAt > 250) {
     beaconAt = t;
     beacon();
+  }
+
+  static uint32_t lastGwLogAt = 0;
+  if (t - lastGwLogAt > 5000) {
+    lastGwLogAt = t;
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.printf("[GATEWAY] WiFi channel=%d (SSID=%s IP=%s)\n", WiFi.channel(), WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+    }
   }
 
   delay(2);
