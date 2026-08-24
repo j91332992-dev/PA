@@ -41,6 +41,14 @@ test('browser freshness helper is served as JavaScript before app.js', async () 
 
   const index = fs.readFileSync(path.join(root, 'web/public/index.html'), 'utf8');
   assert.ok(index.indexOf('/hanger-freshness.js') < index.indexOf('/app.js'));
+
+  const helper = require('../web/public/hanger-freshness.js');
+  const tracker = helper.createTracker();
+  assert.equal(typeof helper.createTracker, 'function');
+  assert.equal(typeof helper.hangerIdOf, 'function');
+  assert.equal(typeof tracker.hangerIdOf, 'function');
+  assert.equal(typeof tracker.isFresher, 'function');
+  assert.equal(typeof tracker.clothingStatus, 'function');
 });
 
 test('login uses POST and the handler prevents native GET navigation', async () => {
@@ -66,4 +74,16 @@ test('login uses POST and the handler prevents native GET navigation', async () 
   });
   assert.equal(result.status, 200);
   assert.ok(result.body.token);
+
+  const snapshot = await jsonRequest('/api/snapshot', {
+    headers: { authorization: 'Bearer ' + result.body.token },
+  });
+  assert.equal(snapshot.status, 200);
+  assert.ok(Array.isArray(snapshot.body.garments));
+  assert.ok(Array.isArray(snapshot.body.hangers));
+  assert.ok(Array.isArray(snapshot.body.gateways));
+
+  assert.match(app, /model\s*=\s*mergeSnapshot\(await api\('\/api\/snapshot'\)\)/);
+  assert.match(app, /\$\('#auth'\)\.hidden\s*=\s*true/);
+  assert.match(app, /\$\('#app'\)\.hidden\s*=\s*false/);
 });

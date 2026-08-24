@@ -81,3 +81,8 @@
 - `web/public/app.js`는 인증 폼을 명시적으로 POST로 설정하고 submit 버튼 타입을 지정한다. 기존 `preventDefault()` 및 `/api/auth/login`·`/api/auth/signup` POST 흐름은 유지된다.
 - `tests/login-regression.test.js`에서 helper의 HTTP 200/JavaScript MIME/createTracker, 로그인 POST 성공, 네이티브 GET 방지 조건을 검증한다.
 - 검증 결과: `npm test` 31개 통과, Node 문법 검사 및 `git diff --check` 통과.
+
+## freshness tracker 브라우저 API 회귀 복구
+
+- `app.js`는 `createTracker()`가 반환한 인스턴스에서 `hangerIdOf`, `clothingStatus`, `isFresher`, `remember`를 함께 사용한다. tracker가 상태 메서드만 반환하던 불일치를 수정해 브라우저와 Node 양쪽에서 동일한 API를 제공한다.
+- 로그인 후 `/api/snapshot` 로드와 `mergeSnapshot()` 진입, `#auth` 숨김 및 `#app` 표시 조건을 회귀 테스트에 포함했다.

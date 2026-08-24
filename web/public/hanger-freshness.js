@@ -44,7 +44,19 @@
       states.set(id, state);
     }
     function clear() { states.clear(); }
-    return { isFresher, remember, clear };
+    // app.js keeps the tracker instance in hangerFreshness and calls the
+    // identity/status helpers on that instance while merging snapshots.
+    // Expose the pure helpers here as well as the tracker state operations so
+    // the browser and Node consumers share one complete API.
+    return {
+      hangerIdOf,
+      bootIdOf,
+      sequenceOf,
+      clothingStatus,
+      isFresher,
+      remember,
+      clear,
+    };
   }
 
   return { hangerIdOf, bootIdOf, sequenceOf, clothingStatus, createTracker };
