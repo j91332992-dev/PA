@@ -359,8 +359,18 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
     }
     return;
   }
-  if (p.type == sw::Type::COMMAND && !hangerLinkDisabled &&
-      (!pairedGateway.length() || pairedGateway == String(p.gatewayId)) && sw::target(p, hanger.c_str())) {
+  if (p.type == sw::Type::COMMAND) {
+    const bool gatewayMatches = !pairedGateway.length() || pairedGateway == String(p.gatewayId);
+    const bool targeted = sw::target(p, hanger.c_str());
+    Serial.printf("[COMMAND-RX] id=%lu cmd=%u from=%s paired=%s target=%s ch=%u link=%s\n",
+                  p.commandId, unsigned(p.command), p.gatewayId,
+                  pairedGateway.c_str(), targeted ? "yes" : "no", channel,
+                  hangerLinkDisabled ? "disabled" : "enabled");
+    if (hangerLinkDisabled || !gatewayMatches || !targeted) {
+      Serial.printf("[COMMAND-IGNORE] gateway-match=%s target=%s\n",
+                    gatewayMatches ? "yes" : "no", targeted ? "yes" : "no");
+      return;
+    }
     Serial.printf("[COMMAND] %lu cmd=%u\n", p.commandId, (unsigned)p.command);
     if (p.command == sw::Command::LED_OFF) {
       ledUntil = 0;

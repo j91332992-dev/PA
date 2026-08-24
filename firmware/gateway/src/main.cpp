@@ -358,7 +358,12 @@ void addBroadcast() {
 
 bool send(sw::Packet& p) {
   sw::seal(p);
-  return esp_now_send(sw::BROADCAST, reinterpret_cast<uint8_t*>(&p), sizeof p) == ESP_OK;
+  const esp_err_t result = esp_now_send(sw::BROADCAST, reinterpret_cast<uint8_t*>(&p), sizeof p);
+  if (result != ESP_OK && (p.type == sw::Type::COMMAND || p.type == sw::Type::BEACON)) {
+    Serial.printf("[ESPNOW-TX] type=%u commandId=%lu enqueue-error=%d ch=%d\n",
+                  unsigned(p.type), p.commandId, int(result), WiFi.channel());
+  }
+  return result == ESP_OK;
 }
 
 String setupPage(const String& message = "") {
@@ -519,15 +524,26 @@ bool request(const String& path, const char* method, const String& payload, Stri
   }
   if (statusCode) *statusCode = code;
 
-  while (client.available()) {
+  int contentLength = -1;
+  while (true) {
     String header = client.readStringUntil('\n');
     header.trim();
     if (header.length() == 0) break;
+    const String lower = header.substring(0, min<size_t>(header.length(), 15));
+    if (lower.equalsIgnoreCase("content-length:")) {
+      contentLength = header.substring(header.indexOf(':') + 1).toInt();
+    }
   }
 
+  // Render may send the JSON body just after the response headers.  Do not
+  // treat an empty receive buffer at that instant as an empty command list.
   response = "";
-  while (client.available()) {
-    response += (char)client.read();
+  start = millis();
+  while (millis() - start < timeoutMs) {
+    while (client.available()) response += (char)client.read();
+    if (contentLength >= 0 && response.length() >= contentLength) break;
+    if (!client.connected() && !client.available()) break;
+    delay(5);
   }
   client.stop();
   return code >= 200 && code < 300;
@@ -647,7 +663,10 @@ void handleSerialDiagnostics() {
 
 void fetchCommands() {
   String out;
-  if (!request("/api/gateway/commands", "GET", "", out, 2500)) return;
+  // A free Render instance can take a few seconds to finish a database write
+  // after accepting the request.  Commands are latency-sensitive, so allow a
+  // complete HTTP response instead of dropping it after the old 2.5 seconds.
+  if (!request("/api/gateway/commands", "GET", "", out, 15000)) return;
   JsonDocument doc;
   if (deserializeJson(doc, out)) return;
   for (JsonObject c : doc["commands"].as<JsonArray>()) {
