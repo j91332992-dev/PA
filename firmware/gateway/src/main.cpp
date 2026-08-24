@@ -624,7 +624,9 @@ void ack(const sw::Packet& p) {
   JsonDocument d;
   d["commandId"] = p.commandId;
   d["hangerId"] = p.hangerId;
-  d["result"] = "OK";
+  // A C6 may reject a delayed FIND after its tag has been removed. Preserve
+  // that result in Cloud rather than incorrectly marking the command ACKED.
+  d["result"] = p.errorFlags == 0 ? "OK" : "ERROR";
   d["errorCode"] = p.errorFlags;
   String body, out;
   serializeJson(d, body);

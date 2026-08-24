@@ -74,6 +74,8 @@ uint32_t lastBeaconWarningMs = 0;
 constexpr uint32_t PN532_REINIT_COOLDOWN_MS = 500;
 constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 200;
 constexpr uint8_t REMOVE_CONFIRM_HITS = 3;
+constexpr uint8_t PRESENT_CONFIRM_HITS = PRESENT_CONFIRM_COUNT < 1 ? 1 : PRESENT_CONFIRM_COUNT;
+constexpr uint32_t FIND_REJECTED_EMPTY = 2;
 constexpr uint32_t PN532_HEALTH_CHECK_MS = 1000;
 
 sw::State state = sw::State::EMPTY;
@@ -322,13 +324,14 @@ void transition(sw::State s) {
   report(true);
 }
 
-void ack(const sw::Packet& cmd) {
+void ack(const sw::Packet& cmd, uint32_t errorCode = 0) {
   sw::Packet a;
   fill(a, sw::Type::ACK);
   strlcpy(a.gatewayId, cmd.gatewayId, sizeof a.gatewayId);
   a.commandId = cmd.commandId;
+  a.errorFlags = errorCode;
   send(a);
-  Serial.printf("[ACK-TX] %lu\n", cmd.commandId);
+  Serial.printf("[ACK-TX] %lu error=%lu\n", cmd.commandId, errorCode);
 }
 
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
@@ -390,6 +393,17 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
       ledBlinkStartedAt = 0;
       led(false);
     } else if (p.command == sw::Command::LED_BLINK) {
+      // Cloud retries can arrive after an NFC removal report.  Never let an
+      // empty hanger revive its LED: a FIND is valid only for a confirmed
+      // garment currently on this hanger.
+      if (state != sw::State::PRESENT) {
+        ledUntil = 0;
+        ledBlinkStartedAt = 0;
+        led(false);
+        Serial.printf("[LED] REJECT FIND: no confirmed tag, id=%lu\n", p.commandId);
+        ack(p, FIND_REJECTED_EMPTY);
+        return;
+      }
       // The LED must visibly turn on before this command is acknowledged.
       // Use a command-relative phase so a FIND never starts in an OFF slice.
       ledBlinkStartedAt = millis();
@@ -488,7 +502,7 @@ void scanNfc() {
       } else {
         // Different tag reading while already in PRESENT: require 2 consecutive reads to switch
         if (same(u, len, candidateUid, candidateLen)) {
-          if (++candidateHits >= 2) {
+          if (++candidateHits >= PRESENT_CONFIRM_HITS) {
             memcpy(currentUid, candidateUid, candidateLen);
             currentLen = candidateLen;
             lastSeenMs = now;
@@ -503,9 +517,9 @@ void scanNfc() {
         }
       }
     } else {
-      // Current state is EMPTY: require 2 consecutive reads of the same UID
+      // A validated UID can re-enter immediately after the tag is returned.
       if (same(u, len, candidateUid, candidateLen)) {
-        if (++candidateHits >= 2) {
+        if (++candidateHits >= PRESENT_CONFIRM_HITS) {
           memcpy(currentUid, candidateUid, candidateLen);
           currentLen = candidateLen;
           lastSeenMs = now;

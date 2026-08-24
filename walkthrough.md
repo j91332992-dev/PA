@@ -114,3 +114,5 @@
 - Public Web은 `태그 제거로 LED 찾기 종료` 이벤트를 보여주며, 옷장 밖 상태에서는 `LED 찾기 · 옷장 밖` 비활성 버튼과 삭제 버튼을 함께 표시한다.
 - `tests/tag-remove-cancel.test.js`는 `PRESENT → FIND ACK → EMPTY → CANCELLED → 지연 ACK 무시` 전 과정을 자동 검증한다. `npm test` 36/36 통과.
 - COM22 (`HC-87A828`)에는 위 PN532 펌웨어를 플래시하고 모든 기록 구간의 해시 검증을 확인했다. 부팅 직후 PN532 `0x32010607` 준비와 NTAG UID `0452A2026F2490` 검출도 직렬 로그에서 확인했다.
+- C6는 `EMPTY` 상태에서 늦게 도착한 `LED_BLINK`를 물리적으로 거부하고 LED를 강제 OFF로 유지한다. Gateway는 이 거부를 Cloud에 `ERROR` ACK로 전달한다. 따라서 실제 태그가 없는 옷걸이는 서버 재시도와 무관하게 LED가 켜질 수 없다.
+- 태그 재부착은 첫 정상 PN532 UID 읽기에서 바로 `PRESENT`로 전환한다. 제거는 clean no-tag 스캔 3회로 확인해 일시적인 RF 미스를 구분한다.
