@@ -74,3 +74,10 @@
 
 - 공개 Render 서버를 사용하는 옷봉에는 최신 S3 펌웨어를 업로드해야 한다. 이때 서버 URL은 HTTPS 공개 주소여야 하며, Render의 `DEVICE_TOKEN`과 옷봉의 장비 토큰은 같은 값이어야 한다. 이 값은 소스·로그·채팅에 기록하지 않는다.
 - 기존 옷 사진 파일은 PC의 `data/garment-images/`에만 있고 Render 파일 시스템에는 없으므로, 공개 웹에서 영구 사진을 보이게 하려면 다음 단계로 Supabase Storage 이전이 필요하다. 데이터베이스 이관과는 별개다.
+
+## 로그인 초기화 회귀 복구
+
+- `web/public/hanger-freshness.js`를 브라우저 정적 루트로 제공하도록 이동했다. 이전에는 `/hanger-freshness.js` 요청이 `index.html` fallback을 받아 `Unexpected token '<'`가 발생했고, 그 결과 `app.js` 초기화와 로그인 submit 핸들러가 중단됐다.
+- `web/public/app.js`는 인증 폼을 명시적으로 POST로 설정하고 submit 버튼 타입을 지정한다. 기존 `preventDefault()` 및 `/api/auth/login`·`/api/auth/signup` POST 흐름은 유지된다.
+- `tests/login-regression.test.js`에서 helper의 HTTP 200/JavaScript MIME/createTracker, 로그인 POST 성공, 네이티브 GET 방지 조건을 검증한다.
+- 검증 결과: `npm test` 31개 통과, Node 문법 검사 및 `git diff --check` 통과.

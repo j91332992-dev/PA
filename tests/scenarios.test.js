@@ -19,7 +19,7 @@ const deviceToken = 'test-device';
 
 const { server } = require('../backend/server');
 const { VirtualGateway } = require('../simulator/virtual-hardware');
-const HangerFreshness = require('../shared/hanger-freshness');
+const HangerFreshness = require('../web/public/hanger-freshness.js');
 
 let baseUrl, wsUrl, userToken, vgw;
 

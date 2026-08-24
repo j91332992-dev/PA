@@ -1440,6 +1440,17 @@ async function execSimAction(action, hangerId, tagUid = null, mode = null) {
 }
 
 // ----------------- Form Submission & Event Listeners -----------------
+// Keep the authentication form safe even if browser defaults are applied
+// before the submit handler runs. The handler below still calls
+// preventDefault() and sends credentials via POST to the API.
+const authFormElement = $('#authForm');
+if (authFormElement) {
+  authFormElement.method = 'post';
+  authFormElement.action = '/';
+  const authSubmitElement = $('#authSubmit');
+  if (authSubmitElement) authSubmitElement.type = 'submit';
+}
+
 $('#authToggle').onclick = () => setAuthMode(currentAuthMode === 'login' ? 'signup' : 'login', false);
 
 $('#authForm').onsubmit = async e => {
