@@ -76,7 +76,9 @@ constexpr uint32_t PN532_REINIT_COOLDOWN_MS = 500;
 // A passive NTAG answers immediately.  Keep no-tag polls short so removal
 // does not keep the app in IN_WARDROBE for several 200ms timeouts.
 constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 80;
-constexpr uint8_t REMOVE_CONFIRM_HITS = 3;
+// Five short misses still confirm an actual removal well under one second,
+// while absorbing transient PN532/RF misses when a tag is put back quickly.
+constexpr uint8_t REMOVE_CONFIRM_HITS = 5;
 constexpr uint8_t PRESENT_CONFIRM_HITS = PRESENT_CONFIRM_COUNT < 1 ? 1 : PRESENT_CONFIRM_COUNT;
 constexpr uint32_t FIND_REJECTED_EMPTY = 2;
 constexpr uint32_t PN532_HEALTH_CHECK_MS = 1000;

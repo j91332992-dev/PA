@@ -120,3 +120,5 @@
 - NFC no-tag poll은 80ms, 제거 확인은 220ms grace + 연속 3회로 조정했다. 태그 제거의 C6 확정 시간은 기존 약 600ms에서 약 250ms 수준으로 줄었다. Gateway는 이 물리 상태 이벤트를 Cloud 명령 폴링보다 먼저 업로드한다.
 - Gateway TLS command poll의 connect/response 상한은 800ms로 제한했다. 느리거나 끊긴 명령 조회가 이미 도착한 `EMPTY`/`PRESENT` 이벤트를 수 초 동안 막지 않으며, 다음 750ms poll에서 명령 조회를 다시 시도한다.
 - C6는 같은 Cloud command ID의 재전송과 과거 command sequence를 ACK만 하고 LED 상태를 다시 적용하지 않는다. Gateway command poll은 300ms 주기·250ms 상한으로 줄여, 정상적인 `PRESENT/EMPTY` 앱 반영의 최악 대기 시간을 1초 이내로 제한한다.
+- FIND/LED 명령 API는 명령을 메모리 큐에 넣은 직후 HTTP 202를 먼저 반환하고, PostgreSQL 저장은 background queue로 이어간다. 따라서 모바일 웹의 `점멸 중` 표시가 DB 저장 지연 때문에 늦어지지 않는다.
+- C6의 태그 제거는 80ms no-tag 스캔 5회로 확인한다. 실제 제거는 1초 안에 처리하면서도, LED 점멸 중 태그를 잠시 떼었다가 바로 다시 붙일 때의 PN532 일시 미검출로 `옷장 밖`이 잘못 확정되는 일을 줄인다. 재부착은 첫 정상 UID 읽기에서 즉시 `PRESENT`로 복귀한다.
