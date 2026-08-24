@@ -32,7 +32,7 @@ String discoveredGateway;
 String displayName;
 bool hangerLinkDisabled = false;
 volatile bool reportAfterGatewayBeacon = false;
-uint32_t sequence = 0, bootId = 0, lastHeartbeat = 0, lastScan = 0, lastBeacon = 0, ledUntil = 0;
+uint32_t sequence = 0, bootId = 0, lastHeartbeat = 0, lastScan = 0, lastBeacon = 0, ledUntil = 0, ledBlinkStartedAt = 0;
 uint8_t channel = 1;
 BLECharacteristic* bleStatusCharacteristic = nullptr;
 bool bleActive = false;
@@ -221,6 +221,7 @@ void startSerialLedTest() {
   serialLedTestPhase = 0;
   serialLedTestPhaseAt = millis();
   Serial.println("[LED-TEST] START on=1000ms off=1000ms repeats=3");
+  Serial.println("[LED-TEST] ON (1/3)");
 }
 
 void handleSerialDiagnostics() {
@@ -358,8 +359,14 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
     Serial.printf("[COMMAND] %lu cmd=%u\n", p.commandId, (unsigned)p.command);
     if (p.command == sw::Command::LED_OFF) {
       ledUntil = 0;
+      ledBlinkStartedAt = 0;
+      led(false);
     } else if (p.command == sw::Command::LED_BLINK) {
-      ledUntil = p.durationMs == 0 ? (millis() + LED_SAFETY_TIMEOUT_MS) : (millis() + p.durationMs);
+      // The LED must visibly turn on before this command is acknowledged.
+      // Use a command-relative phase so a FIND never starts in an OFF slice.
+      ledBlinkStartedAt = millis();
+      ledUntil = p.durationMs == 0 ? (ledBlinkStartedAt + LED_SAFETY_TIMEOUT_MS) : (ledBlinkStartedAt + p.durationMs);
+      led(true);
     }
     ack(p);
   }
@@ -576,7 +583,7 @@ void loop() {
   uint32_t t = millis();
   handleSerialDiagnostics();
   if (!runSerialLedTest(t)) {
-    bool isBlinking = (t < ledUntil) && ((t / 250) % 2 == 0);
+    bool isBlinking = (t < ledUntil) && (((t - ledBlinkStartedAt) / 250) % 2 == 0);
     led(isBlinking);
   }
 
