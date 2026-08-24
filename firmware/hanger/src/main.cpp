@@ -36,6 +36,8 @@ uint32_t sequence = 0, bootId = 0, lastHeartbeat = 0, lastScan = 0, lastBeacon =
 uint8_t channel = 1;
 BLECharacteristic* bleStatusCharacteristic = nullptr;
 bool bleActive = false;
+int8_t serialLedTestPhase = -1;
+uint32_t serialLedTestPhaseAt = 0;
 
 constexpr char HANGER_BLE_SERVICE_UUID[] = "a4e66a20-0fb0-4dce-8be0-18cf7bc82001";
 constexpr char HANGER_BLE_CONFIG_UUID[] = "a4e66a21-0fb0-4dce-8be0-18cf7bc82001";
@@ -211,6 +213,37 @@ void led(bool on) {
 #ifdef LED_BUILTIN
   digitalWrite(LED_BUILTIN, on ? LOW : HIGH);
 #endif
+}
+
+void startSerialLedTest() {
+  // A local test must not leave the production FIND timer active.
+  ledUntil = 0;
+  serialLedTestPhase = 0;
+  serialLedTestPhaseAt = millis();
+  Serial.println("[LED-TEST] START on=1000ms off=1000ms repeats=3");
+}
+
+void handleSerialDiagnostics() {
+  if (!Serial.available()) return;
+  const String command = Serial.readStringUntil('\n');
+  if (!command.equalsIgnoreCase("LEDTEST")) return;
+  startSerialLedTest();
+}
+
+bool runSerialLedTest(uint32_t now) {
+  if (serialLedTestPhase < 0) return false;
+  while (serialLedTestPhase >= 0 && now - serialLedTestPhaseAt >= 1000) {
+    serialLedTestPhaseAt += 1000;
+    serialLedTestPhase++;
+    if (serialLedTestPhase >= 6) {
+      serialLedTestPhase = -1;
+      Serial.println("[LED-TEST] COMPLETE");
+      return true;
+    }
+    Serial.printf("[LED-TEST] %s (%u/3)\n", serialLedTestPhase % 2 == 0 ? "ON" : "OFF", serialLedTestPhase / 2 + 1);
+  }
+  led(serialLedTestPhase % 2 == 0);
+  return true;
 }
 
 void setChannel(uint8_t ch) {
@@ -541,8 +574,11 @@ void setup() {
 
 void loop() {
   uint32_t t = millis();
-  bool isBlinking = (t < ledUntil) && ((t / 250) % 2 == 0);
-  led(isBlinking);
+  handleSerialDiagnostics();
+  if (!runSerialLedTest(t)) {
+    bool isBlinking = (t < ledUntil) && ((t / 250) % 2 == 0);
+    led(isBlinking);
+  }
 
   if (reportAfterGatewayBeacon) {
     reportAfterGatewayBeacon = false;

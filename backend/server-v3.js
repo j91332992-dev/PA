@@ -17,7 +17,7 @@ const ADMIN_SECONDARY_PASSWORD=String(process.env.ADMIN_SECONDARY_PASSWORD||'');
 const ADMIN_SESSION_TTL_MS=Math.max(60_000,Number(process.env.ADMIN_SESSION_TTL_MS||900_000));
 const adminSessions=new Map();
 const now=()=>new Date().toISOString(),id=p=>`${p}_${crypto.randomUUID()}`,uid=x=>String(x||'').replace(/[^0-9a-f]/gi,'').toUpperCase();
-const initial=()=>({schemaVersion:4,users:[],wardrobes:[],gateways:[],hangers:[],garments:[],events:[],commands:[]});
+const initial=()=>({schemaVersion:5,users:[],wardrobes:[],gateways:[],hangers:[],garments:[],events:[],commands:[]});
 let db=initial();const storage=createStorage({file:DATA,initial});function save(){return storage.save(db)}
 const safe=(a,b)=>{const x=Buffer.from(String(a)),y=Buffer.from(String(b));return x.length===y.length&&crypto.timingSafeEqual(x,y)};
 function hash(p,s=crypto.randomBytes(16).toString('hex')){return `${s}:${crypto.pbkdf2Sync(p,s,210000,32,'sha256').toString('hex')}`}
@@ -74,6 +74,15 @@ function migrate(){
   // Migrate visible names without changing immutable hardware IDs. Numbers
   // are assigned only when absent, so deletion never compacts/reuses them.
   for(const user of db.users){const role=isConfiguredAdmin(user)?'admin':'user';if(user.role!==role){user.role=role;changed=true;}}
+  // Version 5 fixes the historical single-wardrobe bootstrap behavior. A
+  // configured service administrator must not silently own real hardware:
+  // that would block every normal user while remaining hidden from the
+  // administrator's regular-user overview.
+  if(Number(db.schemaVersion||0)<5){
+    const adminWardrobeIds=new Set(db.wardrobes.filter(wardrobe=>ownerForWardrobe(wardrobe.id)?.role==='admin').map(wardrobe=>wardrobe.id));
+    for(const gateway of db.gateways)if(!simulated(gateway)&&adminWardrobeIds.has(gateway.wardrobeId))releaseGatewayOwnership(gateway);
+    changed=true;
+  }
   for(const w of db.wardrobes){
     const gateways=db.gateways.filter(g=>g.wardrobeId===w.id&&!simulated(g)).sort((a,b)=>String(a.createdAt||a.gatewayId).localeCompare(String(b.createdAt||b.gatewayId)));
     gateways.forEach((g,index)=>{
@@ -93,8 +102,8 @@ function migrate(){
   for(const g of db.gateways)if(!g.wardrobeId){g.customName='';syncGatewayName(g);}
   for(const h of db.hangers)if(!h.wardrobeId){h.customName='';syncHangerName(h);}
   for(const c of db.commands)if(!c.wardrobeId){const h=db.hangers.find(h=>c.targets?.includes(h.hangerId));c.wardrobeId=h?.wardrobeId||byUser.get(c.requestedBy)||null;}
-  changed = changed || db.schemaVersion !== 4;
-  db.schemaVersion = 4;
+  changed = changed || db.schemaVersion !== 5;
+  db.schemaVersion = 5;
   return changed;
 }
 let isReady = false;
@@ -147,9 +156,16 @@ function reconcile(){
   for(const g of db.garments){const h=db.hangers.find(h=>h.wardrobeId===g.wardrobeId&&h.tagUid===g.tagUid&&h.state==='PRESENT');g.currentState=h?'IN_WARDROBE':'OUT';g.currentHanger=h?.hangerId||null;if(h)g.lastSeen=h.lastSeen;}
 }
 function gatewayOwner(gatewayId){return db.gateways.find(g=>g.gatewayId===gatewayId)?.wardrobeId||null}
+function defaultWardrobeForNewGateway(){
+  if(db.wardrobes.length!==1)return null;
+  const only=db.wardrobes[0],owner=ownerForWardrobe(only.id);
+  // A service administrator is not a default hardware owner. Otherwise the
+  // first heartbeat creates a hidden cross-account ownership lock.
+  return owner?.role==='admin'?null:only.id;
+}
 function attachGateway(gatewayId){
   let g=db.gateways.find(x=>x.gatewayId===gatewayId);
-  const defaultWid=db.wardrobes.length===1?db.wardrobes[0].id:null;
+  const defaultWid=defaultWardrobeForNewGateway();
   if(!g){g={gatewayId,name:neutralGatewayName({gatewayId}),customName:'',createdAt:now(),wardrobeId:defaultWid};if(defaultWid)assignGateway(g,defaultWid);db.gateways.push(g)}
   else if(!g.wardrobeId&&defaultWid)assignGateway(g,defaultWid);
   return g;
@@ -198,6 +214,15 @@ function gatewayOperational(gateway){
   if(provision.status==='TIMEOUT'&&wifiStatus!=='FAILED'&&cloudStatus!=='FAILED')reasons.push('BLE 설정 후 heartbeat 확인 시간이 초과되었습니다. Wi-Fi/Cloud 원인은 현재 알 수 없습니다.');
   return {state:online?'ONLINE':'OFFLINE',wifiStatus,cloudStatus,reasons,problem:reasons.length>0,provisioningStatus:provision.status||'UNKNOWN',provisioningAt:provision.at||null,provisioningDetail:provision.detail||''};
 }
+function releaseGatewayOwnership(gateway){
+  const previousWardrobeId=gateway.wardrobeId;
+  const releasedHangers=[];
+  for(const hanger of db.hangers)if(hanger.gatewayId===gateway.gatewayId&&hanger.wardrobeId===previousWardrobeId){
+    hanger.wardrobeId=null;hanger.customName='';syncHangerName(hanger);releasedHangers.push(hanger.hangerId);
+  }
+  gateway.wardrobeId=null;gateway.customName='';gateway.gatewayNumber=null;syncGatewayName(gateway);
+  return {gatewayId:gateway.gatewayId,releasedHangers};
+}
 function adminOverview(){
   const online=item=>Date.now()-Date.parse(item.lastSeen||0)<OFFLINE;
   const managedUsers=db.users.filter(user=>(user.role||'user')==='user');
@@ -228,6 +253,8 @@ function adminOverview(){
     return {...userPublic(user),gatewayCount:ownedGateways.length,hangerCount:ownedHangers.length,connectedHangerCount:ownedHangers.length-unassignedHangers.length,unassignedHangerCount:unassignedHangers.length,garmentCount:ownedGarments.length,problemDeviceCount:problemDeviceIds.size,lastActivityAt:recentActivity?new Date(recentActivity).toISOString():null,unassignedHangers,gateways:userGateways};
   });
   users.sort((a,b)=>Number(b.problemDeviceCount)-Number(a.problemDeviceCount)||Number(b.gatewayCount+b.hangerCount)-Number(a.gatewayCount+a.hangerCount)||Date.parse(b.lastActivityAt||0)-Date.parse(a.lastActivityAt||0));
+  const adminWardrobeIds=new Set(db.wardrobes.filter(wardrobe=>ownerForWardrobe(wardrobe.id)?.role==='admin').map(wardrobe=>wardrobe.id));
+  const adminOwnedGateways=db.gateways.filter(gateway=>!simulated(gateway)&&adminWardrobeIds.has(gateway.wardrobeId)).map(gateway=>({gatewayId:gateway.gatewayId,name:gateway.name||neutralGatewayName(gateway),hangerIds:db.hangers.filter(hanger=>hanger.gatewayId===gateway.gatewayId&&hanger.wardrobeId===gateway.wardrobeId).map(hanger=>hanger.hangerId)}));
   const onlineGateways=gateways.filter(online).length,onlineHangers=hangers.filter(online).length;
   const gatewayIssues=gateways.map(gatewayOperational);
   const wifiFailures=gatewayIssues.filter(item=>item.wifiStatus==='FAILED').length,cloudFailures=gatewayIssues.filter(item=>item.cloudStatus==='FAILED').length,provisioningTimeouts=gatewayIssues.filter(item=>item.provisioningStatus==='TIMEOUT').length;
@@ -237,7 +264,7 @@ function adminOverview(){
   if(!cloudImageService.configured())problems.push({level:'warning',kind:'image',title:'Image Worker 미설정',message:'사진 Cloud 처리 환경변수가 완성되지 않았습니다.'});
   const recentDeviceEvents=db.events.filter(event=>managedWardrobeIds.has(event.wardrobeId)&&/^(hanger\.|gateway\.)/.test(String(event.type||''))).slice(0,20).map(event=>({id:event.id,type:event.type,severity:event.severity,at:event.at,wardrobeId:event.wardrobeId||null,deviceId:event.payload?.hangerId||event.payload?.gatewayId||'',state:event.payload?.state||event.payload?.reportedState||''}));
   const nfcReady=hangers.filter(h=>online(h)&&Number(h.errorFlags||0)===0&&h.firmwareVersion&&h.firmwareVersion!=='unknown').length,nfcAttention=hangers.filter(h=>Number(h.errorFlags||0)>0).length;
-  return {totals:{users:users.length,gateways:gateways.length,hangers:hangers.length,garments:garments.length,onlineGateways,offlineGateways:gateways.length-onlineGateways,onlineHangers,offlineHangers:hangers.length-onlineHangers,problemUsers:users.filter(user=>user.problemDeviceCount>0).length,problemGateways:gatewayIssues.filter(item=>item.problem).length,problemHangers:hangers.filter(hanger=>onlineAge(hanger)==='OFFLINE'||Number(hanger.errorFlags||0)>0).length,wifiFailures,cloudFailures,provisioningTimeouts},users,problems,system:{backend:{ready:isReady,storage:storage.mode},websocket:{status:sockets.size?'CONNECTED':'UNKNOWN',connectionCount:sockets.size},storage:{status:cloudImageService.configured()?'CONFIGURED':'UNKNOWN'},gateways:{total:gateways.length,online:onlineGateways,offline:gateways.length-onlineGateways,wifiFailures,cloudFailures,provisioningTimeouts},hangers:{total:hangers.length,online:onlineHangers,offline:hangers.length-onlineHangers,nfcReady,nfcAttention},imageProcessing:{configured:cloudImageService.configured(),ready:imageStates.ready||0,processing:imageStates.processing||0,pending:imageStates.pending||0,failed:imageStates.failed||0},recentDeviceEvents}};
+  return {totals:{users:users.length,gateways:gateways.length,hangers:hangers.length,garments:garments.length,onlineGateways,offlineGateways:gateways.length-onlineGateways,onlineHangers,offlineHangers:hangers.length-onlineHangers,problemUsers:users.filter(user=>user.problemDeviceCount>0).length,problemGateways:gatewayIssues.filter(item=>item.problem).length,problemHangers:hangers.filter(hanger=>onlineAge(hanger)==='OFFLINE'||Number(hanger.errorFlags||0)>0).length,wifiFailures,cloudFailures,provisioningTimeouts},users,problems,system:{backend:{ready:isReady,storage:storage.mode},websocket:{status:sockets.size?'CONNECTED':'UNKNOWN',connectionCount:sockets.size},storage:{status:cloudImageService.configured()?'CONFIGURED':'UNKNOWN'},gateways:{total:gateways.length,online:onlineGateways,offline:gateways.length-onlineGateways,wifiFailures,cloudFailures,provisioningTimeouts},hangers:{total:hangers.length,online:onlineHangers,offline:hangers.length-onlineHangers,nfcReady,nfcAttention},ownershipRecovery:{adminOwnedGateways},imageProcessing:{configured:cloudImageService.configured(),ready:imageStates.ready||0,processing:imageStates.processing||0,pending:imageStates.pending||0,failed:imageStates.failed||0},recentDeviceEvents}};
 }
 function removeAdminUser(admin,targetUserId){
   const target=db.users.find(user=>user.id===targetUserId);
@@ -279,6 +306,7 @@ if(p==='/api/admin/verify'&&req.method==='POST'){const u=needUser(req);if(u.role
 if(p==='/api/admin/logout'&&req.method==='POST'){const u=needUser(req);if(u.role!=='admin')throw error(403,'관리자 권한이 필요합니다.');const key=adminSessionKey(req.headers['x-admin-session']);const session=adminSessions.get(key);if(session?.userId===u.id)adminSessions.delete(key);return json(res,200,{ok:true})}
 if(p==='/api/admin/overview'){requireAdmin(req);return json(res,200,adminOverview())}
 if(p==='/api/admin/system'){requireAdmin(req);return json(res,200,{system:adminOverview().system})}
+const adminGatewayRelease=match(req.url,/^\/api\/admin\/gateways\/([^/]+)\/release$/);if(adminGatewayRelease&&req.method==='POST'){const admin=requireAdmin(req),gatewayId=decodeURIComponent(adminGatewayRelease[1]).toUpperCase(),gateway=db.gateways.find(item=>item.gatewayId===gatewayId);if(!gateway)throw error(404,'옷봉을 찾을 수 없습니다.');const owner=ownerForWardrobe(gateway.wardrobeId);if(!owner||owner.role!=='admin'||owner.id!==admin.id)throw error(409,'관리자 계정에 잘못 귀속된 옷봉만 등록 해제할 수 있습니다.');const result=releaseGatewayOwnership(gateway);emit('gateway.admin_released',{gatewayId:result.gatewayId,releasedHangers:result.releasedHangers},'warning');await save();return json(res,200,{ok:true,...result})}
 const adminUserDelete=match(req.url,/^\/api\/admin\/users\/([^/]+)$/);if(adminUserDelete&&req.method==='DELETE'){const admin=requireAdmin(req),result=removeAdminUser(admin,decodeURIComponent(adminUserDelete[1]));await save();return json(res,200,{ok:true,...result})}
 if(p==='/api/snapshot'){const u=needUser(req);return json(res,200,snapshot(u))}
 const pairingStatus=match(req.url,/^\/api\/(gateways|hangers)\/([^/]+)\/pairing-status$/);if(pairingStatus&&req.method==='GET'){const u=needUser(req),kind=pairingStatus[1],key=decodeURIComponent(pairingStatus[2]).toUpperCase(),list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',item=list.find(value=>value[field]===key);return json(res,200,pairingLabel(kind,item,u))}
