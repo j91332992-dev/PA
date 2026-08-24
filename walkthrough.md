@@ -122,3 +122,5 @@
 - C6는 같은 Cloud command ID의 재전송과 과거 command sequence를 ACK만 하고 LED 상태를 다시 적용하지 않는다. Gateway command poll은 300ms 주기·250ms 상한으로 줄여, 정상적인 `PRESENT/EMPTY` 앱 반영의 최악 대기 시간을 1초 이내로 제한한다.
 - FIND/LED 명령 API는 명령을 메모리 큐에 넣은 직후 HTTP 202를 먼저 반환하고, PostgreSQL 저장은 background queue로 이어간다. 따라서 모바일 웹의 `점멸 중` 표시가 DB 저장 지연 때문에 늦어지지 않는다.
 - C6의 태그 제거는 80ms no-tag 스캔 5회로 확인한다. 실제 제거는 1초 안에 처리하면서도, LED 점멸 중 태그를 잠시 떼었다가 바로 다시 붙일 때의 PN532 일시 미검출로 `옷장 밖`이 잘못 확정되는 일을 줄인다. 재부착은 첫 정상 UID 읽기에서 즉시 `PRESENT`로 복귀한다.
+- C6 no-tag scan은 40ms 고정 주기이며, 제거 확인에 영향을 주던 보드별 0~72ms 스캔 지터를 제거했다. 5회 clean no-tag 확인은 유지하되 실제 제거 확정은 약 200ms로 줄었다. COM22에 플래시 후 PN532 `0x32010607`과 실제 NTAG UID를 재확인했다.
+- Public Web은 FIND/LED OFF의 HTTP 응답에 포함된 명령을 즉시 로컬 모델에 반영하고 렌더한다. 이후 WebSocket과 snapshot이 실제 ACK/EMPTY 상태를 동기화하므로, 명령 후 `점멸 중` 박스가 추가 snapshot 왕복을 기다리지 않는다.

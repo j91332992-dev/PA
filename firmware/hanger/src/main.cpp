@@ -73,11 +73,11 @@ constexpr uint32_t BEACON_LOST_TIMEOUT_MS = 30000;
 constexpr uint32_t CHANNEL_RESCAN_TIMEOUT_MS = 90000;
 uint32_t lastBeaconWarningMs = 0;
 constexpr uint32_t PN532_REINIT_COOLDOWN_MS = 500;
-// A passive NTAG answers immediately.  Keep no-tag polls short so removal
-// does not keep the app in IN_WARDROBE for several 200ms timeouts.
-constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 80;
-// Five short misses still confirm an actual removal well under one second,
-// while absorbing transient PN532/RF misses when a tag is put back quickly.
+// A passive NTAG answers immediately.  A 40ms bounded no-tag poll keeps
+// removal responsive while leaving enough time for a genuine tag response.
+constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 40;
+// Five clean misses prevent transient PN532/RF misses from becoming OUT, but
+// at the fixed 40ms cadence still confirm a real removal in about 200ms.
 constexpr uint8_t REMOVE_CONFIRM_HITS = 5;
 constexpr uint8_t PRESENT_CONFIRM_HITS = PRESENT_CONFIRM_COUNT < 1 ? 1 : PRESENT_CONFIRM_COUNT;
 constexpr uint32_t FIND_REJECTED_EMPTY = 2;
@@ -676,8 +676,9 @@ void loop() {
     report(false);
   }
 
-  // Keep the PN532 poll cadence bounded so ESP-NOW work can run between polls.
-  if (t - lastScan >= NFC_SCAN_INTERVAL_MS + (bootId % 73)) {
+  // Do not add a per-boot jitter here: it made physical tag removal wait up
+  // to 72ms per poll before the Cloud and WebSocket path could even start.
+  if (t - lastScan >= NFC_SCAN_INTERVAL_MS) {
     lastScan = t;
     scanNfc();
   }

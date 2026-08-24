@@ -156,6 +156,18 @@ function isHangerLedActive(hangerId) {
   return false;
 }
 
+// A FIND/STOP response is already authoritative for the current user's
+// command. Reflect it immediately instead of making the button/card wait for
+// a second full snapshot round trip; WebSocket and the scheduled snapshot
+// still reconcile the physical ACK/EMPTY state afterwards.
+function applyLocalCommand(command) {
+  if (!command?.id) return;
+  model.commands = (model.commands || []).filter(item => item.id !== command.id);
+  model.commands.unshift(command);
+  render();
+  scheduleRefresh(0);
+}
+
 // ----------------- Image SVG Fallback Placeholder -----------------
 function getGarmentSvgPlaceholder(category, color, name) {
   const cat = window.OutfitEngine?.categorizeGarment({ category, name }) || 'top';
@@ -788,12 +800,12 @@ window.findGarment = async (id, hangerId) => {
     return;
   }
   try {
-    await api('/api/commands', {
+    const command = await api('/api/commands', {
       method: 'POST',
       body: JSON.stringify({ targets: [hangerId], command: 'LED_BLINK', durationMs: 0 }),
     });
+    applyLocalCommand(command);
     toast(`[찾기 시작] ${hangerId} 옷걸이에 LED 지속 점멸 명령을 전송했습니다.`);
-    refresh();
   } catch (x) {
     toast(`[찾기 오류] ${x.message}`);
   }
@@ -802,12 +814,12 @@ window.findGarment = async (id, hangerId) => {
 window.stopGarment = async hangerId => {
   if (!hangerId) return;
   try {
-    await api('/api/commands', {
+    const command = await api('/api/commands', {
       method: 'POST',
       body: JSON.stringify({ targets: [hangerId], command: 'LED_OFF' }),
     });
+    applyLocalCommand(command);
     toast(`[LED 끄기] ${hangerId} 옷걸이의 LED를 소등했습니다.`);
-    refresh();
   } catch (x) {
     toast(`[소등 오류] ${x.message}`);
   }
@@ -816,12 +828,12 @@ window.stopGarment = async hangerId => {
 window.findOutfit = async (targets, title) => {
   if (!targets || !targets.length) return;
   try {
-    await api('/api/commands', {
+    const command = await api('/api/commands', {
       method: 'POST',
       body: JSON.stringify({ targets, command: 'LED_BLINK', durationMs: 0 }),
     });
+    applyLocalCommand(command);
     toast(`[코디 찾기] ${targets.join(', ')} 옷걸이에 동시 LED 점멸 명령을 전송했습니다.`);
-    refresh();
   } catch (x) {
     toast(`[코디 찾기 오류] ${x.message}`);
   }
@@ -830,12 +842,12 @@ window.findOutfit = async (targets, title) => {
 window.stopOutfit = async targets => {
   if (!targets || !targets.length) return;
   try {
-    await api('/api/commands', {
+    const command = await api('/api/commands', {
       method: 'POST',
       body: JSON.stringify({ targets, command: 'LED_OFF' }),
     });
+    applyLocalCommand(command);
     toast(`[코디 LED 끄기] ${targets.join(', ')} 옷걸이의 LED를 소등했습니다.`);
-    refresh();
   } catch (x) {
     toast(`[소등 오류] ${x.message}`);
   }
