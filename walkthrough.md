@@ -133,6 +133,6 @@
 
 ## ESP-NOW 단절 시 옷장 밖 처리
 
-- C6는 250ms 고정 ESP-NOW heartbeat를 전송한다. 서버는 옷걸이 상태만 900ms 무응답이면 `OFFLINE`으로 바꾸고, 해당 garment를 즉시 `OUT`으로 재계산하며 진행 중 LED FIND도 `ESPNOW_LINK_LOST`로 취소한다.
+- C6는 200ms 고정 ESP-NOW heartbeat를 전송한다. 서버는 옷걸이 상태만 750ms 무응답이면 `OFFLINE`으로 바꾸고, 해당 garment를 즉시 `OUT`으로 재계산하며 진행 중 LED FIND도 `ESPNOW_LINK_LOST`로 취소한다. COM23의 HC-85C438에 플래시한 뒤 연속 heartbeat sequence로 실제 전송을 확인했다.
 - Gateway Wi-Fi/Cloud의 일반 30초 offline 판정은 유지한다. 이 규칙은 C6 전원 단절 또는 C6↔Gateway ESP-NOW 단절에서만 빠르게 적용된다.
 - `tests/espnow-link-loss.test.js`는 C6 heartbeat 단절 후 garment OUT, currentHanger 제거, FIND CANCELLED를 자동 검증한다.
