@@ -19,6 +19,7 @@ const deviceToken = 'test-device';
 
 const { server } = require('../backend/server');
 const { VirtualGateway } = require('../simulator/virtual-hardware');
+const HangerFreshness = require('../shared/hanger-freshness');
 
 let baseUrl, wsUrl, userToken, vgw;
 
@@ -137,6 +138,51 @@ test('Scenario D: Duplicate sequence/bootId rejection', async () => {
   // Re-send with same or lower sequence
   const dupRes = await vgw.sendStatus(h, initialSeq, initialBoot);
   assert.equal(dupRes.duplicate, true);
+});
+
+test('Race A: WebSocket PRESENT seq=10 wins over delayed snapshot EMPTY seq=9', () => {
+  const tracker = HangerFreshness.createTracker();
+  const present = { hangerId: 'HC-RACE01', state: 'PRESENT', reportedState: 'PRESENT', tagUid: '04RACE00000001', bootId: 'boot-a', lastSequence: 10 };
+  const staleSnapshot = { ...present, state: 'EMPTY', reportedState: 'EMPTY', tagUid: null, lastSequence: 9 };
+  tracker.remember(present);
+  assert.equal(tracker.isFresher(staleSnapshot, present), false);
+});
+
+test('Race B: WebSocket EMPTY seq=11 wins over delayed snapshot PRESENT seq=10', () => {
+  const tracker = HangerFreshness.createTracker();
+  const empty = { hangerId: 'HC-RACE02', state: 'EMPTY', reportedState: 'EMPTY', tagUid: null, bootId: 'boot-a', lastSequence: 11 };
+  const staleSnapshot = { ...empty, state: 'PRESENT', reportedState: 'PRESENT', tagUid: '04RACE00000002', lastSequence: 10 };
+  tracker.remember(empty);
+  assert.equal(tracker.isFresher(staleSnapshot, empty), false);
+});
+
+test('Race C: an old boot packet is rejected after a new boot is accepted', async () => {
+  const send = (state, tagUid, sequence, bootId) => api('/api/gateway/status', {
+    method: 'POST',
+    deviceAuth: true,
+    body: JSON.stringify({ gatewayId: 'GW-A1B2C3', hangerId: 'HC-A1B2C3', state, tagUid, sequence, bootId, channel: 1 }),
+  });
+
+  await send('PRESENT', '04RACE00000003', 10, 'boot-a');
+  const newBoot = await send('PRESENT', '04RACE00000003', 1, 'boot-b');
+  assert.equal(newBoot.status, 200);
+  const oldBoot = await send('EMPTY', null, 99, 'boot-a');
+  assert.equal(oldBoot.status, 200);
+  assert.equal(oldBoot.body.duplicate, true);
+  assert.equal(oldBoot.body.stale, true);
+
+  const snap = await api('/api/snapshot', { userAuth: true });
+  const hanger = snap.body.hangers.find(h => h.hangerId === 'HC-A1B2C3');
+  assert.equal(hanger.reportedState, 'PRESENT');
+  assert.equal(hanger.tagUid, '04ACE00000003');
+  assert.equal(hanger.bootId, 'boot-b');
+  assert.equal(hanger.lastSequence, 1);
+});
+
+test('Race D: UNKNOWN_TAG with a UID is rendered as an unregistered tag, never empty', () => {
+  const text = HangerFreshness.clothingStatus({ state: 'UNKNOWN_TAG', reportedState: 'PRESENT', tagUid: '04UNKNOWN00001' }, []);
+  assert.match(text, /새 옷 감지됨/);
+  assert.doesNotMatch(text, /걸린 옷 없음/);
 });
 
 test('Scenario E: Same Tag reported by two Hangers -> CONFLICT', async () => {
@@ -529,6 +575,3 @@ test('Scenario N: Empty Hanger Physical Lifecycle (A, B, C, D) & Logout Persiste
 
   assert.ok(snapRelogin.garments.some(g => g.id === garment.id), 'Garment data is preserved after logout and relogin');
 });
-
-
-

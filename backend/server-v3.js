@@ -87,9 +87,17 @@ function status(x){
   if(!['PRESENT','EMPTY','UNKNOWN_TAG','UNSTABLE'].includes(state)||!Number.isSafeInteger(sequence)||sequence<0)throw error(400,'옷걸이 상태 형식 오류');
   const gateway=attachGateway(gatewayId);
   let h=db.hangers.find(v=>v.hangerId===hangerId);
-  if(!h){h={hangerId,alias:'',createdAt:now(),lastSequence:-1,wardrobeId:gateway.wardrobeId||null};db.hangers.push(h)}
+  if(!h){h={hangerId,alias:'',createdAt:now(),lastSequence:-1,bootHistory:[],wardrobeId:gateway.wardrobeId||null};db.hangers.push(h)}
   if(!h.wardrobeId)h.wardrobeId=gateway.wardrobeId||(db.wardrobes.length===1?db.wardrobes[0].id:null);
-  if(h.bootId===bootId&&sequence<=h.lastSequence)return{hanger:h,duplicate:true};
+  const currentBoot=String(h.bootId||''),history=Array.isArray(h.bootHistory)?h.bootHistory.map(String):[];
+  if(currentBoot&&!history.includes(currentBoot))history.push(currentBoot);
+  // A bootId is a session identifier. Once a hanger has moved to a new
+  // session, packets from any retired session are delayed stale packets, not
+  // a legitimate reboot. A never-seen bootId is accepted as the next reboot.
+  if(currentBoot===bootId&&sequence<=Number(h.lastSequence??-1))return{hanger:h,duplicate:true,stale:true};
+  if(currentBoot!==bootId&&history.includes(bootId))return{hanger:h,duplicate:true,stale:true};
+  if(currentBoot!==bootId)h.lastSequence=-1;
+  h.bootHistory=[...new Set([...history,bootId])];
   Object.assign(h,{reportedState:state,state,tagUid:uid(x.tagUid)||null,lastSeen:now(),lastSequence:sequence,bootId,channel:Number(x.channel||0),rssi:Number(x.rssi||0),errorFlags:Number(x.errorFlags||0),firmwareVersion:String(x.firmwareVersion||'unknown'),gatewayId});
   Object.assign(gateway,{state:'ONLINE',lastSeen:h.lastSeen,channel:h.channel,firmwareVersion:String(x.gatewayFirmwareVersion||'unknown')});
   reconcile();

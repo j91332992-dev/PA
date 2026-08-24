@@ -9,7 +9,13 @@ let token = localStorage.getItem('wardrobeToken'),
   simTimer = null,
   selected = new Set(),
   currentWeather = null,
-  weatherCache = {};
+  weatherCache = {},
+  refreshGeneration = 0,
+  refreshInFlight = null,
+  refreshQueued = false,
+  refreshTimer = null;
+
+const hangerFreshness = window.HangerFreshness.createTracker();
 
 const BLE_SERVICE_UUID = 'a4e66a10-0fb0-4dce-8be0-18cf7bc82001'; // 옷봉
 const BLE_CONFIG_UUID = 'a4e66a11-0fb0-4dce-8be0-18cf7bc82001';
@@ -68,11 +74,7 @@ function garmentNameForTag(tagUid) {
 }
 
 function hangerClothingStatus(hanger) {
-  if ((hanger?.reportedState === 'PRESENT' || hanger?.state === 'PRESENT' || hanger?.state === 'UNKNOWN_TAG') && hanger.tagUid) {
-    const name = garmentNameForTag(hanger.tagUid);
-    return name ? `옷 감지됨 · ${name}` : `새 옷 감지됨 · 미등록 태그 (${hanger.tagUid})`;
-  }
-  return '걸린 옷 없음';
+  return hangerFreshness.clothingStatus(hanger, model.garments);
 }
 
 // ----------------- Korean State Label Helper -----------------
@@ -981,9 +983,71 @@ function render() {
   renderDeviceManagement();
 }
 
+function mergeSnapshot(snapshot) {
+  const incomingHangers = Array.isArray(snapshot?.hangers) ? snapshot.hangers : [];
+  const currentById = new Map((model.hangers || []).map(h => [hangerFreshness.hangerIdOf(h), h]));
+  const mergedIds = new Set();
+  const hangers = incomingHangers.map(incoming => {
+    const id = hangerFreshness.hangerIdOf(incoming);
+    const current = currentById.get(id);
+    mergedIds.add(id);
+    if (current && !hangerFreshness.isFresher(incoming, current)) return current;
+    hangerFreshness.remember(incoming);
+    return incoming;
+  });
+
+  // A snapshot may have been captured before a live event added a hanger.
+  // Keep that live record until a newer event/snapshot supersedes it.
+  for (const current of model.hangers || []) {
+    const id = hangerFreshness.hangerIdOf(current);
+    if (id && !mergedIds.has(id)) hangers.push(current);
+  }
+  return { ...snapshot, hangers };
+}
+
+function applyHangerEvent(hanger) {
+  const id = hangerFreshness.hangerIdOf(hanger);
+  if (!id) return false;
+  const current = (model.hangers || []).find(item => hangerFreshness.hangerIdOf(item) === id);
+  if (current && !hangerFreshness.isFresher(hanger, current)) return false;
+  hangerFreshness.remember(hanger);
+  const idx = (model.hangers || []).findIndex(item => hangerFreshness.hangerIdOf(item) === id);
+  if (idx >= 0) model.hangers[idx] = hanger;
+  else (model.hangers = model.hangers || []).push(hanger);
+  return true;
+}
+
+function scheduleRefresh(delay = 120) {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    refresh();
+  }, delay);
+}
+
 async function refresh() {
-  model = await api('/api/snapshot');
-  render();
+  if (refreshInFlight) {
+    refreshQueued = true;
+    return refreshInFlight;
+  }
+
+  const generation = ++refreshGeneration;
+  const request = (async () => {
+    const snapshot = await api('/api/snapshot');
+    if (generation !== refreshGeneration) return;
+    model = mergeSnapshot(snapshot);
+    render();
+  })();
+  refreshInFlight = request;
+  try {
+    await request;
+  } finally {
+    if (refreshInFlight === request) refreshInFlight = null;
+    if (refreshQueued) {
+      refreshQueued = false;
+      scheduleRefresh(0);
+    }
+  }
 }
 
 function connect() {
@@ -998,13 +1062,11 @@ function connect() {
   socket.onmessage = e => {
     const m = JSON.parse(e.data);
     if (m.type === 'snapshot') {
-      model = m.payload;
+      model = mergeSnapshot(m.payload);
       render();
     } else if (m.type === 'hanger.state') {
       const h = m.payload;
-      const idx = (model.hangers || []).findIndex(x => x.hangerId === h.hangerId);
-      if (idx >= 0) model.hangers[idx] = h;
-      else (model.hangers = model.hangers || []).push(h);
+      if (!applyHangerEvent(h)) return;
       // WebSocket events do not arrive through refresh(), so keep the recent
       // event feed in sync with the same live state update.
       model.events = model.events || [];
@@ -1017,7 +1079,9 @@ function connect() {
       }
       render();
     } else {
-      refresh();
+      // Heartbeats and command/garment events can arrive in bursts. Coalesce
+      // them instead of starting one full snapshot request per message.
+      scheduleRefresh();
     }
   };
   socket.onclose = () => {
@@ -1081,7 +1145,7 @@ async function enter() {
   try {
     // Fetch first, but do not leave a successfully authenticated person on
     // the login form because one optional dashboard card failed to render.
-    model = await api('/api/snapshot');
+    model = mergeSnapshot(await api('/api/snapshot'));
     $('#auth').hidden = true;
     $('#auth').style.display = 'none';
     $('#app').hidden = false;
@@ -1723,6 +1787,9 @@ $('#logout').onclick = () => {
     simTimer = null;
   }
   socket?.close();
+  hangerFreshness.clear();
+  model = { garments: [], hangers: [], gateways: [], events: [], commands: [] };
+  refreshGeneration++;
   localStorage.removeItem('wardrobeToken');
   token = null;
   showAuth();
@@ -1985,7 +2052,7 @@ function startConnectionPolling(targetSsid) {
     pollCount++;
     try {
       const snap = await api('/api/snapshot');
-      model = snap;
+      model = mergeSnapshot(snap);
       const physical = (snap.gateways || []).filter(g => !String(g.gatewayId || '').startsWith('GW-SIM'));
       const onlineGateway = physical.find(g => Date.now() - Date.parse(g.lastSeen || 0) < 35000);
 
