@@ -130,3 +130,9 @@
 
 - Gateway는 ESP efuse의 잘못된 바이트 순서 때문에 서로 다른 S3가 같은 `GW-D4DB1C` ID를 만들 수 있었다. 이제 station MAC 마지막 세 바이트로 ID를 만들며, 기존 실물 S3 MAC만 호환성 매핑으로 `GW-D4DB1C`를 유지한다.
 - 새 S3(COM24, MAC suffix `7495A0`)에는 최신 Gateway 펌웨어를 플래시하고 `GW-7495A0` 부팅 로그를 확인했다. 새 보드는 이전 Wi-Fi 저장값이 유효하지 않아 BLE Wi-Fi provisioning 대기 상태로 시작한다.
+
+## ESP-NOW 단절 시 옷장 밖 처리
+
+- C6는 250ms 고정 ESP-NOW heartbeat를 전송한다. 서버는 옷걸이 상태만 900ms 무응답이면 `OFFLINE`으로 바꾸고, 해당 garment를 즉시 `OUT`으로 재계산하며 진행 중 LED FIND도 `ESPNOW_LINK_LOST`로 취소한다.
+- Gateway Wi-Fi/Cloud의 일반 30초 offline 판정은 유지한다. 이 규칙은 C6 전원 단절 또는 C6↔Gateway ESP-NOW 단절에서만 빠르게 적용된다.
+- `tests/espnow-link-loss.test.js`는 C6 heartbeat 단절 후 garment OUT, currentHanger 제거, FIND CANCELLED를 자동 검증한다.

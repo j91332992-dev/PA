@@ -683,7 +683,10 @@ void loop() {
     scanNfc();
   }
   
-  if (t - lastHeartbeat >= HEARTBEAT_MIN_MS + (bootId % HEARTBEAT_JITTER_MS)) {
+  // Hanger liveness is part of the garment state contract. A fixed, short
+  // ESP-NOW heartbeat lets the server turn an unreachable hanger into OUT
+  // promptly instead of preserving a stale PRESENT tag for tens of seconds.
+  if (t - lastHeartbeat >= HEARTBEAT_MIN_MS) {
     lastHeartbeat = t;
     report(false);
   }

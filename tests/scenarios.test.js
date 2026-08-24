@@ -52,7 +52,9 @@ test.before(async () => {
     deviceToken,
     gatewayId: 'GW-TEST01',
     pollIntervalMs: 150,
-    heartbeatIntervalMs: 2000,
+    // Match the physical C6 liveness contract: a missing ESP-NOW heartbeat
+    // makes the garment OUT in under a second.
+    heartbeatIntervalMs: 250,
     silent: true,
   });
   await vgw.start();
