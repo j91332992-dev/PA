@@ -171,3 +171,11 @@
 - 진단 로그는 `[NFC_FOUND]`, `[NFC_MISS]`, `[NFC_EMPTY]`, `[ESPNOW_TX]`, `[ESPNOW_RX]`, `[CLOUD_POST]`, `[DB_STATE]`, 브라우저 `[APP_STATE]`로 연결된다. 서버는 `updatedAt`과 `sequence`를 상태에 저장하고 WebSocket/snapshot에서 앱이 이를 기록한다.
 - 서버 상태 패킷은 discovery telemetry일 뿐이다. 이미 등록된 Gateway가 수신해도, BLE의 **옷봉과 연결** 확인 뒤 별도 `/api/hangers/:id/claim`이 성공하기 전에는 C6 소유권을 자동 부여하지 않는다. 따라서 삭제한 옷걸이가 단순 근접 통신만으로 다시 사용자 장비 목록에 나타나지 않는다.
 - 검증: `npm test` 38/38, C6/Gateway `pio run`, JavaScript syntax check, `git diff --check` 통과. 이 기록 시점에는 사용자 지시에 따라 GitHub push, Render 배포, 실제 보드 플래시 및 NTAG 실측은 수행하지 않았다.
+
+## 두 C6 동시 태그 상태 업로드 병목 완화
+
+- 원인: Gateway는 C6 상태를 Render에 HTTPS로 한 건씩 올린다. 실제 POST가 약 700ms인 상황에서 C6 두 대가 200ms heartbeat를 동시에 보내면 일반 상태 큐가 계속 쌓이고, 서버의 750ms 옷걸이 단절 판정이 정상 `PRESENT`를 거짓 `OFFLINE`으로 바꿔 앱의 `옷장 안/밖`이 반복될 수 있었다.
+- Gateway는 이제 NFC 전환(`PRESENT`/`EMPTY` EVENT), ACK를 우선 큐에 그대로 보존한다. 반면 단순 `STATUS` heartbeat는 C6 hardware ID별 최신 한 건만 남겨, 다른 C6의 오래된 heartbeat가 최신 태그 제거 상태를 막지 않는다.
+- C6 기본 heartbeat는 500ms로 낮춰 두 보드의 불필요한 HTTPS 경쟁을 줄였다. 실제 태그 제거의 `EMPTY` EVENT와 LED OFF는 heartbeat 주기와 독립적으로 즉시 전송된다.
+- 서버 기본 ESP-NOW 단절 판정은 2.5초로 조정했다. 이는 정상 HTTPS 전달 지연을 전원 단절로 오판하지 않기 위한 liveness 여유이며, PN532 태그 제거는 즉시 `EMPTY` 이벤트로 계속 처리된다.
+- 검증: Gateway/C6 `pio run` 성공, `npm test` 40/40 성공, `node --check backend/server-v3.js`와 `git diff --check` 성공. 이 변경을 실제로 보려면 최신 Gateway와 두 C6 펌웨어를 각각 플래시한 뒤, 두 태그를 동시에 인식·각각 제거하는 실기기 시험이 필요하다.

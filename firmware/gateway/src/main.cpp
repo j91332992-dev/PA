@@ -134,9 +134,14 @@ class GatewayBleServerCallbacks : public BLEServerCallbacks {
   }
 };
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
-constexpr uint8_t EVENT_Q = 16, NORMAL_Q = 32, SEEN_Q = 16;
-sw::Packet eventQueue[EVENT_Q], normalQueue[NORMAL_Q];
-volatile uint8_t eventHead = 0, eventTail = 0, normalHead = 0, normalTail = 0;
+constexpr uint8_t EVENT_Q = 16, LATEST_STATUS_SLOTS = 8, SEEN_Q = 16;
+sw::Packet eventQueue[EVENT_Q];
+volatile uint8_t eventHead = 0, eventTail = 0, latestStatusCursor = 0;
+// Heartbeats are liveness snapshots, not a history.  Retain only the newest
+// packet for each C6 while an HTTPS POST is in progress; NFC transitions use
+// EVENT and stay in the priority queue below.
+struct LatestStatus { bool pending = false; sw::Packet packet{}; };
+LatestStatus latestStatus[LATEST_STATUS_SLOTS];
 struct SeenPacket { char hangerId[16]{}; uint32_t bootId = 0, sequence = 0; };
 SeenPacket seenPackets[SEEN_Q];
 bool pendingStatusUpload = false;
@@ -318,10 +323,17 @@ void enqueue(const sw::Packet& p) {
       eventHead = next;
     }
   } else {
-    uint8_t next = (normalHead + 1) % NORMAL_Q;
-    if (next != normalTail) {
-      normalQueue[normalHead] = p;
-      normalHead = next;
+    LatestStatus* slot = nullptr;
+    for (auto& candidate : latestStatus) {
+      if (candidate.pending && strncmp(candidate.packet.hangerId, p.hangerId, sizeof p.hangerId) == 0) { slot = &candidate; break; }
+      if (!slot && !candidate.pending) slot = &candidate;
+    }
+    if (!slot) slot = &latestStatus[p.sequence % LATEST_STATUS_SLOTS];
+    // Keep a newer status only. A delayed old heartbeat must not overwrite a
+    // newer PRESENT/EMPTY report while the Gateway is posting another C6.
+    if (!slot->pending || slot->packet.bootId != p.bootId || p.sequence > slot->packet.sequence) {
+      slot->packet = p;
+      slot->pending = true;
     }
   }
   portEXIT_CRITICAL(&mux);
@@ -334,10 +346,16 @@ bool dequeue(sw::Packet& p) {
     p = eventQueue[eventTail];
     eventTail = (eventTail + 1) % EVENT_Q;
     ok = true;
-  } else if (normalTail != normalHead) {
-    p = normalQueue[normalTail];
-    normalTail = (normalTail + 1) % NORMAL_Q;
-    ok = true;
+  } else {
+    for (uint8_t offset = 0; offset < LATEST_STATUS_SLOTS; ++offset) {
+      const uint8_t index = (latestStatusCursor + offset) % LATEST_STATUS_SLOTS;
+      if (!latestStatus[index].pending) continue;
+      p = latestStatus[index].packet;
+      latestStatus[index].pending = false;
+      latestStatusCursor = (index + 1) % LATEST_STATUS_SLOTS;
+      ok = true;
+      break;
+    }
   }
   portEXIT_CRITICAL(&mux);
   return ok;

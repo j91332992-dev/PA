@@ -9,7 +9,11 @@ function loadEnv(file){if(!fs.existsSync(file))return;for(const line of fs.readF
 loadEnv(path.join(ROOT,'.env'));
 const PORT=Number(process.env.PORT||8787),DATA=path.resolve(ROOT,process.env.DATA_PATH||'data/wardrobe.json'),PUBLIC=path.join(ROOT,'web','public');
 const SECRET=process.env.JWT_SECRET||'development-secret',DEVICE=process.env.DEVICE_TOKEN||'development-device-token';
-const OFFLINE=Number(process.env.OFFLINE_TIMEOUT_MS||30000),HANGER_OFFLINE=Number(process.env.HANGER_OFFLINE_TIMEOUT_MS||750),CMD_TIMEOUT=Number(process.env.COMMAND_TIMEOUT_MS||60000),SIM=process.env.SIMULATION_ENABLED==='true';
+// A Gateway uploads C6 status over HTTPS sequentially.  With two physical
+// hangers a healthy Render request can take longer than one 750ms liveness
+// window, so that value produced false OFFLINE/PRESENT flapping. NFC EMPTY
+// remains an immediate event; this timeout only detects a truly lost link.
+const OFFLINE=Number(process.env.OFFLINE_TIMEOUT_MS||30000),HANGER_OFFLINE=Number(process.env.HANGER_OFFLINE_TIMEOUT_MS||2500),CMD_TIMEOUT=Number(process.env.COMMAND_TIMEOUT_MS||60000),SIM=process.env.SIMULATION_ENABLED==='true';
 // Set ADMIN_EMAIL in Render (or .env locally) to the sole administrator.
 // Both the role and the second-factor proof are verified only by this server.
 const ADMIN_EMAIL=String(process.env.ADMIN_EMAIL||'').trim().toLowerCase();
