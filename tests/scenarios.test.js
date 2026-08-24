@@ -12,7 +12,7 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pa-scenarios-'));
 if (!process.env.DATA_PATH) process.env.DATA_PATH = path.join(tmpDir, 'wardrobe-scenarios.json');
 if (!process.env.DEVICE_TOKEN) process.env.DEVICE_TOKEN = 'test-device';
 if (!process.env.JWT_SECRET) process.env.JWT_SECRET = 'test-secret';
-if (!process.env.ADMIN_EMAIL) process.env.ADMIN_EMAIL = 'owner-scenarios@example.com';
+if (!process.env.ADMIN_EMAIL) process.env.ADMIN_EMAIL = 'admin-scenarios@example.com';
 if (!process.env.ADMIN_SECONDARY_PASSWORD) process.env.ADMIN_SECONDARY_PASSWORD = 'secondary-test-password';
 // The virtual hardware scenarios deliberately exercise simulator-only IDs.
 if (!process.env.SIMULATION_ENABLED) process.env.SIMULATION_ENABLED = 'true';
@@ -71,6 +71,7 @@ async function api(path, options = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(options.authToken ? { 'Authorization': `Bearer ${options.authToken}` } : {}),
       ...(options.userAuth ? { 'Authorization': `Bearer ${userToken}` } : {}),
       ...(options.adminSession ? { 'X-Admin-Session': options.adminSession } : {}),
       ...(options.deviceAuth ? { 'Authorization': `Bearer ${deviceToken}` } : {}),
@@ -171,14 +172,17 @@ test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected'
   assert.equal(moved.hangerNumber, 2);
   assert.equal(moved.alias, '이동한 옷걸이');
   await api('/api/gateways/GW-A0B002', { method: 'DELETE', userAuth: true });
-  const beforeVerification = await api('/api/admin/overview', { userAuth: true });
+  const adminSignup = await api('/api/auth/signup', { method: 'POST', body: JSON.stringify({ email: 'admin-scenarios@example.com', password: 'admin-password-1234', name: '테스트관리자' }) });
+  assert.equal(adminSignup.status, 201);
+  const adminAuth = { authToken: adminSignup.body.token };
+  const beforeVerification = await api('/api/admin/overview', adminAuth);
   assert.equal(beforeVerification.status, 403);
-  const statusBeforeVerification = await api('/api/admin/status', { userAuth: true });
+  const statusBeforeVerification = await api('/api/admin/status', adminAuth);
   assert.equal(statusBeforeVerification.status, 200);
   assert.equal(statusBeforeVerification.body.verified, false);
-  const wrongVerification = await api('/api/admin/verify', { method: 'POST', userAuth: true, body: JSON.stringify({ password: 'wrong-password' }) });
+  const wrongVerification = await api('/api/admin/verify', { method: 'POST', ...adminAuth, body: JSON.stringify({ password: 'wrong-password' }) });
   assert.equal(wrongVerification.status, 403);
-  const verification = await api('/api/admin/verify', { method: 'POST', userAuth: true, body: JSON.stringify({ password: 'secondary-test-password' }) });
+  const verification = await api('/api/admin/verify', { method: 'POST', ...adminAuth, body: JSON.stringify({ password: 'secondary-test-password' }) });
   assert.equal(verification.status, 200);
   assert.ok(verification.body.adminSession);
   const provisioningTimeout = await api('/api/gateways/GW-A0B001/provisioning-status', {
@@ -187,11 +191,14 @@ test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected'
   });
   assert.equal(provisioningTimeout.status, 200);
   assert.equal(provisioningTimeout.body.provisioning.status, 'TIMEOUT');
-  const statusAfterVerification = await api('/api/admin/status', { userAuth: true, adminSession: verification.body.adminSession });
+  const statusAfterVerification = await api('/api/admin/status', { ...adminAuth, adminSession: verification.body.adminSession });
   assert.equal(statusAfterVerification.status, 200);
   assert.equal(statusAfterVerification.body.verified, true);
-  const admin = await api('/api/admin/overview', { userAuth: true, adminSession: verification.body.adminSession });
+  const admin = await api('/api/admin/overview', { ...adminAuth, adminSession: verification.body.adminSession });
   assert.equal(admin.status, 200);
+  assert.equal(admin.body.users.some(row => row.email === 'admin-scenarios@example.com'), false);
+  assert.ok(admin.body.users.every(row => row.role === 'user'));
+  assert.equal(admin.body.totals.users, admin.body.users.length);
   assert.ok(admin.body.totals.hangers >= 3);
   assert.ok(admin.body.totals.garments >= 1);
   assert.equal(admin.body.system.backend.ready, true);
@@ -218,22 +225,27 @@ test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected'
   const ownerAfterUnclaim = admin.body.users.find(row => row.id === owner.id);
   assert.equal(ownerAfterUnclaim.unassignedHangers.some(hanger => hanger.hangerId === 'HC-A0B002'), true);
   assert.equal(ownerAfterUnclaim.unassignedHangers.find(hanger => hanger.hangerId === 'HC-A0B002').name, '미연결 옷걸이 · A0B002');
-  const system = await api('/api/admin/system', { userAuth: true, adminSession: verification.body.adminSession });
+  const system = await api('/api/admin/system', { ...adminAuth, adminSession: verification.body.adminSession });
   assert.equal(system.status, 200);
   assert.ok(Array.isArray(system.body.system.recentDeviceEvents));
 
   const signup = await api('/api/auth/signup', { method: 'POST', body: JSON.stringify({ email: 'ordinary-user@example.com', password: 'ordinary-password', name: '일반사용자' }) });
+  const otherGatewayLabel = await api('/api/gateways/GW-A0B001/pairing-status', { authToken: signup.body.token });
+  assert.equal(otherGatewayLabel.status, 200);
+  assert.equal(otherGatewayLabel.body.ownership, 'OTHER_ACCOUNT');
+  assert.equal(otherGatewayLabel.body.displayName, '다른 계정에 등록된 옷봉');
+  assert.ok(!otherGatewayLabel.body.displayName.includes('옷장주인'));
   const ordinary = await fetch(`${baseUrl}/api/admin/overview`, { headers: { Authorization: `Bearer ${signup.body.token}` } });
   assert.equal(ordinary.status, 403);
   const ordinaryStatus = await fetch(`${baseUrl}/api/admin/status`, { headers: { Authorization: `Bearer ${signup.body.token}` } });
   assert.equal(ordinaryStatus.status, 403);
   const ordinarySystem = await fetch(`${baseUrl}/api/admin/system`, { headers: { Authorization: `Bearer ${signup.body.token}` } });
   assert.equal(ordinarySystem.status, 403);
-  const selfDelete = await api(`/api/admin/users/${encodeURIComponent(owner.id)}`, { method: 'DELETE', userAuth: true, adminSession: verification.body.adminSession });
+  const selfDelete = await api(`/api/admin/users/${encodeURIComponent(adminSignup.body.user.id)}`, { method: 'DELETE', ...adminAuth, adminSession: verification.body.adminSession });
   assert.equal(selfDelete.status, 409);
-  const deleteTestUser = await api(`/api/admin/users/${encodeURIComponent(signup.body.user.id)}`, { method: 'DELETE', userAuth: true, adminSession: verification.body.adminSession });
+  const deleteTestUser = await api(`/api/admin/users/${encodeURIComponent(signup.body.user.id)}`, { method: 'DELETE', ...adminAuth, adminSession: verification.body.adminSession });
   assert.equal(deleteTestUser.status, 200);
-  const overviewAfterDelete = await api('/api/admin/overview', { userAuth: true, adminSession: verification.body.adminSession });
+  const overviewAfterDelete = await api('/api/admin/overview', { ...adminAuth, adminSession: verification.body.adminSession });
   assert.equal(overviewAfterDelete.body.users.some(row => row.id === signup.body.user.id), false);
 });
 

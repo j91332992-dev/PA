@@ -4,6 +4,7 @@
 #include <esp_wifi.h>
 #include <SPI.h>
 #include <Preferences.h>
+#include <esp_mac.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -68,6 +69,32 @@ constexpr uint32_t PN532_HEALTH_CHECK_MS = 1000;
 sw::State state = sw::State::EMPTY;
 bool nfcReady = false;
 
+// The first production hanger was registered before the MAC-ID bug was
+// discovered. Keep its existing cloud identity when that board is flashed
+// with this firmware; all other boards use the last three bytes of their
+// station MAC and therefore receive an independent hardware ID.
+constexpr uint8_t LEGACY_HANGER_MAC[6] = {0xA0, 0xF2, 0x62, 0x86, 0xA0, 0xE8};
+constexpr char LEGACY_HANGER_ID[] = "HC-62F2A0";
+
+bool sameMac(const uint8_t* left, const uint8_t* right) {
+  return memcmp(left, right, 6) == 0;
+}
+
+String hardwareHangerId(uint8_t mac[6]) {
+  if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
+    // This should not happen on an ESP32-C6, but retain a deterministic
+    // fallback for unusual Arduino/IDF builds.
+    uint64_t raw = ESP.getEfuseMac();
+    memcpy(mac, &raw, 6);
+  }
+
+  if (sameMac(mac, LEGACY_HANGER_MAC)) return LEGACY_HANGER_ID;
+
+  char id[16];
+  snprintf(id, sizeof id, "HC-%02X%02X%02X", mac[3], mac[4], mac[5]);
+  return id;
+}
+
 String currentUidHex() {
   String value;
   for (uint8_t i = 0; i < currentLen; ++i) {
@@ -128,8 +155,9 @@ class HangerBleConfigCallbacks : public BLECharacteristicCallbacks {
       pairedGateway = discoveredGateway;
       hangerLinkDisabled = false;
       prefs.putString("gateway", pairedGateway);
-      const String requestedName = bleJsonText(request, "displayName");
-      if (requestedName.length()) prefs.putString("displayName", requestedName);
+      // The BLE advertising name is always a neutral hardware label. Do not
+      // persist an account or UI display name on a transferable hanger.
+      prefs.remove("displayName");
       prefs.putBool("linkDisabled", false);
       setHangerBleStatus("paired", "옷봉과 연결했습니다. 이제 옷 태그 상태를 확인할 수 있습니다.");
       report(true);
@@ -473,12 +501,20 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
 #endif
   led(false);
-  uint64_t mac = ESP.getEfuseMac();
-  char id[16];
-  snprintf(id, sizeof id, "HC-%02X%02X%02X", (uint8_t)(mac >> 16), (uint8_t)(mac >> 8), (uint8_t)mac);
-  hanger = id;
-  bootId = esp_random();
   prefs.begin("hanger", false);
+  uint8_t mac[6] = {0};
+  const String generatedId = hardwareHangerId(mac);
+  hanger = prefs.getString("hangerId", generatedId);
+  if (!hanger.length()) {
+    hanger = generatedId;
+    prefs.putString("hangerId", hanger);
+  }
+  displayName = String("스마트 옷걸이 · ") + hanger.substring(hanger.length() - 6);
+  prefs.remove("displayName");
+  Serial.printf("[ID] base MAC=%02X:%02X:%02X:%02X:%02X:%02X hanger=%s%s\n",
+                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], hanger.c_str(),
+                hanger == LEGACY_HANGER_ID ? " (legacy-preserved)" : "");
+  bootId = esp_random();
   pairedGateway = prefs.getString("gateway", "");
   lastKnownGatewayChannel = prefs.getUChar("channel", 1);
   if (lastKnownGatewayChannel < 1 || lastKnownGatewayChannel > 13) lastKnownGatewayChannel = 1;

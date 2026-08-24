@@ -146,8 +146,10 @@ String configuredPassword() {
 }
 
 String bleDisplayName() {
-  String saved = wifiPrefs.getString("displayName", "");
-  return saved.length() ? saved : String("새 옷봉");
+  // BLE is a setup/discovery channel, not an ownership display. Never keep a
+  // previous account name in NVS: the immutable hardware suffix distinguishes
+  // multiple nearby rods before any server-side claim occurs.
+  return String("스마트 옷봉 · ") + gateway.substring(gateway.length() - 6);
 }
 
 void setBleStatus(const char* state, const char* message) {
@@ -157,6 +159,7 @@ void setBleStatus(const char* state, const char* message) {
   JsonDocument status;
   status["state"] = state;
   status["message"] = message;
+  status["gatewayId"] = gateway;
   String text;
   serializeJson(status, text);
   bleStatusCharacteristic->setValue(text.c_str());
@@ -193,7 +196,6 @@ class BleConfigCallbacks : public BLECharacteristicCallbacks {
     const String ssid = request["ssid"] | "";
     const String password = request["password"] | "";
     const String server = request["server"] | "";
-    const String displayName = request["displayName"] | "";
     if (!ssid.length() || !server.startsWith("http")) {
       setBleStatus("error", "2.4 GHz Wi-Fi 이름과 서버 주소를 확인하세요.");
       return;
@@ -201,7 +203,7 @@ class BleConfigCallbacks : public BLECharacteristicCallbacks {
     wifiPrefs.putString("ssid", ssid);
     wifiPrefs.putString("pass", password);
     wifiPrefs.putString("server", server);
-    if (displayName.length()) wifiPrefs.putString("displayName", displayName);
+    wifiPrefs.remove("displayName");
     wifiPrefs.putBool("disabled", false);
     setBleStatus("saved", "저장되었습니다. 옷봉을 다시 연결합니다.");
     // Let the GATT write response and the final status notification reach the

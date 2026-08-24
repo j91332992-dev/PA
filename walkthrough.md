@@ -86,3 +86,9 @@
 
 - `app.js`는 `createTracker()`가 반환한 인스턴스에서 `hangerIdOf`, `clothingStatus`, `isFresher`, `remember`를 함께 사용한다. tracker가 상태 메서드만 반환하던 불일치를 수정해 브라우저와 Node 양쪽에서 동일한 API를 제공한다.
 - 로그인 후 `/api/snapshot` 로드와 `mergeSnapshot()` 진입, `#auth` 숨김 및 `#app` 표시 조건을 회귀 테스트에 포함했다.
+
+## 옷걸이 하드웨어 ID 충돌 수정
+
+- 기존 `firmware/hanger/src/main.cpp`는 `ESP.getEfuseMac()`의 메모리 순서를 잘못 사용해 MAC 앞 3바이트(OUI)만 ID로 만들었다. 그래서 기존 COM21 보드(`A0:F2:62:86:A0:E8`)와 새 COM22 보드(`A0:F2:62:87:A8:28`)가 모두 `HC-62F2A0`으로 표시됐다.
+- 새 ID는 ESP32-C6 station MAC의 마지막 3바이트를 표준 순서로 사용한다. 새 보드는 `HC-87A828`으로 확인됐고, 생성된 ID는 `hanger` NVS에 저장되어 재부팅 후에도 유지된다.
+- 기존 등록 보드의 MAC은 호환성 매핑으로 `HC-62F2A0`을 유지한다. 기존 보드에는 이 변경 펌웨어를 아직 플래시하지 않았으며, 다른 보드는 서로 다른 MAC 기반 ID를 자동으로 생성한다.

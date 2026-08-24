@@ -1587,7 +1587,7 @@ async function showAdminShell() {
     shell = document.createElement('div');
     shell.id = 'adminApp';
     shell.className = 'admin-shell';
-    shell.innerHTML = '<header class="admin-header"><div><p class="eyebrow">SMART WARDROBE · ADMIN</p><h1>운영 관리자</h1></div><button id="adminLogout" class="ghost">로그아웃</button></header><nav class="admin-nav"><button data-admin-view="dashboard">운영 대시보드</button><button data-admin-view="users">사용자 관리</button><button data-admin-view="system">시스템 상태</button></nav><main id="adminContent" class="admin-content"><article class="panel"><p class="muted">관리자 현황을 불러오는 중입니다.</p></article></main>';
+    shell.innerHTML = `<header class="admin-header"><div><p class="eyebrow">SMART WARDROBE · ADMIN</p><h1>운영 관리자</h1><small>${esc(sessionUser?.name || '관리자')} · ${esc(sessionUser?.email || '')}</small></div><button id="adminLogout" class="ghost">로그아웃</button></header><nav class="admin-nav"><button data-admin-view="dashboard">운영 대시보드</button><button data-admin-view="users">사용자 관리</button><button data-admin-view="system">시스템 상태</button></nav><main id="adminContent" class="admin-content"><article class="panel"><p class="muted">관리자 현황을 불러오는 중입니다.</p></article></main>`;
     document.body.append(shell);
     $('#adminLogout').onclick = () => $('#logout').click();
   }
@@ -1651,7 +1651,7 @@ function renderAdminDashboard(data) {
 
 function renderAdminUsers(data) {
   const query = adminUserQuery.trim().toLowerCase();
-  const users = (data.users || []).filter(user => !query || `${user.name} ${user.email}`.toLowerCase().includes(query));
+  const users = (data.users || []).filter(user => user.role === 'user' && (!query || `${user.name} ${user.email}`.toLowerCase().includes(query)));
   return `<section><div class="title"><div><h2>사용자 관리</h2><p>사용자를 클릭하면 같은 화면에서 옷봉 → 옷걸이 전체 구조가 펼쳐집니다.</p></div><button type="button" id="adminRefresh">새로고침</button></div><input id="adminUserSearch" class="admin-search" value="${esc(adminUserQuery)}" placeholder="이름 또는 이메일 검색"><div class="admin-list">${users.map(user => `${adminUserCard(user)}${adminSelectedUserId === user.id ? `<div class="admin-user-expanded">${renderAdminUserDetail(data)}</div>` : ''}`).join('') || '<p class="muted">조건에 맞는 사용자가 없습니다.</p>'}</div></section>`;
 }
 
@@ -2137,8 +2137,28 @@ function escapeWifiLabel(value) {
 }
 
 let currentBleGatewayId = '';
+let currentGatewayOwnership = 'UNKNOWN';
+let currentHangerOwnership = 'UNKNOWN';
 let provisionPollInterval = null;
 let rebootCountdownInterval = null;
+
+function neutralBleLabel(kind, hardwareId) {
+  const shortCode = String(hardwareId || '').toUpperCase().match(/([0-9A-F]{6})$/)?.[1] || '고유 코드';
+  return `스마트 ${kind === 'gateways' ? '옷봉' : '옷걸이'} · ${shortCode}`;
+}
+
+async function refreshBleOwnership(kind, hardwareId, fallbackName = '') {
+  if (!hardwareId) return { ownership: 'UNKNOWN', displayName: fallbackName || neutralBleLabel(kind, hardwareId) };
+  const result = await api(`/api/${kind}/${encodeURIComponent(hardwareId)}/pairing-status`);
+  if (kind === 'gateways') currentGatewayOwnership = result.ownership || 'UNKNOWN';
+  else currentHangerOwnership = result.ownership || 'UNKNOWN';
+  return result;
+}
+
+function pairingBlockedMessage(kind) {
+  const device = kind === 'gateways' ? '옷봉' : '옷걸이';
+  return `이 ${device}은 다른 계정에 등록되어 있습니다. 기존 계정에서 등록 해제 후 다시 연결해 주세요.`;
+}
 
 function timeAgo(dateString) {
   if (!dateString) return '신호 없음';
@@ -2234,18 +2254,21 @@ async function connectHangerBluetooth() {
     const status = await service.getCharacteristic(BLE_STATUS_UUID);
     await status.startNotifications();
 
-    if (device.name) {
-      const match = device.name.match(/GW-[0-9A-F]{6,12}/i);
-      if (match) currentBleGatewayId = match[0].toUpperCase();
-    }
-
     status.addEventListener('characteristicvaluechanged', event => {
       try {
         const text = new TextDecoder().decode(event.target.value);
         const info = JSON.parse(text);
         if (info.gatewayId) {
           currentBleGatewayId = info.gatewayId;
-          claimDevice('gateways', currentBleGatewayId);
+          refreshBleOwnership('gateways', currentBleGatewayId, device.name || '').then(pairing => {
+            const deviceLabel = $('#bleDeviceName');
+            if (deviceLabel) deviceLabel.textContent = `${pairing.displayName || neutralBleLabel('gateways', currentBleGatewayId)} 연결됨`;
+            if (pairing.ownership === 'OTHER_ACCOUNT') {
+              const form = $('#bleWifiForm');
+              if (form) form.hidden = true;
+              setBleSetupMessage(pairingBlockedMessage('gateways'), true);
+            }
+          }).catch(() => {});
         }
         if (info.state === 'network' && info.ssid) {
           if (!nearbyWifiNetworks.some(network => network.ssid === info.ssid)) {
@@ -2259,11 +2282,9 @@ async function connectHangerBluetooth() {
     });
 
     const deviceLabel = $('#bleDeviceName');
-    if (deviceLabel) deviceLabel.textContent = `${device.name || '옷봉'} 연결됨`;
+    if (deviceLabel) deviceLabel.textContent = `${neutralBleLabel('gateways', currentBleGatewayId || device.name)} 연결됨`;
     const form = $('#bleWifiForm');
     if (form) form.hidden = false;
-
-    if (currentBleGatewayId) claimDevice('gateways', currentBleGatewayId);
 
     await writeGatewayBle('status');
     await scanHangerWifi();
@@ -2334,9 +2355,7 @@ async function saveHangerWifi(event) {
 
     setStageItem('stage_save', 'done', 'Wi-Fi 정보가 옷봉에 안전하게 저장되었습니다.');
 
-    if (currentBleGatewayId) {
-      await claimDevice('gateways', currentBleGatewayId);
-    }
+    if (currentGatewayOwnership === 'OTHER_ACCOUNT') throw new Error(pairingBlockedMessage('gateways'));
 
     let remainingSeconds = 10;
     setStageItem('stage_reboot', 'active', `옷봉이 재시작 중입니다 (${remainingSeconds}초)...`);
@@ -2371,6 +2390,16 @@ function startConnectionPolling(targetSsid) {
   provisionPollInterval = setInterval(async () => {
     pollCount++;
     try {
+      // A gateway is invisible in a user's snapshot until its first Cloud
+      // heartbeat is claimed. Retry the known hardware ID after reboot instead
+      // of waiting for a snapshot that cannot contain an unclaimed device.
+      const claim = currentBleGatewayId ? await claimDevice('gateways', currentBleGatewayId, { quietNotFound: true }) : null;
+      if (claim?.reason === 'OTHER_ACCOUNT') {
+        clearInterval(provisionPollInterval);
+        setStageItem('stage_claim', 'failed', pairingBlockedMessage('gateways'));
+        showProvisionFailure(pairingBlockedMessage('gateways'));
+        return;
+      }
       const snap = await api('/api/snapshot');
       model = mergeSnapshot(snap);
       const physical = (snap.gateways || []).filter(g => !String(g.gatewayId || '').startsWith('GW-SIM'));
@@ -2473,29 +2502,51 @@ function showHangerBleStatus(info) {
   detail.innerHTML = `<p><b>블루투스:</b> 이 기기와 연결됨</p><p><b>옷걸이:</b> ${esc(hangerDisplayName(knownHanger || { hangerId: info.hangerId }))}</p><p><b>내 옷봉 연결:</b> ${esc(linked)} · <b>무선 통신:</b> ${esc(gateway)}</p><p><b>옷 태그 읽기:</b> ${tagReader}</p><p><b>옷 상태:</b> ${esc(tag)}</p>`;
 }
 
-function handleHangerBleStatus(value) {
+async function handleHangerBleStatus(value) {
   try {
     const info = JSON.parse(new TextDecoder().decode(value));
     setHangerBleMessage(info.message || '옷걸이 상태를 받았습니다.', /error|failed/i.test(info.state || ''));
     showHangerBleStatus(info);
     const gatewayId = info.gatewayId || info.discoveredGatewayId;
-    if (gatewayId) claimDevice('gateways', gatewayId);
-    if (info.hangerId && gatewayId) claimDevice('hangers', info.hangerId);
+    if (!info.hangerId) return;
+    const pairing = await refreshBleOwnership('hangers', info.hangerId);
+    const nameEl = $('#hangerBleDeviceName');
+    if (nameEl) nameEl.textContent = `${pairing.displayName || neutralBleLabel('hangers', info.hangerId)} 연결됨`;
+    if (pairing.ownership === 'OTHER_ACCOUNT') {
+      setHangerBleMessage(pairingBlockedMessage('hangers'), true);
+      const pairBtn = $('#pairPhysicalHanger');
+      if (pairBtn) pairBtn.hidden = true;
+      return;
+    }
+    if (gatewayId) await claimDevice('gateways', gatewayId, { quietNotFound: true });
+    if (gatewayId) await claimDevice('hangers', info.hangerId, { quietNotFound: true });
   } catch (_) {
     setHangerBleMessage('옷걸이 상태를 읽지 못했습니다.', true);
   }
 }
 
-async function claimDevice(kind, deviceId) {
+async function claimDevice(kind, deviceId, { quietNotFound = false } = {}) {
   if (!deviceId) return;
   const key = `${kind}:${deviceId}`;
-  if (claimedDeviceIds.has(key)) return;
+  if (claimedDeviceIds.has(key)) return { ok: false, reason: 'PENDING' };
   claimedDeviceIds.add(key);
   try {
-    await api(`/api/${kind}/${encodeURIComponent(deviceId)}/claim`, { method: 'POST' });
+    const item = await api(`/api/${kind}/${encodeURIComponent(deviceId)}/claim`, { method: 'POST' });
     refresh();
+    return { ok: true, item };
   } catch (error) {
-    if (error.status !== 404) setHangerBleMessage(error.message, true);
+    if (error.status === 409) {
+      const message = pairingBlockedMessage(kind);
+      if (kind === 'gateways') setBleSetupMessage(message, true);
+      else setHangerBleMessage(message, true);
+      return { ok: false, reason: 'OTHER_ACCOUNT' };
+    }
+    if (error.status !== 404 || !quietNotFound) {
+      if (kind === 'gateways') setBleSetupMessage(error.message, true);
+      else setHangerBleMessage(error.message, true);
+    }
+    return { ok: false, reason: error.status === 404 ? 'NOT_SEEN' : 'ERROR' };
+  } finally {
     claimedDeviceIds.delete(key);
   }
 }
@@ -2535,7 +2586,7 @@ async function connectPhysicalHangerBluetooth() {
     status.addEventListener('characteristicvaluechanged', event => handleHangerBleStatus(event.target.value));
     const knownHanger = (model.hangers || []).find(hanger => device.name?.includes(hanger.hangerId));
     const nameEl = $('#hangerBleDeviceName');
-    if (nameEl) nameEl.textContent = `${hangerDisplayName(knownHanger || { hangerId: device.name || '' })} 연결됨`;
+    if (nameEl) nameEl.textContent = `${knownHanger ? hangerDisplayName(knownHanger) : neutralBleLabel('hangers', device.name || '')} 연결됨`;
     handleHangerBleStatus(await status.readValue());
     const pairBtn = $('#pairPhysicalHanger');
     if (pairBtn) pairBtn.hidden = false;

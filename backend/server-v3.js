@@ -44,6 +44,14 @@ function assignHanger(hanger,wardrobeId,gatewayId,{moved=false}={}){
   if(moved||hanger.gatewayId!==gatewayId||!Number.isInteger(Number(hanger.hangerNumber))||Number(hanger.hangerNumber)<1)hanger.hangerNumber=nextHangerNumber(gatewayId);
   hanger.wardrobeId=wardrobeId;hanger.gatewayId=gatewayId;return syncHangerName(hanger);
 }
+function pairingLabel(kind,item,user){
+  const isGateway=kind==='gateways',hardwareId=isGateway?item?.gatewayId:item?.hangerId;
+  const neutral=isGateway?neutralGatewayName({gatewayId:hardwareId}):neutralHangerName({hangerId:hardwareId});
+  if(!item||!item.wardrobeId)return {ownership:'UNCLAIMED',displayName:neutral,hardwareId:hardwareId||null};
+  const wardrobe=wardrobeFor(user);
+  if(item.wardrobeId!==wardrobe?.id)return {ownership:'OTHER_ACCOUNT',displayName:`다른 계정에 등록된 ${isGateway?'옷봉':'옷걸이'}`,hardwareId:hardwareId||null};
+  return {ownership:'OWNED',displayName:isGateway?(item.name||neutral):(item.alias||neutral),hardwareId:hardwareId||null};
+}
 function isConfiguredAdmin(user){return !!ADMIN_EMAIL&&String(user.email||'').trim().toLowerCase()===ADMIN_EMAIL}
 function userPublic(user){return {id:user.id,email:user.email,name:user.name,role:user.role||'user',createdAt:user.createdAt,lastLoginAt:user.lastLoginAt||null}}
 function migrate(){
@@ -192,9 +200,11 @@ function gatewayOperational(gateway){
 }
 function adminOverview(){
   const online=item=>Date.now()-Date.parse(item.lastSeen||0)<OFFLINE;
-  const gateways=db.gateways.filter(g=>!simulated(g)),hangers=db.hangers.filter(h=>!simulated(h)),garments=db.garments,problems=[];
+  const managedUsers=db.users.filter(user=>(user.role||'user')==='user');
+  const managedWardrobeIds=new Set(managedUsers.map(user=>wardrobeFor(user)?.id).filter(Boolean));
+  const gateways=db.gateways.filter(g=>!simulated(g)&&managedWardrobeIds.has(g.wardrobeId)),hangers=db.hangers.filter(h=>!simulated(h)&&managedWardrobeIds.has(h.wardrobeId)),garments=db.garments.filter(g=>managedWardrobeIds.has(g.wardrobeId)),problems=[];
   const onlineAge=item=>online(item)?'ONLINE':'OFFLINE';
-  const users=db.users.map(user=>{
+  const users=managedUsers.map(user=>{
     const wardrobe=wardrobeFor(user),ownedGateways=wardrobe?visible(db.gateways,wardrobe.id):[],ownedHangers=wardrobe?visible(db.hangers,wardrobe.id):[],ownedGarments=wardrobe?visible(db.garments,wardrobe.id):[],gatewayIds=new Set(ownedGateways.map(gateway=>gateway.gatewayId));
     const problemDeviceIds=new Set();
     const serializeHanger=(hanger,gateway)=>{
@@ -222,10 +232,10 @@ function adminOverview(){
   const gatewayIssues=gateways.map(gatewayOperational);
   const wifiFailures=gatewayIssues.filter(item=>item.wifiStatus==='FAILED').length,cloudFailures=gatewayIssues.filter(item=>item.cloudStatus==='FAILED').length,provisioningTimeouts=gatewayIssues.filter(item=>item.provisioningStatus==='TIMEOUT').length;
   const imageStates=garments.reduce((all,garment)=>{const state=String(garment.imageProcessingStatus||'ready');all[state]=(all[state]||0)+1;return all},{});
-  const commandFailures=db.commands.filter(command=>['TIMEOUT','PARTIAL'].includes(command.status)).slice(0,10);
+  const commandFailures=db.commands.filter(command=>managedWardrobeIds.has(command.wardrobeId)&&['TIMEOUT','PARTIAL'].includes(command.status)).slice(0,10);
   for(const command of commandFailures){const owner=ownerForWardrobe(command.wardrobeId);problems.push({level:'warning',kind:'command',userId:owner?.id||'',userName:owner?.name||'알 수 없음',title:'장비 명령 ACK 확인 필요',message:`${command.command||'명령'} 상태: ${command.status}`});}
   if(!cloudImageService.configured())problems.push({level:'warning',kind:'image',title:'Image Worker 미설정',message:'사진 Cloud 처리 환경변수가 완성되지 않았습니다.'});
-  const recentDeviceEvents=db.events.filter(event=>/^(hanger\.|gateway\.)/.test(String(event.type||''))).slice(0,20).map(event=>({id:event.id,type:event.type,severity:event.severity,at:event.at,wardrobeId:event.wardrobeId||null,deviceId:event.payload?.hangerId||event.payload?.gatewayId||'',state:event.payload?.state||event.payload?.reportedState||''}));
+  const recentDeviceEvents=db.events.filter(event=>managedWardrobeIds.has(event.wardrobeId)&&/^(hanger\.|gateway\.)/.test(String(event.type||''))).slice(0,20).map(event=>({id:event.id,type:event.type,severity:event.severity,at:event.at,wardrobeId:event.wardrobeId||null,deviceId:event.payload?.hangerId||event.payload?.gatewayId||'',state:event.payload?.state||event.payload?.reportedState||''}));
   const nfcReady=hangers.filter(h=>online(h)&&Number(h.errorFlags||0)===0&&h.firmwareVersion&&h.firmwareVersion!=='unknown').length,nfcAttention=hangers.filter(h=>Number(h.errorFlags||0)>0).length;
   return {totals:{users:users.length,gateways:gateways.length,hangers:hangers.length,garments:garments.length,onlineGateways,offlineGateways:gateways.length-onlineGateways,onlineHangers,offlineHangers:hangers.length-onlineHangers,problemUsers:users.filter(user=>user.problemDeviceCount>0).length,problemGateways:gatewayIssues.filter(item=>item.problem).length,problemHangers:hangers.filter(hanger=>onlineAge(hanger)==='OFFLINE'||Number(hanger.errorFlags||0)>0).length,wifiFailures,cloudFailures,provisioningTimeouts},users,problems,system:{backend:{ready:isReady,storage:storage.mode},websocket:{status:sockets.size?'CONNECTED':'UNKNOWN',connectionCount:sockets.size},storage:{status:cloudImageService.configured()?'CONFIGURED':'UNKNOWN'},gateways:{total:gateways.length,online:onlineGateways,offline:gateways.length-onlineGateways,wifiFailures,cloudFailures,provisioningTimeouts},hangers:{total:hangers.length,online:onlineHangers,offline:hangers.length-onlineHangers,nfcReady,nfcAttention},imageProcessing:{configured:cloudImageService.configured(),ready:imageStates.ready||0,processing:imageStates.processing||0,pending:imageStates.pending||0,failed:imageStates.failed||0},recentDeviceEvents}};
 }
@@ -271,6 +281,7 @@ if(p==='/api/admin/overview'){requireAdmin(req);return json(res,200,adminOvervie
 if(p==='/api/admin/system'){requireAdmin(req);return json(res,200,{system:adminOverview().system})}
 const adminUserDelete=match(req.url,/^\/api\/admin\/users\/([^/]+)$/);if(adminUserDelete&&req.method==='DELETE'){const admin=requireAdmin(req),result=removeAdminUser(admin,decodeURIComponent(adminUserDelete[1]));await save();return json(res,200,{ok:true,...result})}
 if(p==='/api/snapshot'){const u=needUser(req);return json(res,200,snapshot(u))}
+const pairingStatus=match(req.url,/^\/api\/(gateways|hangers)\/([^/]+)\/pairing-status$/);if(pairingStatus&&req.method==='GET'){const u=needUser(req),kind=pairingStatus[1],key=decodeURIComponent(pairingStatus[2]).toUpperCase(),list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',item=list.find(value=>value[field]===key);return json(res,200,pairingLabel(kind,item,u))}
 if(p==='/api/garments'&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),x=await body(req),tagUid=uid(x.tagUid);if(!String(x.name||'').trim()||tagUid.length<8)throw error(400,'옷 이름과 NFC UID가 필요합니다.');if(db.garments.some(g=>g.wardrobeId===w.id&&g.tagUid===tagUid))throw error(409,'이 NFC 태그는 이미 내 옷장에 등록되어 있습니다.');const g={id:id('garment'),name:String(x.name).slice(0,80),tagUid,category:String(x.category||''),color:String(x.color||''),season:String(x.season||''),brand:String(x.brand||''),memo:String(x.memo||''),imageUrl:String(x.imageUrl||''),originalImagePath:'',processedImagePath:'',imageProcessingStatus:'ready',classification:{},classificationConfidence:{},processingError:'',currentState:'OUT',currentHanger:null,createdBy:u.id,wardrobeId:w.id,createdAt:now()};db.garments.push(g);reconcile();emit('garment.created',g,'info',w.id);await save();return json(res,201,g)}
 const gd=match(req.url,/^\/api\/garments\/([^/]+)$/);if(gd&&req.method==='DELETE'){const u=needUser(req),w=wardrobeFor(u),i=db.garments.findIndex(g=>g.id===gd[1]&&g.wardrobeId===w.id);if(i<0)throw error(404,'내 옷장에서 옷을 찾을 수 없습니다.');const g=db.garments.splice(i,1)[0];reconcile();emit('garment.deleted',{id:g.id,tagUid:g.tagUid},'info',w.id);await save();return json(res,200,{ok:true,deletedId:g.id})}
 const find=match(req.url,/^\/api\/garments\/([^/]+)\/find$/);if(find&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),g=db.garments.find(g=>g.id===find[1]&&g.wardrobeId===w.id);if(!g?.currentHanger)throw error(409,'이 옷은 현재 옷장에 없습니다.');const c=command([g.currentHanger],u);await save();return json(res,202,c)}
