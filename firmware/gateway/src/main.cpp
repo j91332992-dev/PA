@@ -661,6 +661,27 @@ void handleSerialDiagnostics() {
   runFindTest(command.substring(String("FINDTEST").length()));
 }
 
+bool decodeChunkedBody(const String& encoded, String& decoded) {
+  decoded = "";
+  size_t at = 0;
+  while (at < encoded.length()) {
+    const int lineEnd = encoded.indexOf("\r\n", at);
+    if (lineEnd < 0) return false;
+    const String hexLength = encoded.substring(at, lineEnd);
+    char* end = nullptr;
+    const unsigned long chunkLength = strtoul(hexLength.c_str(), &end, 16);
+    if (!end || *end != '\0') return false;
+    at = lineEnd + 2;
+    if (chunkLength == 0) return true;
+    if (at + chunkLength + 2 > encoded.length()) return false;
+    decoded += encoded.substring(at, at + chunkLength);
+    at += chunkLength;
+    if (encoded.substring(at, at + 2) != "\r\n") return false;
+    at += 2;
+  }
+  return false;
+}
+
 void fetchCommands() {
   String out;
   // The server returns this response before its asynchronous status save.  A
@@ -669,10 +690,16 @@ void fetchCommands() {
     Serial.println("[COMMAND-POLL] HTTP request failed");
     return;
   }
+  String jsonBody = out;
+  String decoded;
+  if (decodeChunkedBody(out, decoded)) jsonBody = decoded;
   JsonDocument doc;
-  const DeserializationError parseError = deserializeJson(doc, out);
+  const DeserializationError parseError = deserializeJson(doc, jsonBody);
   if (parseError) {
-    Serial.printf("[COMMAND-POLL] JSON parse failed=%s bytes=%u\n", parseError.c_str(), out.length());
+    Serial.printf("[COMMAND-POLL] JSON parse failed=%s bytes=%u\n", parseError.c_str(), jsonBody.length());
+    Serial.print("[COMMAND-POLL] first-bytes=");
+    for (size_t i = 0; i < min<size_t>(out.length(), 24); i++) Serial.printf("%02X", uint8_t(out[i]));
+    Serial.println();
     return;
   }
   const JsonArray commands = doc["commands"].as<JsonArray>();
