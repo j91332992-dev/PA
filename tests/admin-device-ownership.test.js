@@ -57,8 +57,18 @@ test('legacy admin-owned physical hardware is released, and a verified admin can
   assert.equal(login.status, 200);
   assert.equal(login.body.user.role, 'admin');
 
+  const freshHardware = await request('/api/gateway/status', {
+    method: 'POST', token: 'admin-device-test-device', body: {
+      gatewayId: 'GW-A1B2C3', hangerId: 'HC-A1B2C3', state: 'EMPTY',
+      sequence: 1, bootId: 'fresh-hardware'
+    }
+  });
+  assert.equal(freshHardware.status, 200);
+
   const ordinary = await request('/api/auth/signup', { method: 'POST', body: { email: 'ordinary-device@example.com', password: 'ordinary-password', name: '일반장비사용자' } });
   assert.equal(ordinary.status, 201);
+  const freshPairing = await request('/api/gateways/GW-A1B2C3/pairing-status', { token: ordinary.body.token });
+  assert.equal(freshPairing.body.ownership, 'UNCLAIMED');
   const legacyPairing = await request('/api/gateways/GW-ADMIN01/pairing-status', { token: ordinary.body.token });
   assert.equal(legacyPairing.body.ownership, 'UNCLAIMED');
 

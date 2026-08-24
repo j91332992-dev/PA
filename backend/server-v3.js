@@ -177,7 +177,10 @@ function status(x){
   const gateway=attachGateway(gatewayId);
   let h=db.hangers.find(v=>v.hangerId===hangerId);
   if(!h){h={hangerId,alias:neutralHangerName({hangerId}),customName:'',createdAt:now(),lastSequence:-1,bootHistory:[],wardrobeId:gateway.wardrobeId||null};if(h.wardrobeId)assignHanger(h,h.wardrobeId,gatewayId);db.hangers.push(h)}
-  const targetWardrobeId=gateway.wardrobeId||(db.wardrobes.length===1?db.wardrobes[0].id:null);
+  // A hanger inherits ownership only from its explicitly claimed gateway.
+  // Do not revive the historical single-wardrobe shortcut here: it can attach
+  // new physical hardware to an administrator and make Web FIND unreachable.
+  const targetWardrobeId=gateway.wardrobeId||null;
   if(!h.wardrobeId&&targetWardrobeId)assignHanger(h,targetWardrobeId,gatewayId);
   // A paired hanger may later report through a different *owned* gateway.
   // Keep its immutable hardware ID, but allocate its next number in the
