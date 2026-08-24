@@ -37,7 +37,9 @@ function nextHangerNumber(gatewayId){return Math.max(0,...db.hangers.filter(h=>h
 function syncGatewayName(gateway){gateway.name=String(gateway.customName||'').trim()||(gateway.wardrobeId?gatewayDefaultName(gateway):neutralGatewayName(gateway));return gateway}
 function syncHangerName(hanger){hanger.alias=String(hanger.customName||'').trim()||(hanger.wardrobeId?hangerDefaultName(hanger):neutralHangerName(hanger));return hanger}
 function assignGateway(gateway,wardrobeId){
-  if(gateway.wardrobeId!==wardrobeId||!Number.isInteger(Number(gateway.gatewayNumber))||Number(gateway.gatewayNumber)<1)gateway.gatewayNumber=nextGatewayNumber(wardrobeId);
+  const gatewayNumber=Number(gateway.gatewayNumber);
+  const duplicateNumber=db.gateways.some(item=>item.gatewayId!==gateway.gatewayId&&item.wardrobeId===wardrobeId&&!simulated(item)&&Number(item.gatewayNumber)===gatewayNumber);
+  if(gateway.wardrobeId!==wardrobeId||!Number.isInteger(gatewayNumber)||gatewayNumber<1||duplicateNumber)gateway.gatewayNumber=nextGatewayNumber(wardrobeId);
   gateway.wardrobeId=wardrobeId;return syncGatewayName(gateway);
 }
 function assignHanger(hanger,wardrobeId,gatewayId,{moved=false}={}){
@@ -85,8 +87,18 @@ function migrate(){
   }
   for(const w of db.wardrobes){
     const gateways=db.gateways.filter(g=>g.wardrobeId===w.id&&!simulated(g)).sort((a,b)=>String(a.createdAt||a.gatewayId).localeCompare(String(b.createdAt||b.gatewayId)));
+    const usedGatewayNumbers=new Set();
+    let highestGatewayNumber=0;
     gateways.forEach((g,index)=>{
-      if(!Number.isInteger(Number(g.gatewayNumber))||Number(g.gatewayNumber)<1)g.gatewayNumber=index+1;
+      let gatewayNumber=Number(g.gatewayNumber);
+      if(!Number.isInteger(gatewayNumber)||gatewayNumber<1||usedGatewayNumbers.has(gatewayNumber)){
+        gatewayNumber=Math.max(highestGatewayNumber+1,index+1);
+        while(usedGatewayNumbers.has(gatewayNumber))gatewayNumber++;
+        g.gatewayNumber=gatewayNumber;
+        changed=true;
+      }
+      usedGatewayNumbers.add(gatewayNumber);
+      highestGatewayNumber=Math.max(highestGatewayNumber,gatewayNumber);
       if(typeof g.customName!=='string'){const old=String(g.name||'');g.customName=old&&old!=='새 옷봉'&&old!=='Gateway'&&!/의(?: \d+번)? 옷봉$/.test(old)?old:'';}
       syncGatewayName(g);
     });
