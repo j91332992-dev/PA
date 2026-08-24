@@ -170,6 +170,7 @@ test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected'
   assert.equal(moved.gatewayId, 'GW-A0B002');
   assert.equal(moved.hangerNumber, 2);
   assert.equal(moved.alias, '이동한 옷걸이');
+  await api('/api/gateways/GW-A0B002', { method: 'DELETE', userAuth: true });
   const beforeVerification = await api('/api/admin/overview', { userAuth: true });
   assert.equal(beforeVerification.status, 403);
   const statusBeforeVerification = await api('/api/admin/status', { userAuth: true });
@@ -180,6 +181,12 @@ test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected'
   const verification = await api('/api/admin/verify', { method: 'POST', userAuth: true, body: JSON.stringify({ password: 'secondary-test-password' }) });
   assert.equal(verification.status, 200);
   assert.ok(verification.body.adminSession);
+  const provisioningTimeout = await api('/api/gateways/GW-A0B001/provisioning-status', {
+    method: 'POST', userAuth: true,
+    body: JSON.stringify({ detail: 'BLE 설정 뒤 heartbeat가 확인되지 않았습니다.' }),
+  });
+  assert.equal(provisioningTimeout.status, 200);
+  assert.equal(provisioningTimeout.body.provisioning.status, 'TIMEOUT');
   const statusAfterVerification = await api('/api/admin/status', { userAuth: true, adminSession: verification.body.adminSession });
   assert.equal(statusAfterVerification.status, 200);
   assert.equal(statusAfterVerification.body.verified, true);
@@ -199,6 +206,18 @@ test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected'
   assert.ok(Array.isArray(owner.unassignedHangers));
   assert.ok(admin.body.users.flatMap(row => row.gateways).flatMap(gateway => gateway.hangers).every(hanger => Object.hasOwn(hanger, 'nfcStatus') && Object.hasOwn(hanger, 'garmentName')));
   assert.ok(admin.body.users.flatMap(row => row.gateways).every(gateway => Object.hasOwn(gateway, 'wifiStatus') && Object.hasOwn(gateway, 'cloudStatus')));
+  const ownerGateway = owner.gateways.find(gateway => gateway.gatewayId === 'GW-A0B001');
+  assert.ok(ownerGateway);
+  assert.equal(ownerGateway.provisioningStatus, 'TIMEOUT');
+  assert.ok(['UNKNOWN', 'CONNECTED'].includes(ownerGateway.wifiStatus));
+  assert.ok(['UNKNOWN', 'CONNECTED'].includes(ownerGateway.cloudStatus));
+  assert.equal(ownerGateway.problem, true);
+  assert.ok(owner.problemDeviceCount > 0);
+  assert.ok(admin.body.totals.provisioningTimeouts > 0);
+  assert.equal(admin.body.users[0].id, owner.id);
+  const ownerAfterUnclaim = admin.body.users.find(row => row.id === owner.id);
+  assert.equal(ownerAfterUnclaim.unassignedHangers.some(hanger => hanger.hangerId === 'HC-A0B002'), true);
+  assert.equal(ownerAfterUnclaim.unassignedHangers.find(hanger => hanger.hangerId === 'HC-A0B002').name, '미연결 옷걸이 · A0B002');
   const system = await api('/api/admin/system', { userAuth: true, adminSession: verification.body.adminSession });
   assert.equal(system.status, 200);
   assert.ok(Array.isArray(system.body.system.recentDeviceEvents));
@@ -370,7 +389,7 @@ test('Scenario G: Find + ACK IGNORE -> TIMEOUT', async () => {
 });
 
 test('Scenario H: WebSocket real-time event streaming and state sync', async () => {
-  const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(userToken)}`);
+  const ws = new WebSocket(wsUrl, `wardrobe-token.${userToken}`);
   const receivedEvents = [];
 
   ws.on('message', data => {

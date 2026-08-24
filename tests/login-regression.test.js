@@ -54,13 +54,22 @@ test('browser freshness helper is served as JavaScript before app.js', async () 
 test('login uses POST and the handler prevents native GET navigation', async () => {
   const app = fs.readFileSync(path.join(root, 'web/public/app.js'), 'utf8');
   const index = fs.readFileSync(path.join(root, 'web/public/index.html'), 'utf8');
-  assert.match(index, /id="authForm"/);
+  assert.match(index, /id="authForm"[^>]*method="post"[^>]*action="\/"/);
+  assert.match(index, /id="authSubmit"[^>]*type="submit"/);
+  assert.match(index, /id="chatOutfitForm"[^>]*method="post"[^>]*action="\/"/);
   assert.match(app, /authFormElement\.method\s*=\s*'post'/);
   assert.match(app, /authFormElement\.action\s*=\s*'\/'/);
   assert.match(app, /\$\('#authForm'\)\.onsubmit\s*=\s*async e/);
   assert.match(app, /e\.preventDefault\(\)/);
   assert.match(app, /api\('\/api\/auth\/' \+ mode, \{ method: 'POST'/);
   assert.match(app, /await enter\(\)/);
+  assert.match(app, /function removeCredentialQuery\(\)/);
+  assert.match(app, /gate\.method\s*=\s*'post'/);
+  assert.match(app, /id="bleWifiForm" method="post" action="\/"/);
+  assert.match(app, /history\.replaceState\(null, '', `\$\{location\.pathname\}\$\{location\.hash\}`\)/);
+  assert.match(app, /new WebSocket\([^\n]+\/ws`, \[`wardrobe-token\.\$\{token\}`\]\)/);
+  assert.doesNotMatch(app, /\/ws\?token=/);
+  assert.doesNotMatch(index, /method="get"/i);
 
   const email = `login-${Date.now()}@example.com`;
   let result = await jsonRequest('/api/auth/signup', {

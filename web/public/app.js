@@ -1,4 +1,17 @@
 'use strict';
+const SENSITIVE_QUERY_KEYS = new Set(['name', 'email', 'password', 'token', 'refresh_token', 'refreshToken', 'adminSecondaryPassword']);
+function removeCredentialQuery() {
+  const url = new URL(window.location.href);
+  let changed = false;
+  for (const key of [...url.searchParams.keys()]) {
+    if (SENSITIVE_QUERY_KEYS.has(key)) {
+      url.searchParams.delete(key);
+      changed = true;
+    }
+  }
+  if (changed) history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+}
+removeCredentialQuery();
 let token = localStorage.getItem('wardrobeToken'),
   adminSession = sessionStorage.getItem('wardrobeAdminSession') || '',
   model = { garments: [], hangers: [], gateways: [], events: [], commands: [] },
@@ -54,6 +67,7 @@ const setHTML = (selector, value) => {
 function hangerDisplayName(hanger) {
   if (!hanger) return '옷걸이';
   if (hanger.alias && hanger.alias !== hanger.hangerId && !/^HC-/i.test(hanger.alias)) return hanger.alias;
+  if (!hanger.gatewayId) return `미연결 옷걸이 · ${String(hanger.hangerId || '').slice(-6) || 'UNKNOWN'}`;
   if (Number(hanger.hangerNumber) > 0) return `${Number(hanger.hangerNumber)}번 옷걸이`;
   if (/^HC-00000[1-5]$/i.test(hanger.hangerId || '')) return hanger.alias || hanger.hangerId;
   const physical = (model.hangers || [])
@@ -68,9 +82,9 @@ function ownerDisplayName() {
 }
 
 function nextHangerDisplayName() {
-  // The server owns numbering. BLE only needs a human-friendly temporary
-  // label; claim/move allocates the final number in its selected gateway.
-  return '새 옷걸이';
+  // BLE advertising is intentionally hardware-neutral. The server assigns
+  // the user-visible number only after a successful claim.
+  return '';
 }
 
 function garmentNameForTag(tagUid) {
@@ -1065,7 +1079,7 @@ function connect() {
   if (sessionUser?.role === 'admin' && sessionUser.adminVerified) return;
   clearTimeout(retry);
   socket?.close();
-  socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+  socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`, [`wardrobe-token.${token}`]);
   socket.onopen = () => {
     $('#connection').textContent = '실시간 연결됨';
     $('#dot').className = 'on';
@@ -1504,6 +1518,8 @@ function showAdminSecondFactor() {
     gate = document.createElement('form');
     gate.id = 'adminSecondFactor';
     gate.className = 'panel';
+    gate.method = 'post';
+    gate.action = '/';
     gate.innerHTML = '<p class="eyebrow">ADMIN SECURITY</p><h1>관리자 인증</h1><p class="muted">관리자 전용 2차 비밀번호를 입력하세요.</p><input id="adminSecondaryPassword" type="password" autocomplete="current-password" placeholder="2차 비밀번호" required><button type="submit">확인</button><p id="adminSecondaryError" class="error"></p><button type="button" id="adminSecondaryCancel" class="ghost">로그아웃</button>';
     $('#auth')?.append(gate);
   }
@@ -1604,17 +1620,19 @@ function adminHealth(level, label) {
 function adminHangerTree(hanger) {
   const garment = hanger.garmentName || (hanger.tagDetected ? '미등록 태그 감지' : '걸린 옷 없음');
   const level = hanger.state === 'ONLINE' && hanger.nfcStatus === '정상' ? 'normal' : hanger.state === 'ONLINE' ? 'warning' : 'problem';
-  return `<article class="admin-tree-hanger${adminHighlightHangerId === hanger.hangerId ? ' admin-highlight' : ''}"><div><b>${esc(hanger.name || `${hanger.hangerNumber}번 옷걸이`)}</b>${adminHealth(level, hanger.state === 'ONLINE' ? hanger.nfcStatus === '정상' ? '정상' : '주의' : '장애')}</div><small>${esc(hanger.hangerId)} · ${esc(hanger.hangerNumber || '-')}번 · 현재 옷봉 ${esc(hanger.gatewayId || '없음')} · 채널 ${esc(hanger.channel ?? '알 수 없음')}</small><dl><dt>통신</dt><dd>${adminState(hanger.state)} · 마지막 ${esc(adminDate(hanger.lastSeen))}</dd><dt>PN532/NFC</dt><dd>${esc(hanger.nfcStatus || '알 수 없음')}</dd><dt>현재 상태</dt><dd>${esc(hanger.reportedState || '알 수 없음')}</dd><dt>현재 옷</dt><dd>${esc(garment)}</dd></dl></article>`;
+  return `<article class="admin-tree-hanger${hanger.problem ? ' admin-problem-card' : ''}${adminHighlightHangerId === hanger.hangerId ? ' admin-highlight' : ''}"><div><b>${esc(hanger.name || `${hanger.hangerNumber}번 옷걸이`)}</b>${adminHealth(level, hanger.state === 'ONLINE' ? hanger.nfcStatus === '정상' ? '정상' : '주의' : '장애')}</div><small>${esc(hanger.hangerId)} · ${esc(hanger.hangerNumber || '-')}번 · 현재 옷봉 ${esc(hanger.gatewayId || '없음')} · 채널 ${esc(hanger.channel ?? '알 수 없음')}</small><dl><dt>통신</dt><dd>${adminState(hanger.state)} · 마지막 ${esc(adminDate(hanger.lastSeen))}</dd><dt>PN532/NFC</dt><dd>${esc(hanger.nfcStatus || '알 수 없음')}</dd><dt>현재 상태</dt><dd>${esc(hanger.reportedState || '알 수 없음')}</dd><dt>현재 옷</dt><dd>${esc(garment)}</dd></dl>${hanger.problemReasons?.length ? `<p class="admin-problem-text">${esc(hanger.problemReasons.join(' · '))}</p>` : ''}</article>`;
 }
 
 function adminGatewayTree(gateway) {
-  const level = gateway.state === 'ONLINE' ? 'normal' : 'problem';
-  return `<article class="admin-tree-gateway"><header><div><b>${esc(gateway.name || `${gateway.gatewayNumber}번 옷봉`)}</b><small>${esc(gateway.gatewayId)} · ${esc(gateway.gatewayNumber || '-')}번</small></div>${adminHealth(level, gateway.state === 'ONLINE' ? '정상' : '장애')}</header><dl class="admin-gateway-meta"><dt>통신</dt><dd>${adminState(gateway.state)} · 마지막 heartbeat ${esc(adminDate(gateway.lastSeen))}</dd><dt>Wi-Fi</dt><dd>${esc(gateway.wifiStatus === 'CONNECTED' ? `연결됨${gateway.ssid ? ` (${gateway.ssid})` : ''}` : '알 수 없음')} · RSSI ${esc(gateway.rssi ?? '알 수 없음')}</dd><dt>Cloud</dt><dd>${esc(gateway.cloudStatus === 'CONNECTED' ? '최근 Cloud heartbeat 수신' : '알 수 없음')}</dd><dt>연결 옷걸이</dt><dd>${Number(gateway.hangerCount || 0)}개</dd></dl><div class="admin-tree-hangers">${(gateway.hangers || []).map(adminHangerTree).join('') || '<p class="muted">연결된 옷걸이가 없습니다.</p>'}</div></article>`;
+  const level = gateway.problem ? 'problem' : gateway.state === 'ONLINE' ? 'normal' : 'problem';
+  const wifi = gateway.wifiStatus === 'CONNECTED' ? `연결됨${gateway.ssid ? ` (${gateway.ssid})` : ''}` : gateway.wifiStatus === 'FAILED' ? '실패' : '상태 확인 불가';
+  const cloud = gateway.cloudStatus === 'CONNECTED' ? '최근 Cloud heartbeat 수신' : gateway.cloudStatus === 'FAILED' ? '실패' : '상태 확인 불가';
+  return `<article class="admin-tree-gateway${gateway.problem ? ' admin-problem-card' : ''}"><header><div><b>${esc(gateway.name || `${gateway.gatewayNumber}번 옷봉`)}</b><small>${esc(gateway.gatewayId)} · ${esc(gateway.gatewayNumber || '-')}번</small></div>${adminHealth(level, gateway.problem ? '문제' : '정상')}</header><dl class="admin-gateway-meta"><dt>통신</dt><dd>${adminState(gateway.state)} · 마지막 heartbeat ${esc(adminDate(gateway.lastSeen))}</dd><dt>Wi-Fi</dt><dd>${esc(wifi)} · RSSI ${esc(gateway.rssi ?? '알 수 없음')}</dd><dt>Cloud</dt><dd>${esc(cloud)}</dd><dt>연결 옷걸이</dt><dd>${Number(gateway.hangerCount || 0)}개</dd></dl>${gateway.provisioningStatus === 'TIMEOUT' ? `<p class="admin-problem-text">설정 후 heartbeat 확인 시간초과 · Wi-Fi/Cloud 원인은 현재 알 수 없음</p>` : ''}<div class="admin-tree-hangers">${(gateway.hangers || []).map(adminHangerTree).join('') || '<p class="muted">연결된 옷걸이가 없습니다.</p>'}</div></article>`;
 }
 
 function adminUserCard(user) {
   const expanded = adminSelectedUserId === user.id;
-  return `<button type="button" class="admin-user-card${expanded ? ' expanded' : ''}" data-admin-user="${esc(user.id)}"><b>${esc(user.name)}</b><span>${esc(user.email)}</span><small>최근 로그인 ${esc(adminDate(user.lastLoginAt))}</small><small>옷봉 ${Number(user.gatewayCount || 0)} · 옷걸이 ${Number(user.hangerCount || 0)} · 미연결 ${Number(user.unassignedHangerCount || 0)} · 옷 ${Number(user.garmentCount || 0)}</small><small class="${Number(user.problemDeviceCount || 0) ? 'admin-problem-text' : 'muted'}">${Number(user.problemDeviceCount || 0) ? `문제 장비 ${Number(user.problemDeviceCount || 0)}건` : '문제 장비 없음'}</small></button>`;
+  return `<button type="button" class="admin-user-card${expanded ? ' expanded' : ''}${Number(user.problemDeviceCount || 0) ? ' admin-problem-card' : ''}" data-admin-user="${esc(user.id)}"><b>${esc(user.name)}</b><span>${esc(user.email)}</span><small>최근 로그인 ${esc(adminDate(user.lastLoginAt))}</small><small>옷봉 ${Number(user.gatewayCount || 0)} · 옷걸이 ${Number(user.hangerCount || 0)} · 미연결 ${Number(user.unassignedHangerCount || 0)} · 옷 ${Number(user.garmentCount || 0)}</small><small class="${Number(user.problemDeviceCount || 0) ? 'admin-problem-text' : 'muted'}">${Number(user.problemDeviceCount || 0) ? `문제 장비 ${Number(user.problemDeviceCount || 0)}건` : '문제 장비 없음'}</small></button>`;
 }
 
 function renderAdminDashboard(data) {
@@ -1625,6 +1643,7 @@ function renderAdminDashboard(data) {
     [system.imageProcessing?.configured ? 'normal' : 'warning', 'Image Worker', system.imageProcessing?.configured ? '설정됨' : '미설정'],
     [t.offlineGateways ? 'problem' : 'normal', 'Offline Gateway', `${Number(t.offlineGateways || 0)}대`],
     [t.offlineHangers ? 'problem' : 'normal', 'Offline Hanger', `${Number(t.offlineHangers || 0)}대`],
+    [t.provisioningTimeouts ? 'warning' : 'normal', 'Wi-Fi/Cloud 확인 시간초과', `${Number(t.provisioningTimeouts || 0)}건`],
   ].map(([level, label, value]) => `<article class="admin-health-card ${esc(level)}">${adminHealth(level, value)}<b>${esc(label)}</b></article>`).join('')}</div><section class="admin-problems"><div class="title"><div><h3>장애·주의 ${problems.length}건</h3><p>${problems.length ? '항목을 선택하면 대상 사용자 장비 구조를 바로 엽니다.' : '현재 감지된 주요 장애가 없습니다.'}</p></div></div>${problems.slice(0, 12).map(problem => `<button type="button" class="admin-problem" data-admin-problem-user="${esc(problem.userId || '')}" data-admin-problem-gateway="${esc(problem.gatewayId || '')}" data-admin-problem-hanger="${esc(problem.hangerId || '')}">${adminHealth(problem.level, problem.level === 'problem' ? '문제' : '주의')}<span><b>${esc(problem.title)}</b><small>${esc(problem.userName || '시스템')} · ${esc(problem.message)}</small></span></button>`).join('')}</section><div class="admin-summary-grid admin-small-summary">${[
     adminSummaryCard('사용자', t.users, 'users'), adminSummaryCard('옷봉', t.gateways, 'users'), adminSummaryCard('옷걸이', t.hangers, 'users'), adminSummaryCard('옷', t.garments, 'users')
   ].join('')}</div></section>`;
@@ -1668,7 +1687,7 @@ function renderAdminDevices(data) {
 function renderAdminSystem(data) {
   const system = data.system || {}, image = system.imageProcessing || {}, backend = system.backend || {};
   const gateway = system.gateways || {}, hanger = system.hangers || {}, ws = system.websocket || {}, storage = system.storage || {};
-  return `<section><div class="title"><div><h2>시스템 상태</h2><p>상태 근거가 없는 항목은 정상으로 추측하지 않고 ‘알 수 없음’으로 표시합니다.</p></div><button type="button" id="adminRefresh">새로고침</button></div><div class="admin-system-grid"><article class="panel"><h3>SERVER</h3><p>Backend ${adminHealth(backend.ready ? 'normal' : 'problem', backend.ready ? '정상' : '장애')}</p><p>PostgreSQL ${adminHealth(backend.storage === 'postgres' ? 'normal' : 'warning', backend.storage === 'postgres' ? '정상' : '알 수 없음')}</p><p>WebSocket ${adminHealth(ws.status === 'CONNECTED' ? 'normal' : 'warning', ws.status === 'CONNECTED' ? '연결 있음' : '알 수 없음')}</p><p>Supabase Storage ${adminHealth(storage.status === 'CONFIGURED' ? 'normal' : 'warning', storage.status === 'CONFIGURED' ? '설정됨' : '알 수 없음')}</p></article><article class="panel"><h3>GATEWAY</h3><p>전체 ${Number(gateway.total || 0)} · ONLINE ${Number(gateway.online || 0)} · OFFLINE ${Number(gateway.offline || 0)}</p><p>최근 heartbeat 없는 Gateway는 OFFLINE으로 표시됩니다.</p></article><article class="panel"><h3>HANGER</h3><p>전체 ${Number(hanger.total || 0)} · ONLINE ${Number(hanger.online || 0)} · OFFLINE ${Number(hanger.offline || 0)}</p><p>PN532 정상 ${Number(hanger.nfcReady || 0)} · 점검 필요 ${Number(hanger.nfcAttention || 0)}</p></article><article class="panel"><h3>PHOTO</h3><p>Image Worker ${adminHealth(image.configured ? 'normal' : 'warning', image.configured ? '설정됨' : '미설정')}</p><p>처리 중 ${Number(image.processing || 0)} · 완료 ${Number(image.ready || 0)} · 실패 ${Number(image.failed || 0)}</p></article></div><section class="admin-events"><div class="title"><h3>최근 이벤트</h3><button type="button" id="adminToggleEvents">${adminShowEvents ? '접기' : '최근 이벤트 보기'}</button></div>${adminShowEvents ? `<ol class="events">${(system.recentDeviceEvents || []).map(event => `<li>${esc(event.at ? new Date(event.at).toLocaleString() : '-')} · ${esc(event.type)} · ${esc(event.deviceId || '-')} ${esc(event.state || '')}</li>`).join('') || '<li>최근 장비 이벤트 없음</li>'}</ol>` : ''}</section></section>`;
+  return `<section><div class="title"><div><h2>시스템 상태</h2><p>상태 근거가 없는 항목은 정상으로 추측하지 않고 ‘알 수 없음’으로 표시합니다.</p></div><button type="button" id="adminRefresh">새로고침</button></div><div class="admin-system-grid"><article class="panel"><h3>SERVER</h3><p>Backend ${adminHealth(backend.ready ? 'normal' : 'problem', backend.ready ? '정상' : '장애')}</p><p>PostgreSQL ${adminHealth(backend.storage === 'postgres' ? 'normal' : 'warning', backend.storage === 'postgres' ? '정상' : '알 수 없음')}</p><p>WebSocket ${adminHealth(ws.status === 'CONNECTED' ? 'normal' : 'warning', ws.status === 'CONNECTED' ? '연결 있음' : '알 수 없음')}</p><p>Supabase Storage ${adminHealth(storage.status === 'CONFIGURED' ? 'normal' : 'warning', storage.status === 'CONFIGURED' ? '설정됨' : '알 수 없음')}</p></article><article class="panel"><h3>GATEWAY</h3><p>전체 ${Number(gateway.total || 0)} · ONLINE ${Number(gateway.online || 0)} · OFFLINE ${Number(gateway.offline || 0)}</p><p>Wi-Fi 실패 ${Number(gateway.wifiFailures || 0)} · Cloud 실패 ${Number(gateway.cloudFailures || 0)}</p><p>설정 후 heartbeat 확인 시간초과 ${Number(gateway.provisioningTimeouts || 0)}건</p></article><article class="panel"><h3>HANGER</h3><p>전체 ${Number(hanger.total || 0)} · ONLINE ${Number(hanger.online || 0)} · OFFLINE ${Number(hanger.offline || 0)}</p><p>PN532 정상 ${Number(hanger.nfcReady || 0)} · 점검 필요 ${Number(hanger.nfcAttention || 0)}</p></article><article class="panel"><h3>PHOTO</h3><p>Image Worker ${adminHealth(image.configured ? 'normal' : 'warning', image.configured ? '설정됨' : '미설정')}</p><p>처리 중 ${Number(image.processing || 0)} · 완료 ${Number(image.ready || 0)} · 실패 ${Number(image.failed || 0)}</p></article></div><section class="admin-events"><div class="title"><h3>최근 이벤트</h3><button type="button" id="adminToggleEvents">${adminShowEvents ? '접기' : '최근 이벤트 보기'}</button></div>${adminShowEvents ? `<ol class="events">${(system.recentDeviceEvents || []).map(event => `<li>${esc(event.at ? new Date(event.at).toLocaleString() : '-')} · ${esc(event.type)} · ${esc(event.deviceId || '-')} ${esc(event.state || '')}</li>`).join('') || '<li>최근 장비 이벤트 없음</li>'}</ol>` : ''}</section></section>`;
 }
 
 function renderAdminShellView() {
@@ -1706,13 +1725,14 @@ adminOperationalStyle.textContent = '.admin-health-grid,.admin-system-grid{displ
 document.head.append(adminOperationalStyle);
 
 const adminUserHierarchyStyle = document.createElement('style');
-adminUserHierarchyStyle.textContent = '.admin-user-card.expanded{border-color:#4b8260;background:#f2f8f2}.admin-user-expanded{margin:-2px 0 12px;padding:18px;border:1px solid #d6e1d8;border-radius:12px;background:#fff}.admin-user-expanded .admin-user-detail>.title{align-items:flex-start}.admin-unassigned{margin-top:18px;padding:16px;border:1px dashed #bdcdbf;border-radius:12px;background:#fafcf9}.admin-unassigned h3{margin-top:0}.admin-highlight{outline:3px solid #d99b27;outline-offset:2px;background:#fff9e8}.admin-problem-text{color:#a62d26;font-weight:700}.danger{background:#b33d36;color:#fff;border-color:#b33d36}@media(max-width:620px){.admin-user-expanded{padding:12px}.admin-user-expanded .admin-user-detail>.title{display:grid;gap:10px}}';
+adminUserHierarchyStyle.textContent = '.admin-user-card.expanded{border-color:#4b8260;background:#f2f8f2}.admin-problem-card{border-color:#d86b64!important;background:#fff3f1!important}.admin-user-card.admin-problem-card.expanded{border-color:#c8534c!important;background:#fff1ee!important}.admin-user-expanded{margin:-2px 0 12px;padding:18px;border:1px solid #d6e1d8;border-radius:12px;background:#fff}.admin-user-expanded .admin-user-detail>.title{align-items:flex-start}.admin-unassigned{margin-top:18px;padding:16px;border:1px dashed #bdcdbf;border-radius:12px;background:#fafcf9}.admin-unassigned h3{margin-top:0}.admin-highlight{outline:3px solid #d99b27;outline-offset:2px;background:#fff9e8}.admin-problem-text{color:#a62d26;font-weight:700;margin:10px 0 0}.danger{background:#b33d36;color:#fff;border-color:#b33d36}@media(max-width:620px){.admin-user-expanded{padding:12px}.admin-user-expanded .admin-user-detail>.title{display:grid;gap:10px}}';
 document.head.append(adminUserHierarchyStyle);
 
 $('#authToggle').onclick = () => setAuthMode(currentAuthMode === 'login' ? 'signup' : 'login', false);
 
 $('#authForm').onsubmit = async e => {
   e.preventDefault();
+  removeCredentialQuery();
   $('#authError').textContent = '';
   const successBox = $('#authSuccess');
   if (successBox) successBox.style.display = 'none';
@@ -1726,6 +1746,7 @@ $('#authForm').onsubmit = async e => {
     const r = await api('/api/auth/' + mode, { method: 'POST', body: JSON.stringify(x) });
     token = r.token;
     localStorage.setItem('wardrobeToken', token);
+    history.replaceState(null, '', `${location.pathname}${location.hash}`);
 
     if (successBox) {
       successBox.textContent = mode === 'signup' ? '✓ 회원가입 완료' : '✓ 로그인 완료';
@@ -2090,6 +2111,7 @@ $('#logout').onclick = () => {
   hideAdminShell();
   token = null;
   sessionUser = null;
+  removeCredentialQuery();
   showAuth();
 };
 
@@ -2201,7 +2223,7 @@ async function connectHangerBluetooth() {
     button.textContent = '옷봉 찾는 중… 잠시만 기다려 주세요';
   }
   try {
-    setBleSetupMessage('브라우저 블루투스 선택창에서 새 옷봉 또는 내 이름의 옷봉을 선택하세요.');
+    setBleSetupMessage('브라우저 블루투스 선택창에서 “스마트 옷봉 · 고유 코드”를 선택하세요.');
     const device = await navigator.bluetooth.requestDevice({
       filters: [{ services: [BLE_SERVICE_UUID] }],
       optionalServices: [BLE_SERVICE_UUID],
@@ -2303,7 +2325,7 @@ async function saveHangerWifi(event) {
   setStageItem('stage_save', 'active', '옷봉에 2.4 GHz Wi-Fi 정보를 전달하고 저장하는 중입니다...');
 
   try {
-    const payload = new TextEncoder().encode(JSON.stringify({ ssid, password, server, displayName: `${ownerDisplayName()}의 옷봉` }));
+    const payload = new TextEncoder().encode(JSON.stringify({ ssid, password, server }));
     if (typeof bleConfigCharacteristic.writeValueWithResponse === 'function') {
       await bleConfigCharacteristic.writeValueWithResponse(payload);
     } else {
@@ -2352,7 +2374,7 @@ function startConnectionPolling(targetSsid) {
       const snap = await api('/api/snapshot');
       model = mergeSnapshot(snap);
       const physical = (snap.gateways || []).filter(g => !String(g.gatewayId || '').startsWith('GW-SIM'));
-      const onlineGateway = physical.find(g => Date.now() - Date.parse(g.lastSeen || 0) < 35000);
+      const onlineGateway = physical.find(g => g.gatewayId === currentBleGatewayId && Date.now() - Date.parse(g.lastSeen || 0) < 35000);
 
       if (onlineGateway) {
         clearInterval(provisionPollInterval);
@@ -2375,11 +2397,20 @@ function startConnectionPolling(targetSsid) {
 
     if (pollCount >= maxPolls) {
       clearInterval(provisionPollInterval);
-      setStageItem('stage_wifi', 'failed', 'Wi-Fi 연결 시간 초과');
-      setStageItem('stage_cloud', 'failed', '클라우드 서버 통신 실패');
-      showProvisionFailure('Wi-Fi 비밀번호가 올바르지 않거나 2.4 GHz 네트워크에 연결할 수 없습니다. 신호 거리 및 전원을 확인해 주세요.');
+      setStageItem('stage_wifi', 'failed', 'Wi-Fi/Cloud 연결 확인 시간 초과');
+      setStageItem('stage_cloud', 'failed', '옷봉 heartbeat를 확인하지 못했습니다.');
+      recordGatewayProvisionTimeout().catch(() => {});
+      showProvisionFailure('설정 후 옷봉 heartbeat를 확인하지 못했습니다. Wi-Fi 비밀번호·신호·Cloud 연결 중 어느 단계인지는 현재 확인할 수 없습니다.');
     }
   }, 2000);
+}
+
+async function recordGatewayProvisionTimeout() {
+  if (!currentBleGatewayId) return;
+  await api(`/api/gateways/${encodeURIComponent(currentBleGatewayId)}/provisioning-status`, {
+    method: 'POST',
+    body: JSON.stringify({ detail: 'BLE 설정 후 50초 안에 Gateway heartbeat를 받지 못했습니다.' }),
+  });
 }
 
 function showProvisionFailure(reasonMessage) {
@@ -2491,7 +2522,7 @@ async function connectPhysicalHangerBluetooth() {
     button.textContent = '옷걸이 찾는 중… 잠시만 기다려 주세요';
   }
   try {
-    setHangerBleMessage('브라우저 블루투스 선택창에서 새 옷걸이 또는 내 이름의 옷걸이를 선택하세요.');
+    setHangerBleMessage('브라우저 블루투스 선택창에서 “스마트 옷걸이 · 고유 코드”를 선택하세요.');
     const device = await navigator.bluetooth.requestDevice({
       filters: [{ services: [HANGER_BLE_SERVICE_UUID] }],
       optionalServices: [HANGER_BLE_SERVICE_UUID],
@@ -2853,7 +2884,7 @@ function installGatewayWifiSetup() {
       <button type="button" id="connectHangerBle" class="primary" style="margin:12px 0;width:100%">옷봉 찾기 (블루투스)</button>
       <p id="bleDeviceName" class="muted"></p>
       <p id="bleSetupMessage" class="muted">블루투스 연결을 시작하세요.</p>
-      <form id="bleWifiForm" hidden style="margin-top:16px">
+      <form id="bleWifiForm" method="post" action="/" hidden style="margin-top:16px">
         <label>옷봉이 찾은 주변 2.4 GHz Wi-Fi
           <select name="ssid" id="nearbyWifiChoices" required>
             <option value="">옷봉을 연결하면 목록이 표시됩니다</option>
@@ -2903,7 +2934,7 @@ function installGatewayWifiSetup() {
         return;
       }
     } catch (_) {}
-    window.alert('PC의 블루투스를 켠 뒤 옷봉 찾기를 누르고 “새 옷봉” 또는 내 이름의 옷봉을 선택하세요.');
+    window.alert('PC의 블루투스를 켠 뒤 옷봉 찾기를 누르고 “스마트 옷봉 · 고유 코드”를 선택하세요.');
   };
   window.showGatewayWifiHelp = showGatewayWifiHelp;
 
@@ -3053,7 +3084,7 @@ function installGatewayWifiSetup() {
     <p><b>옷걸이는 Wi-Fi를 설정하지 않습니다.</b> 옷봉과 자동으로 통신합니다. 이 화면은 옷걸이를 처음 연결하거나, 연결을 바꾸고 옷 태그 상태를 확인할 때만 사용합니다.</p>
     <ol>
       <li><b>옷걸이 찾기</b>를 누릅니다.</li>
-      <li>브라우저 선택창에서 <b>새 옷걸이</b> 또는 <b>내 이름의 옷걸이</b>를 선택합니다.</li>
+      <li>브라우저 선택창에서 <b>스마트 옷걸이 · 고유 코드</b>를 선택합니다.</li>
       <li><b>옷봉과 연결</b>을 누르면 현재 내 옷봉에 등록됩니다.</li>
       <li>옷 태그를 대면 옷 감지 상태가 표시됩니다.</li>
     </ol>
@@ -3079,7 +3110,7 @@ function installGatewayWifiSetup() {
   if (connectPhysicalHangerBleBtn) connectPhysicalHangerBleBtn.onclick = connectPhysicalHangerBluetooth;
 
   const pairPhysicalHangerBtn = $('#pairPhysicalHanger');
-  if (pairPhysicalHangerBtn) pairPhysicalHangerBtn.onclick = () => writeHangerBle('pair', { displayName: nextHangerDisplayName() });
+  if (pairPhysicalHangerBtn) pairPhysicalHangerBtn.onclick = () => writeHangerBle('pair');
 
   const forgetPhysicalHangerBtn = $('#forgetPhysicalHanger');
   if (forgetPhysicalHangerBtn) forgetPhysicalHangerBtn.onclick = forgetPhysicalHanger;
