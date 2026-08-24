@@ -181,15 +181,13 @@ function cancelActiveCommands(targets,wardrobeId,reason){
 function status(x){
   const hangerId=String(x.hangerId||'').toUpperCase(),state=String(x.state||'').toUpperCase(),sequence=Number(x.sequence),bootId=String(x.bootId||'legacy'),gatewayId=String(x.gatewayId||'GW-UNKNOWN').toUpperCase();
   if(!/^HC-[0-9A-F]{6,12}$/.test(hangerId))throw error(400,'hangerId 형식 오류');
-  if(!['PRESENT','EMPTY','UNKNOWN_TAG','UNSTABLE'].includes(state)||!Number.isSafeInteger(sequence)||sequence<0)throw error(400,'옷걸이 상태 형식 오류');
+  if(!['PRESENT','EMPTY','UNKNOWN_TAG','UNSTABLE','SENSOR_ERROR'].includes(state)||!Number.isSafeInteger(sequence)||sequence<0)throw error(400,'옷걸이 상태 형식 오류');
   const gateway=attachGateway(gatewayId);
   let h=db.hangers.find(v=>v.hangerId===hangerId);
-  if(!h){h={hangerId,alias:neutralHangerName({hangerId}),customName:'',createdAt:now(),lastSequence:-1,bootHistory:[],wardrobeId:gateway.wardrobeId||null};if(h.wardrobeId)assignHanger(h,h.wardrobeId,gatewayId);db.hangers.push(h)}
-  // A hanger inherits ownership only from its explicitly claimed gateway.
-  // Do not revive the historical single-wardrobe shortcut here: it can attach
-  // new physical hardware to an administrator and make Web FIND unreachable.
-  const targetWardrobeId=gateway.wardrobeId||null;
-  if(!h.wardrobeId&&targetWardrobeId)assignHanger(h,targetWardrobeId,gatewayId);
+  // Status packets are discovery telemetry only. A nearby C6 must never
+  // inherit the account of the S3 that heard it. Ownership is assigned only
+  // by the explicit hanger claim after the visible BLE confirmation.
+  if(!h){h={hangerId,alias:neutralHangerName({hangerId}),customName:'',createdAt:now(),lastSequence:-1,bootHistory:[],wardrobeId:null};db.hangers.push(h)}
   // A paired hanger may later report through a different *owned* gateway.
   // Keep its immutable hardware ID, but allocate its next number in the
   // destination gateway. Cross-account packets are never allowed to move it.
@@ -203,14 +201,17 @@ function status(x){
   if(currentBoot!==bootId&&history.includes(bootId))return{hanger:h,duplicate:true,stale:true};
   if(currentBoot!==bootId)h.lastSequence=-1;
   h.bootHistory=[...new Set([...history,bootId])];
-  Object.assign(h,{reportedState:state,state,tagUid:uid(x.tagUid)||null,lastSeen:now(),lastSequence:sequence,bootId,channel:Number(x.channel||0),rssi:Number(x.rssi||0),errorFlags:Number(x.errorFlags||0),firmwareVersion:String(x.firmwareVersion||'unknown'),gatewayId});
+  const updatedAt=now();
+  Object.assign(h,{reportedState:state,state,tagUid:uid(x.tagUid)||null,lastSeen:updatedAt,updatedAt,lastSequence:sequence,bootId,channel:Number(x.channel||0),rssi:Number(x.rssi||0),errorFlags:Number(x.errorFlags||0),firmwareVersion:String(x.firmwareVersion||'unknown'),gatewayId});
   Object.assign(gateway,{state:'ONLINE',lastSeen:h.lastSeen,channel:h.channel,firmwareVersion:String(x.gatewayFirmwareVersion||'unknown')});
   // An EMPTY report is the physical source of truth: stop any outstanding
   // FIND for this hanger so stale retries cannot revive the LED or UI badge.
-  const cancelled=state==='EMPTY'&&h.wardrobeId?cancelActiveCommands([hangerId],h.wardrobeId,'NFC_TAG_REMOVED'):[];
+  const cancellationReason=state==='EMPTY'?'NFC_TAG_REMOVED':state==='SENSOR_ERROR'?'NFC_READER_ERROR':'';
+  const cancelled=cancellationReason&&h.wardrobeId?cancelActiveCommands([hangerId],h.wardrobeId,cancellationReason):[];
   reconcile();
-  emit('hanger.state',h,'info',h.wardrobeId);
-  if(cancelled.length)emit('command.cancelled',{hangerId,targets:[hangerId],reason:'NFC_TAG_REMOVED',commandCount:cancelled.length},'info',h.wardrobeId);
+  console.log(`[STATUS_RX] hanger=${hangerId} state=${state} sequence=${sequence} updatedAt=${updatedAt}`);
+  emit('hanger.state',h,state==='SENSOR_ERROR'?'warning':'info',h.wardrobeId);
+  if(cancelled.length)emit('command.cancelled',{hangerId,targets:[hangerId],reason:cancellationReason,commandCount:cancelled.length},'info',h.wardrobeId);
   return{hanger:h,duplicate:false};
 }
 function heartbeat(x){const gatewayId=String(x.gatewayId||'').toUpperCase();if(!/^GW-[0-9A-F]{6,12}$/.test(gatewayId))throw error(400,'gatewayId 형식 오류');const g=attachGateway(gatewayId);Object.assign(g,{state:'ONLINE',lastSeen:now(),channel:Number(x.channel||0),firmwareVersion:String(x.firmwareVersion||'unknown'),ssid:String(x.ssid||g.ssid||''),rssi:Number(x.rssi||g.rssi||0),ip:String(x.ip||g.ip||''),provisioning:{status:'CONNECTED',wifiStatus:'CONNECTED',cloudStatus:'CONNECTED',at:now()}});emit('gateway.heartbeat',g,'info',g.wardrobeId);return g}
@@ -333,7 +334,7 @@ const claim=match(req.url,/^\/api\/(gateways|hangers)\/([^/]+)\/claim$/);if(clai
 const provision=match(req.url,/^\/api\/gateways\/([^/]+)\/provisioning-status$/);if(provision&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),gatewayId=decodeURIComponent(provision[1]).toUpperCase(),gateway=db.gateways.find(item=>item.gatewayId===gatewayId&&item.wardrobeId===w.id);if(!gateway)throw error(404,'내 옷봉을 찾을 수 없습니다.');const x=await body(req);gateway.provisioning={status:'TIMEOUT',wifiStatus:'UNKNOWN',cloudStatus:'UNKNOWN',detail:String(x.detail||'BLE 설정 후 heartbeat 확인 시간이 초과되었습니다.').slice(0,240),at:now()};emit('gateway.provisioning.timeout',{gatewayId,provisioning:gateway.provisioning},'warning',w.id);await save();return json(res,200,gateway)}
 const device=match(req.url,/^\/api\/(gateways|hangers)\/([^/]+)$/);if(device&&req.method==='PATCH'){const u=needUser(req),w=wardrobeFor(u),x=await body(req),kind=device[1],key=decodeURIComponent(device[2]),list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',item=list.find(v=>v[field]===key&&v.wardrobeId===w.id);if(!item)throw error(404,kind==='gateways'?'내 옷봉을 찾을 수 없습니다.':'내 옷걸이를 찾을 수 없습니다.');const name=String(x.name??x.alias??'').trim().slice(0,40);if(name){if(kind==='gateways'){item.customName=name;syncGatewayName(item)}else{item.customName=name;syncHangerName(item)}}else if(x.resetName===true){if(kind==='gateways'){item.customName='';syncGatewayName(item)}else{item.customName='';syncHangerName(item)}}else throw error(400,'이름을 입력하세요.');if(kind==='hangers'&&x.gatewayId&&x.gatewayId!==item.gatewayId){const target=db.gateways.find(g=>g.gatewayId===String(x.gatewayId).toUpperCase()&&g.wardrobeId===w.id);if(!target)throw error(404,'대상 옷봉을 찾을 수 없습니다.');assignHanger(item,w.id,target.gatewayId,{moved:true});}emit(`${kind}.updated`,item,'info',w.id);await save();return json(res,200,item)}
 if(device&&req.method==='DELETE'){const u=needUser(req),w=wardrobeFor(u),kind=device[1],key=decodeURIComponent(device[2]),list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',i=list.findIndex(v=>v[field]===key&&v.wardrobeId===w.id);if(i<0)throw error(404,'내 장비를 찾을 수 없습니다.');const item=list[i];if(kind==='gateways'){for(const h of db.hangers)if(h.gatewayId===item.gatewayId&&h.wardrobeId===w.id){h.gatewayId=null;h.customName='';syncHangerName(h);}}else{item.wardrobeId=null;item.gatewayId=null;item.customName='';syncHangerName(item);}item.wardrobeId=null;item.customName='';if(kind==='gateways')syncGatewayName(item);emit(`${kind}.removed`,{[field]:key},'warning',w.id);await save();return json(res,200,{ok:true})}
-if(p==='/api/gateway/status'&&req.method==='POST'){needDevice(req);const x=status(await body(req));json(res,200,x);save().catch(e=>console.error('[STATUS] background save failed',e.message));return}if(p==='/api/gateway/heartbeat'&&req.method==='POST'){needDevice(req);const x=heartbeat(await body(req));json(res,200,x);save().catch(e=>console.error('[HEARTBEAT] background save failed',e.message));return}
+if(p==='/api/gateway/status'&&req.method==='POST'){needDevice(req);const x=status(await body(req));json(res,200,x);save().then(()=>{if(!x.duplicate)console.log(`[DB_STATE] hanger=${x.hanger.hangerId} state=${x.hanger.state} updatedAt=${x.hanger.updatedAt||x.hanger.lastSeen} sequence=${x.hanger.lastSequence}`)}).catch(e=>console.error('[STATUS] background save failed',e.message));return}if(p==='/api/gateway/heartbeat'&&req.method==='POST'){needDevice(req);const x=heartbeat(await body(req));json(res,200,x);save().catch(e=>console.error('[HEARTBEAT] background save failed',e.message));return}
 if(p==='/api/gateway/commands'){needDevice(req);const gatewayId=String(req.headers['x-gateway-id']||'').toUpperCase(),wid=gatewayOwner(gatewayId);const cs=db.commands.filter(c=>wid&&c.wardrobeId===wid&&['QUEUED','SENT','PARTIAL'].includes(c.status)&&Date.parse(c.expiresAt)>Date.now()&&c.targets.some(t=>db.hangers.some(h=>h.hangerId===t&&h.gatewayId===gatewayId)));for(const c of cs){c.status='SENT';c.sentAt=now();console.log(`[COMMAND] SENT id=${c.numericId} gateway=${gatewayId} targets=${c.targets.join(',')}`)}json(res,200,{commands:cs});if(cs.length)save().catch(e=>console.error('[COMMAND] command status save failed',e.message));return}
 if(p==='/api/gateway/ack'&&req.method==='POST'){needDevice(req);const a=await body(req),c=db.commands.find(x=>x.numericId===Number(a.commandId));if(!c)throw error(404,'명령이 없습니다.');const h=String(a.hangerId).toUpperCase();if(!c.targets.includes(h))throw error(400,'명령 대상 오류');if(c.status==='CANCELLED')return json(res,200,{...c,ignored:true});c.acknowledgements[h]={result:a.result||'ERROR',errorCode:Number(a.errorCode||0),at:now()};c.status=c.targets.every(t=>c.acknowledgements[t]?.result==='OK')?'ACKED':'PARTIAL';console.log(`[COMMAND] ACK id=${c.numericId} hanger=${h} result=${c.acknowledgements[h].result}`);emit('command.ack',c,'info',c.wardrobeId);json(res,200,c);save().catch(e=>console.error('[ACK] background save failed',e.message));return}
 if(p.startsWith('/api/'))throw error(404,'API를 찾을 수 없습니다.');return staticFile(req,res)}catch(e){console.error('[ERROR]',e.message);json(res,e.status||500,{error:e.message})}});

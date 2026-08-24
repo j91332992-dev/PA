@@ -4,7 +4,7 @@ namespace sw {
 constexpr uint8_t VERSION=1,MAX_TARGETS=16;constexpr uint8_t BROADCAST[6]={0xff,0xff,0xff,0xff,0xff,0xff};
 constexpr uint32_t LED_SAFETY_TIMEOUT_MS=300000; // 5분 기본 안전 타임아웃
 enum class Type:uint8_t{BEACON=1,STATUS=2,EVENT=3,COMMAND=4,ACK=5};
-enum class State:uint8_t{PRESENT=1,EMPTY=2,UNKNOWN_TAG=4,UNSTABLE=5};
+enum class State:uint8_t{PRESENT=1,EMPTY=2,UNKNOWN_TAG=4,UNSTABLE=5,SENSOR_ERROR=6};
 enum class Command:uint8_t{LED_BLINK=1,LED_OFF=2};
 struct __attribute__((packed)) Packet{uint16_t magic=0x5753;uint8_t version=VERSION;Type type=Type::STATUS;char gatewayId[16]{};char hangerId[16]{};State state=State::EMPTY;uint8_t uidLength=0;uint8_t uid[7]{};uint32_t sequence=0;uint32_t bootId=0;uint32_t commandId=0;Command command=Command::LED_BLINK;uint16_t durationMs=0;uint8_t targetCount=0;uint32_t targetIds[MAX_TARGETS]{};uint32_t errorFlags=0;char firmware[12]{};uint32_t checksum=0;};
 static_assert(sizeof(Packet)<=250,"ESP-NOW v1 packet limit");

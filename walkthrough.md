@@ -142,3 +142,12 @@
 - C6는 Gateway beacon을 받더라도 더 이상 Gateway ID를 자동 저장하거나 Cloud 상태를 보고하지 않는다. beacon은 BLE 화면에서 발견된 옷봉을 보여 주는 용도뿐이다.
 - 사용자가 BLE에서 **옷봉과 연결**을 누른 경우에만 Gateway ID를 NVS에 `manualPairingApproved`와 함께 저장한다. 이후 전원 재인가에서는 그 명시적으로 승인한 Gateway에만 자동 재연결한다.
 - 이전 펌웨어의 자동 beacon 연결 기록은 승인 플래그가 없으므로 플래시 후 제거된다. COM23 HC-85C438에서 `[PAIR] manual BLE pairing required` 부팅 로그로 확인했다.
+
+## NFC 제거 경로 추적 및 수동 등록 보강 (로컬 검증, 미배포/미플래시)
+
+- 현재 C6 소스의 실제 NFC는 PN532 **SPI**다: D8=SCK, D9=MISO, D10=MOSI, D6=SS, LED=D1 active-high. 예전 I2C 배선 문서는 이 현재 보드 판정의 근거로 사용하지 않는다.
+- PN532는 `setPassiveActivationRetries(0x01)`과 40ms 제한 poll을 사용한다. PRESENT에서 clean no-tag가 3회 연속이고 마지막 확인 후 350ms가 지나야 EMPTY가 된다. 태그는 같은 UID 2회 연속 읽힐 때 PRESENT가 되며, 미감지 카운터는 실제 UID 읽기에서만 초기화된다.
+- PN532 firmware probe가 실패하면 오래된 PRESENT를 보존하지 않고 750ms 뒤 `SENSOR_ERROR`를 보고한다. EMPTY/SENSOR_ERROR는 LED와 FIND를 즉시 끄고, EMPTY는 비차단 방식으로 ESP-NOW 이벤트를 추가 2회만 재전송한다.
+- 진단 로그는 `[NFC_FOUND]`, `[NFC_MISS]`, `[NFC_EMPTY]`, `[ESPNOW_TX]`, `[ESPNOW_RX]`, `[CLOUD_POST]`, `[DB_STATE]`, 브라우저 `[APP_STATE]`로 연결된다. 서버는 `updatedAt`과 `sequence`를 상태에 저장하고 WebSocket/snapshot에서 앱이 이를 기록한다.
+- 서버 상태 패킷은 discovery telemetry일 뿐이다. 이미 등록된 Gateway가 수신해도, BLE의 **옷봉과 연결** 확인 뒤 별도 `/api/hangers/:id/claim`이 성공하기 전에는 C6 소유권을 자동 부여하지 않는다. 따라서 삭제한 옷걸이가 단순 근접 통신만으로 다시 사용자 장비 목록에 나타나지 않는다.
+- 검증: `npm test` 38/38, C6/Gateway `pio run`, JavaScript syntax check, `git diff --check` 통과. 이 기록 시점에는 사용자 지시에 따라 GitHub push, Render 배포, 실제 보드 플래시 및 NTAG 실측은 수행하지 않았다.

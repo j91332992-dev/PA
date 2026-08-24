@@ -107,6 +107,7 @@ function getKoreanState(state) {
     CONFLICT: '중복 감지',
     UNKNOWN_TAG: '미등록 옷 태그',
     UNSTABLE: '인식 불안정',
+    SENSOR_ERROR: '상태 확인 불가',
     QUEUED: '찾기 요청됨',
     SENT: '찾기 명령 전달됨',
     ACKED: 'LED 점멸 시작됨',
@@ -1053,6 +1054,10 @@ function mergeSnapshot(snapshot) {
   return { ...snapshot, hangers };
 }
 
+function traceHangerState(source, hanger) {
+  console.info(`[APP_STATE] source=${source} hanger=${hangerFreshness.hangerIdOf(hanger)} state=${hanger?.state || ''} updatedAt=${hanger?.updatedAt || hanger?.lastSeen || ''} sequence=${hangerFreshness.sequenceOf(hanger)}`);
+}
+
 function applyHangerEvent(hanger) {
   const id = hangerFreshness.hangerIdOf(hanger);
   if (!id) return false;
@@ -1084,6 +1089,7 @@ async function refresh() {
   const request = (async () => {
     const snapshot = await api('/api/snapshot');
     if (generation !== refreshGeneration) return;
+    for (const hanger of snapshot.hangers || []) traceHangerState('API', hanger);
     model = mergeSnapshot(snapshot);
     render();
   })();
@@ -1112,12 +1118,14 @@ function connect() {
   socket.onmessage = e => {
     const m = JSON.parse(e.data);
     if (m.type === 'snapshot') {
+      for (const hanger of m.payload?.hangers || []) traceHangerState('WS_SNAPSHOT', hanger);
       model = mergeSnapshot(m.payload);
       render();
     } else if (m.type === 'hanger.state') {
       const h = m.payload;
       if (!applyHangerEvent(h)) return;
-      if (h.state === 'EMPTY') stopLocalFindForEmptyHanger(h.hangerId);
+      traceHangerState('WS', h);
+      if (h.state === 'EMPTY' || h.state === 'SENSOR_ERROR') stopLocalFindForEmptyHanger(h.hangerId);
       // WebSocket events do not arrive through refresh(), so keep the recent
       // event feed in sync with the same live state update.
       model.events = model.events || [];

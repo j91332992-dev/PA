@@ -58,6 +58,9 @@ uint8_t noTagHits = 0;
 uint32_t lastNfcInitAttemptMs = 0;
 uint32_t lastNfcHealthCheckMs = 0;
 uint32_t lastRawUidLogMs = 0;
+uint32_t readerErrorSinceMs = 0;
+uint8_t emptyRetryRemaining = 0;
+uint32_t nextEmptyRetryAt = 0;
 
 // Channel lock state machine
 enum class ChannelState { SEARCHING, LOCKED };
@@ -77,12 +80,13 @@ constexpr uint32_t PN532_REINIT_COOLDOWN_MS = 500;
 // A passive NTAG answers immediately.  A 40ms bounded no-tag poll keeps
 // removal responsive while leaving enough time for a genuine tag response.
 constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 40;
-// Five clean misses prevent transient PN532/RF misses from becoming OUT, but
-// at the fixed 40ms cadence still confirm a real removal in about 200ms.
-constexpr uint8_t REMOVE_CONFIRM_HITS = 5;
+constexpr uint8_t REMOVE_CONFIRM_HITS = 3;
 constexpr uint8_t PRESENT_CONFIRM_HITS = PRESENT_CONFIRM_COUNT < 1 ? 1 : PRESENT_CONFIRM_COUNT;
 constexpr uint32_t FIND_REJECTED_EMPTY = 2;
-constexpr uint32_t PN532_HEALTH_CHECK_MS = 1000;
+constexpr uint32_t PN532_HEALTH_CHECK_MS = 500;
+constexpr uint32_t NFC_READER_ERROR_STALE_MS = 750;
+constexpr uint32_t EMPTY_RETRY_INTERVAL_MS = 35;
+constexpr uint8_t EMPTY_RETRY_COUNT = 2;
 
 sw::State state = sw::State::EMPTY;
 bool nfcReady = false;
@@ -308,9 +312,11 @@ bool send(sw::Packet& p) {
 void report(bool event) {
   sw::Packet p;
   fill(p, event ? sw::Type::EVENT : sw::Type::STATUS);
-  for (uint8_t i = 0; i < (event ? 2 : 1); i++) {
-    send(p);
-    if (event && i == 0) delay(5);
+  const bool queued = send(p);
+  if (state == sw::State::EMPTY) {
+    Serial.printf("[ESPNOW_TX] state=EMPTY sequence=%lu time=%lu queued=%s\n", p.sequence, millis(), queued ? "true" : "false");
+  } else if (state == sw::State::SENSOR_ERROR) {
+    Serial.printf("[ESPNOW_TX] state=SENSOR_ERROR sequence=%lu time=%lu queued=%s\n", p.sequence, millis(), queued ? "true" : "false");
   }
   char uHex[16] = "";
   for (uint8_t i = 0; i < currentLen; i++) snprintf(uHex + i * 2, 3, "%02X", currentUid[i]);
@@ -322,18 +328,23 @@ void transition(sw::State s) {
   state = s;
   // Once the garment tag leaves this hanger, a previous FIND must not keep
   // advertising an empty hanger.  Stop the real LED before reporting EMPTY.
-  if (state == sw::State::EMPTY) {
+  if (state == sw::State::EMPTY || state == sw::State::SENSOR_ERROR) {
     ledUntil = 0;
     ledBlinkStartedAt = 0;
     led(false);
-    Serial.println("[LED] OFF: NFC tag removed");
+    Serial.println(state == sw::State::EMPTY ? "[LED] OFF: NFC tag removed" : "[LED] OFF: NFC reader error");
   }
   char uHex[16] = "";
   for (uint8_t i = 0; i < currentLen; i++) snprintf(uHex + i * 2, 3, "%02X", currentUid[i]);
   Serial.printf("\n⚡ [STATE-CHANGE] state=%u (UID=%s len=%u)\n", unsigned(state), uHex, currentLen);
-  setHangerBleStatus(state == sw::State::PRESENT ? "tag_present" : "tag_empty",
-                     state == sw::State::PRESENT ? "옷 태그를 인식했습니다." : "현재 인식된 옷 태그가 없습니다.");
+  const char* bleState = state == sw::State::PRESENT ? "tag_present" : state == sw::State::SENSOR_ERROR ? "sensor_error" : "tag_empty";
+  const char* bleMessage = state == sw::State::PRESENT ? "옷 태그를 인식했습니다." : state == sw::State::SENSOR_ERROR ? "옷 태그 읽기 장치 상태를 확인할 수 없습니다." : "현재 인식된 옷 태그가 없습니다.";
+  setHangerBleStatus(bleState, bleMessage);
   report(true);
+  if (state == sw::State::EMPTY) {
+    emptyRetryRemaining = EMPTY_RETRY_COUNT;
+    nextEmptyRetryAt = millis() + EMPTY_RETRY_INTERVAL_MS;
+  }
 }
 
 void ack(const sw::Packet& cmd, uint32_t errorCode = 0) {
@@ -486,10 +497,23 @@ bool tryInitNfc() {
   }
   Serial.printf("[NFC] READY! SPI version=%08lX\n", version);
   nfc.SAMConfig();
-  nfc.setPassiveActivationRetries(0xFF);
+  // Unlimited passive activation retries can leave an absent tag scan stuck
+  // long enough to hide a real removal. Each poll already has a 40ms timeout.
+  nfc.setPassiveActivationRetries(0x01);
   nfcReady = true;
+  readerErrorSinceMs = 0;
+  lastNfcHealthCheckMs = millis();
   setHangerBleStatus("nfc_ready", "옷 태그 읽기 장치가 준비되었습니다. 옷 태그를 대보세요.");
   return true;
+}
+
+bool pn532Healthy(uint32_t now) {
+  if (!nfcReady || now - lastNfcHealthCheckMs < PN532_HEALTH_CHECK_MS) return nfcReady;
+  lastNfcHealthCheckMs = now;
+  if (nfc.getFirmwareVersion()) return true;
+  nfcReady = false;
+  Serial.printf("[NFC_READER_ERROR] firmware probe failed time=%lu\n", now);
+  return false;
 }
 
 // A bounded SPI poll leaves time for ESP-NOW event handling between scans.
@@ -498,9 +522,10 @@ int scanCard(uint8_t* uid, uint8_t& uidLen) {
     if (millis() - lastNfcInitAttemptMs < PN532_REINIT_COOLDOWN_MS) return -1;
     if (!tryInitNfc()) return -1;
   }
+  const uint32_t now = millis();
   uint8_t u1[7] = {0}, len1 = 0;
   if (!nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, u1, &len1, PN532_SCAN_TIMEOUT_MS) || len1 == 0 || len1 > 7) {
-    return 0;
+    return pn532Healthy(now) ? 0 : -1;
   }
 
   // Instant verification read to eliminate SPI bus noise
@@ -526,10 +551,15 @@ void scanNfc() {
   if (res == 1) {
     // === TAG FOUND ===
     noTagHits = 0;
-    if (state == sw::State::PRESENT) {
+    readerErrorSinceMs = 0;
+    if (state == sw::State::PRESENT || state == sw::State::SENSOR_ERROR) {
       if (same(u, len, currentUid, currentLen)) {
         lastSeenMs = now; // Keep alive (Zero flapping)
         candidateHits = 0;
+        if (now - lastRawUidLogMs >= 500) {
+          Serial.printf("[NFC_FOUND] uid=%s time=%lu\n", currentUidHex().c_str(), now);
+          lastRawUidLogMs = now;
+        }
       } else {
         // Different tag reading while already in PRESENT: require 2 consecutive reads to switch
         if (same(u, len, candidateUid, candidateLen)) {
@@ -539,6 +569,8 @@ void scanNfc() {
             lastSeenMs = now;
             candidateHits = 0;
             logUid("[NFC] RAW UID=", currentUid, currentLen);
+            Serial.printf("[NFC_FOUND] uid=%s time=%lu\n", currentUidHex().c_str(), now);
+            lastRawUidLogMs = now;
             transition(sw::State::PRESENT);
           }
         } else {
@@ -556,6 +588,8 @@ void scanNfc() {
           lastSeenMs = now;
           candidateHits = 0;
           logUid("[NFC] RAW UID=", currentUid, currentLen);
+          Serial.printf("[NFC_FOUND] uid=%s time=%lu\n", currentUidHex().c_str(), now);
+          lastRawUidLogMs = now;
           transition(sw::State::PRESENT);
         }
       } else {
@@ -567,11 +601,12 @@ void scanNfc() {
   } else if (res == 0) {
     // === CLEAN NO TAG IN FIELD ===
     candidateHits = 0;
-    if (state == sw::State::PRESENT) {
+    if (state == sw::State::PRESENT || state == sw::State::SENSOR_ERROR) {
       // Require consecutive absent scans as well as the grace period. This
       // preserves PRESENT through a short PN532/RF miss, while a real removal
       // still stops FIND in well under a second with the current scan timing.
       if (noTagHits < 255) ++noTagHits;
+      Serial.printf("[NFC_MISS] hits=%u lastSeenAgo=%lu time=%lu\n", noTagHits, now - lastSeenMs, now);
       if (noTagHits >= REMOVE_CONFIRM_HITS && now - lastSeenMs >= REMOVE_GRACE_MS) {
         memset(currentUid, 0, sizeof(currentUid));
         currentLen = 0;
@@ -579,14 +614,23 @@ void scanNfc() {
         candidateLen = 0;
         candidateHits = 0;
         noTagHits = 0;
+        Serial.printf("[NFC_EMPTY] time=%lu\n", now);
         transition(sw::State::EMPTY);
       }
     }
   } else {
-    // A PN532 reinitialisation/read failure is not proof that the tag was
-    // removed. Keep the last confirmed garment until clean no-tag scans say
-    // otherwise, so the app cannot falsely move it outside the wardrobe.
+    // A reader fault is distinct from an empty field. It must never preserve
+    // a stale PRESENT forever: after a short bounded window report SENSOR_ERROR
+    // so the app shows “상태 확인 불가” instead of “옷장 안”.
     candidateHits = 0;
+    if (!readerErrorSinceMs) readerErrorSinceMs = now;
+    if (now - lastSeenMs >= NFC_READER_ERROR_STALE_MS && now - readerErrorSinceMs >= NFC_READER_ERROR_STALE_MS) {
+      memset(currentUid, 0, sizeof(currentUid));
+      currentLen = 0;
+      noTagHits = 0;
+      Serial.printf("[NFC_SENSOR_ERROR] lastSeenAgo=%lu time=%lu\n", now - lastSeenMs, now);
+      transition(sw::State::SENSOR_ERROR);
+    }
   }
 }
 
@@ -707,6 +751,14 @@ void loop() {
   if (t - lastHeartbeat >= HEARTBEAT_MIN_MS) {
     lastHeartbeat = t;
     report(false);
+  }
+
+  // ESP-NOW broadcast has no application ACK. Re-send a newly confirmed
+  // EMPTY twice without blocking the loop; later heartbeats retain EMPTY too.
+  if (emptyRetryRemaining && t >= nextEmptyRetryAt) {
+    --emptyRetryRemaining;
+    report(true);
+    nextEmptyRetryAt = t + EMPTY_RETRY_INTERVAL_MS;
   }
   
   maintainChannel();

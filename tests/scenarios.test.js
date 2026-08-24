@@ -65,6 +65,10 @@ test.before(async () => {
   assert.equal(beforeClaim.body.gateways.some(gateway => gateway.gatewayId === 'GW-TEST01'), false);
   assert.equal(beforeClaim.body.hangers.some(hanger => hanger.hangerId === 'HC-000001'), false);
   assert.equal((await api('/api/gateways/GW-TEST01/claim', { method: 'POST', userAuth: true, body: '{}' })).status, 200);
+  // An owned Gateway must not turn nearby/unapproved C6 telemetry into
+  // account ownership. The user must separately confirm the hanger in BLE.
+  const afterGatewayOnly = await api('/api/snapshot', { userAuth: true });
+  assert.equal(afterGatewayOnly.body.hangers.some(hanger => hanger.hangerId === 'HC-000001'), false);
   for (const hangerId of vgw.hangers.keys()) {
     assert.equal((await api(`/api/hangers/${hangerId}/claim`, { method: 'POST', userAuth: true, body: '{}' })).status, 200);
   }

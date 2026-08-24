@@ -139,6 +139,12 @@ sw::Packet eventQueue[EVENT_Q], normalQueue[NORMAL_Q];
 volatile uint8_t eventHead = 0, eventTail = 0, normalHead = 0, normalTail = 0;
 struct SeenPacket { char hangerId[16]{}; uint32_t bootId = 0, sequence = 0; };
 SeenPacket seenPackets[SEEN_Q];
+bool pendingStatusUpload = false;
+sw::Packet pendingStatusPacket;
+uint8_t pendingStatusRetries = 0;
+uint32_t nextStatusUploadAttemptAt = 0;
+constexpr uint32_t STATUS_UPLOAD_RETRY_MS = 150;
+constexpr uint8_t STATUS_UPLOAD_BURST_RETRIES = 3;
 
 String cloudBaseUrl() {
   String saved = wifiPrefs.getString("server", "");
@@ -365,6 +371,7 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
   memcpy(&p, data, sizeof p);
   if (!sw::valid(p)) return;
   Serial.printf("[ESPNOW-RX] Hanger=%s Type=%u State=%u Seq=%lu\n", p.hangerId, unsigned(p.type), unsigned(p.state), p.sequence);
+  if (p.state == sw::State::EMPTY) Serial.printf("[ESPNOW_RX] state=EMPTY sequence=%lu time=%lu\n", p.sequence, millis());
   enqueue(p);
 }
 
@@ -576,6 +583,7 @@ String stateName(sw::State s) {
     case sw::State::PRESENT: return "PRESENT";
     case sw::State::UNSTABLE: return "UNSTABLE";
     case sw::State::UNKNOWN_TAG: return "UNKNOWN_TAG";
+    case sw::State::SENSOR_ERROR: return "SENSOR_ERROR";
     default: return "EMPTY";
   }
 }
@@ -590,7 +598,7 @@ String uidHex(const sw::Packet& p) {
   return s;
 }
 
-void upload(const sw::Packet& p) {
+bool upload(const sw::Packet& p) {
   JsonDocument d;
   d["gatewayId"] = gateway;
   d["hangerId"] = p.hangerId;
@@ -605,11 +613,15 @@ void upload(const sw::Packet& p) {
   String body, out;
   serializeJson(d, body);
   int httpCode = 0;
-  const uint16_t timeoutMs = 2500;
+  const uint16_t timeoutMs = 800;
+  const String state = stateName(p.state);
+  const uint32_t started = millis();
   if (request("/api/gateway/status", "POST", body, out, timeoutMs, &httpCode)) {
-    Serial.printf("[CLOUD] %s OK\n", p.hangerId);
+    Serial.printf("[CLOUD_POST] state=%s http=%d sequence=%lu elapsed=%lu\n", state.c_str(), httpCode, p.sequence, millis() - started);
+    return true;
   } else {
-    Serial.printf("[CLOUD] %s FAIL http=%d\n", p.hangerId, httpCode);
+    Serial.printf("[CLOUD_POST] state=%s http=%d sequence=%lu elapsed=%lu\n", state.c_str(), httpCode, p.sequence, millis() - started);
+    return false;
   }
 }
 
@@ -902,14 +914,29 @@ void loop() {
   // pending packet before command polling so PRESENT/EMPTY never waits behind
   // a slow Cloud GET request.
   sw::Packet p;
-  if (dequeue(p)) {
+  if (pendingStatusUpload && WiFi.status() == WL_CONNECTED && t >= nextStatusUploadAttemptAt) {
+    if (upload(pendingStatusPacket)) {
+      pendingStatusUpload = false;
+      pendingStatusRetries = 0;
+    } else {
+      ++pendingStatusRetries;
+      nextStatusUploadAttemptAt = t + (pendingStatusRetries >= STATUS_UPLOAD_BURST_RETRIES ? 1000 : STATUS_UPLOAD_RETRY_MS);
+      if (pendingStatusRetries >= STATUS_UPLOAD_BURST_RETRIES) pendingStatusRetries = 0;
+    }
+  } else if (!pendingStatusUpload && dequeue(p)) {
     if (duplicateStatus(p)) {
       Serial.printf("[ESPNOW] duplicate skipped Hanger=%s Seq=%lu\n", p.hangerId, p.sequence);
     } else {
       if (p.type == sw::Type::ACK) {
         if (WiFi.status() == WL_CONNECTED) ack(p);
       } else if (p.type == sw::Type::STATUS || p.type == sw::Type::EVENT) {
-        if (WiFi.status() == WL_CONNECTED) upload(p);
+        if (WiFi.status() != WL_CONNECTED || !upload(p)) {
+          pendingStatusPacket = p;
+          pendingStatusUpload = true;
+          pendingStatusRetries = 0;
+          nextStatusUploadAttemptAt = t + STATUS_UPLOAD_RETRY_MS;
+          Serial.printf("[CLOUD_QUEUE] state=%s sequence=%lu\n", stateName(p.state).c_str(), p.sequence);
+        }
       }
     }
   }

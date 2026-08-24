@@ -10,6 +10,10 @@
     const value = Number(hanger?.lastSequence ?? hanger?.sequence ?? -1);
     return Number.isSafeInteger(value) && value >= 0 ? value : -1;
   }
+  function updatedAtOf(hanger) {
+    const value = Date.parse(hanger?.updatedAt || hanger?.lastSeen || '');
+    return Number.isFinite(value) ? value : 0;
+  }
 
   function clothingStatus(hanger, garments) {
     if ((hanger?.reportedState === 'PRESENT' || hanger?.state === 'PRESENT' || hanger?.state === 'UNKNOWN_TAG') && hanger.tagUid) {
@@ -28,7 +32,11 @@
       const known = states.get(id);
       const currentBoot = current ? bootIdOf(current) : known?.bootId;
       const currentSequence = Math.max(sequenceOf(current), known?.bootId === currentBoot ? known.sequence : -1);
-      if (currentBoot === incomingBoot) return sequenceOf(incoming) > currentSequence;
+      if (currentBoot === incomingBoot) {
+        const incomingSequence = sequenceOf(incoming);
+        if (incomingSequence >= 0 && currentSequence >= 0) return incomingSequence > currentSequence;
+        return updatedAtOf(incoming) > updatedAtOf(current || known);
+      }
       if (known?.bootIds.has(incomingBoot)) return false;
       return true;
     }
@@ -52,6 +60,7 @@
       hangerIdOf,
       bootIdOf,
       sequenceOf,
+      updatedAtOf,
       clothingStatus,
       isFresher,
       remember,
@@ -59,5 +68,5 @@
     };
   }
 
-  return { hangerIdOf, bootIdOf, sequenceOf, clothingStatus, createTracker };
+  return { hangerIdOf, bootIdOf, sequenceOf, updatedAtOf, clothingStatus, createTracker };
 });
