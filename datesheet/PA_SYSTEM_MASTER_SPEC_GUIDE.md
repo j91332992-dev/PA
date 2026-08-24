@@ -30,7 +30,7 @@
   - `PIN_SDA = D4 (GPIO 22)` ↔ PN532 `SDA`
   - `PIN_SCL = D5 (GPIO 23)` ↔ PN532 `SCL`
   - `PN532_IRQ = D2 (GPIO 2)` ↔ PN532 `IRQ` (P70_IRQ)
-  - `PN532_RESET = D3 (GPIO 3)` ↔ PN532 `RST` (RSTPD_N)
+  - `PN532_RESET = D3 (GPIO 21)` ↔ PN532 `RSTO` (RSTPD_N)
   - `PIN_LED = D1 (GPIO 1)` ↔ 옷걸이 인디케이터 LED
 - **Breakout Board 스위치 설정**:
   - 2-Bit DIP 스위치: **`CH1 = 0 (OFF / L), CH2 = 1 (ON / H)`** (보드 실크 인쇄: `I2C: 0 1`)

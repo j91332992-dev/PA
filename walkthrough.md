@@ -1,0 +1,262 @@
+# NFC 상태 전환 안정화 기록
+
+## 변경 사항
+
+- `firmware/hanger/src/main.cpp`
+  - PN532를 초기화할 때 유한 passive-activation retry(1회)를 명시적으로 설정했다.
+  - 진행 중인 `InListPassiveTarget` 응답을 회수하기 전에는 다음 스캔 명령을 보내지 않는 단일-진행 스캔 상태기로 변경했다. 이 명령 겹침이 다초 지연의 원인이었다.
+  - PN532 응답 타임아웃을 즉시 태그 이탈로 처리하지 않아, 순간 I2C 글리치가 `EMPTY` 상태를 만들지 않도록 했다.
+  - 100ms 스캔, 2회 연속 감지, 350ms 제거 유예를 적용했다.
+  - 실제 I2C 쓰기/ACK 오류에만 재초기화를 적용하고, 재시도 사이에 2초 쿨다운을 둔다.
+- `firmware/gateway/src/main.cpp`
+  - HTTP 연결/응답 타임아웃을 1.2초로 설정하고, 실패 상태 코드를 시리얼에 기록한다.
+  - 새 `HTTPClient`마다 stale TCP 연결을 재사용하지 않는다.
+- `web/public/app.js`, `web/public/sw.js`
+  - WebSocket의 `hanger.state` 수신 시 최근 이벤트 모델에도 즉시 추가하도록 수정했다.
+  - 서비스 워커 캐시 버전을 올리고 즉시 활성화하여, 한 번의 강력 새로고침 후 최신 실시간 UI가 적용된다.
+
+## 실행 및 검증
+
+- C6(COM21) 및 S3(COM19) 펌웨어를 빌드하고 esptool로 기록했다. 플래시 SHA 검증을 통과했다.
+- C6는 USB-Serial/JTAG이므로 `--before usb-reset`으로 부트로더 연결을 확인했다.
+- 새 C6 이미지에서 PN532 `READY`, firmware `0x32010607`, passive retry `1`을 시리얼로 확인했다.
+- Node 서버 health endpoint는 HTTP 200이며, S3의 상태 업로드는 관찰된 사례에서 수백 ms 이내에 완료됐다.
+
+## 남은 물리 검증
+
+- 새 단일-진행 스캔 상태기로 실물 카드의 올림/제거 각각 한 번을 측정해야 한다. 목표는 C6 상태 전환부터 웹 반영까지 1초 이내다.
+- UI 변경은 현재 열린 탭에 자동 주입되지 않으므로, 첫 적용 때만 `Ctrl+F5`가 필요하다. 이후 최근 이벤트는 WebSocket으로 새로고침 없이 갱신된다.
+
+## 옷 사진 자동 처리 추가
+
+- `tools/background-removal-demo/server.py`는 이 PC에서만 실행되는 사진 처리 서비스다. 업로드한 JPG/PNG/WEBP(12MB 이하)에서 배경을 투명 PNG로 제거하고, 옷의 종류·색상·계절을 추천한다.
+- `backend/garment-image-service.js`는 웹 로그인 사용자의 사진 요청만 이 서비스로 전달하고, 처리된 사진은 `data/garment-images/`에 보관한다. NFC/BLE/ESP-NOW 통신 경로에는 변경이 없다.
+- 옷 등록 창에서 **사진 선택**을 누르면 배경 제거 결과가 미리 보기로 바뀌고, 자동 추천값은 기존 옷 등록 항목에 채워진다. 추천값은 사용자가 수정할 수 있다.
+- Python AI 패키지는 OneDrive 동기화 문제를 피하기 위해 `%LOCALAPPDATA%\\SmartWardrobe\\garment-ai\\.venv`에 설치한다. 처음 사진을 처리할 때만 모델 다운로드와 준비로 시간이 더 걸릴 수 있다.
+
+## 사진 기능 검증
+
+- Node 문법 검사(`backend/server.js`, `backend/garment-image-service.js`, `web/public/app.js`)와 Python 문법 검사를 통과했다.
+- Python 사진 서비스의 `/api/health`가 200으로 응답하는 것을 확인했다.
+
+## 계정별 옷장·실장비 관리
+
+- `backend/server-v3.js`는 기존 단일 JSON 데이터를 `사용자 → 개인 옷장 → 옷봉/옷걸이/옷/이벤트/명령` 구조로 자동 마이그레이션한다. 로그인한 계정에는 자기 옷장 데이터와 WebSocket 이벤트만 전송된다.
+- `backend/storage.js`는 기본 로컬 JSON 모드를 유지하면서 `DATABASE_URL`이 설정된 경우 Supabase PostgreSQL 저장소로 전환한다. `scripts/migrate-json-to-postgres.js`는 비어 있는 클라우드 DB에만 기존 JSON을 1회 이관한다.
+- `render.yaml`, `supabase/schema.sql`, `docs/CLOUD_BETA_DEPLOYMENT.md`는 친구 테스트용 Render/Supabase 배포 절차를 제공한다. 공개 배포에서는 C3 옷봉도 HTTPS와 배포 도메인의 공개 루트 CA를 사용해야 한다.
+- 기존 실장비가 마지막으로 `EMPTY`여서 NFC UID로 소유자를 알 수 없는 경우에는, 기존 옷을 가장 많이 등록한 계정에만 한 번 귀속한다. 이 프로젝트의 `GW-D4DB1C` 옷봉과 `HC-62F2A0` 옷걸이는 해당 규칙으로 함께 보존됐다.
+- 새 C6는 현재 펌웨어를 업로드한 뒤 옷봉에 ESP-NOW로 연결하면 된다. 웹의 **설정/진단 → 내 장비 관리**에서 옷봉과 옷걸이를 각각 보고, 이름 수정 또는 내 계정에서만 등록 제거할 수 있다.
+- 실사용 서버에서는 시뮬레이션을 기본 비활성화했고, 웹 메뉴·가상 장비 필터를 제거했다. 시뮬레이터는 테스트에서만 `SIMULATION_ENABLED=true`로 켠다.
+
+## 계정 분리 검증
+
+- `npm test` 실행 결과: 24개 테스트 모두 통과.
+- 새 `tests/tenant-isolation.test.js`는 두 계정이 같은 NFC UID를 각자 등록할 수 있고, 다른 계정의 옷·옷봉·옷걸이·LED 명령에 접근할 수 없음을 확인한다.
+- 로컬 서버를 새 버전으로 다시 기동했고 `http://localhost:8787/api/health`가 HTTP 200, `simulationEnabled:false`를 반환했다.
+- 실제 인물/의류 사진 1장으로 첫 모델 다운로드 후 배경 제거·분류 결과를 확인하면 최종 체감 검증이 끝난다.
+
+## 클라우드 이관 저장 안정화
+
+- PostgreSQL 전체 스냅샷 저장은 이제 요청 순서대로 하나씩만 실행된다. 초기 이관, 장비 상태 변경, 오프라인 감지 타이머가 겹쳐도 동일 사용자 ID를 두 번 삽입하지 않는다.
+- `scripts/migrate-json-to-postgres.js`는 이관 중 실시간 장비/오프라인 타이머를 시작하지 않는다. 이관이 끝난 뒤 저장 대기열까지 마무리하고 DB 연결을 닫는다.
+- `npm test` 결과: 25개 테스트 모두 통과.
+- Render 배포 진입점은 `0.0.0.0:$PORT`에 명시적으로 바인딩해, Render의 HTTP 포트 감지가 환경별 Node 기본 바인딩에 좌우되지 않도록 했다.
+
+## 사용자용 장비 연결 흐름
+
+- 설정/진단 화면의 중복된 옷봉·옷걸이 상태 카드를 제거하고 **내 장비 관리** 한 곳에서 연결 상태, 이름 수정, 등록 제거를 관리하도록 통합했다.
+- 옷봉 인터넷 연결은 **처음 한 번만** 2.4 GHz Wi-Fi를 저장하는 흐름으로 바꿨다. PC·휴대폰 Wi-Fi를 바꾸지 않으며, 공개 웹 주소는 자동으로 옷봉에 전달된다.
+- 옷봉 BLE 이름은 `새 옷봉`에서 시작해 저장 후 `사용자 이름의 옷봉`이 되고, 옷걸이는 `새 옷걸이`에서 시작해 등록 후 `사용자 이름의 옷걸이 1번` 형식이 된다.
+- 옷봉은 BLE 상태로 `2.4 GHz Wi-Fi 미발견`, `Wi-Fi 비밀번호 인증 실패`, `Wi-Fi 연결 실패`, `서버 등록 정보 오류`, `서버 연결 실패`를 구분해 안내한다.
+- 화면과 BLE 상태에서 PN532/NTAG 같은 부품명 대신 `옷 태그 읽기`와 `옷 태그`라는 사용자용 표현을 사용한다. 진단용 식별자는 일반 화면에서 숨긴다.
+
+## 남은 물리 적용
+
+- 공개 Render 서버를 사용하는 옷봉에는 최신 S3 펌웨어를 업로드해야 한다. 이때 서버 URL은 HTTPS 공개 주소여야 하며, Render의 `DEVICE_TOKEN`과 옷봉의 장비 토큰은 같은 값이어야 한다. 이 값은 소스·로그·채팅에 기록하지 않는다.
+- 기존 옷 사진 파일은 PC의 `data/garment-images/`에만 있고 Render 파일 시스템에는 없으므로, 공개 웹에서 영구 사진을 보이게 하려면 다음 단계로 Supabase Storage 이전이 필요하다. 데이터베이스 이관과는 별개다.
+
+## 로그인 초기화 회귀 복구
+
+- `web/public/hanger-freshness.js`를 브라우저 정적 루트로 제공하도록 이동했다. 이전에는 `/hanger-freshness.js` 요청이 `index.html` fallback을 받아 `Unexpected token '<'`가 발생했고, 그 결과 `app.js` 초기화와 로그인 submit 핸들러가 중단됐다.
+- `web/public/app.js`는 인증 폼을 명시적으로 POST로 설정하고 submit 버튼 타입을 지정한다. 기존 `preventDefault()` 및 `/api/auth/login`·`/api/auth/signup` POST 흐름은 유지된다.
+- `tests/login-regression.test.js`에서 helper의 HTTP 200/JavaScript MIME/createTracker, 로그인 POST 성공, 네이티브 GET 방지 조건을 검증한다.
+- 검증 결과: `npm test` 31개 통과, Node 문법 검사 및 `git diff --check` 통과.
+
+## freshness tracker 브라우저 API 회귀 복구
+
+- `app.js`는 `createTracker()`가 반환한 인스턴스에서 `hangerIdOf`, `clothingStatus`, `isFresher`, `remember`를 함께 사용한다. tracker가 상태 메서드만 반환하던 불일치를 수정해 브라우저와 Node 양쪽에서 동일한 API를 제공한다.
+- 로그인 후 `/api/snapshot` 로드와 `mergeSnapshot()` 진입, `#auth` 숨김 및 `#app` 표시 조건을 회귀 테스트에 포함했다.
+
+## 옷걸이 하드웨어 ID 충돌 수정
+
+- 기존 `firmware/hanger/src/main.cpp`는 `ESP.getEfuseMac()`의 메모리 순서를 잘못 사용해 MAC 앞 3바이트(OUI)만 ID로 만들었다. 그래서 기존 COM21 보드(`A0:F2:62:86:A0:E8`)와 새 COM22 보드(`A0:F2:62:87:A8:28`)가 모두 `HC-62F2A0`으로 표시됐다.
+- 새 ID는 ESP32-C6 station MAC의 마지막 3바이트를 표준 순서로 사용한다. 새 보드는 `HC-87A828`으로 확인됐고, 생성된 ID는 `hanger` NVS에 저장되어 재부팅 후에도 유지된다.
+- 기존 등록 보드의 MAC은 호환성 매핑으로 `HC-62F2A0`을 유지한다. 기존 보드에는 이 변경 펌웨어를 아직 플래시하지 않았으며, 다른 보드는 서로 다른 MAC 기반 ID를 자동으로 생성한다.
+
+## 실물 BLE 등록 및 Wi-Fi 재접속 보완
+
+- Gateway BLE 광고 이름은 계정 소유자명을 저장하거나 표시하지 않고, 항상 `스마트 옷봉 · D4DB1C`처럼 하드웨어 고유 코드만 사용한다. COM19 Gateway에는 이 펌웨어를 플래시하고 이미지 해시 검증까지 완료했다.
+- 웹은 BLE 알림이 Chrome 구독 시점에 누락되어도 상태 특성을 직접 읽어 Gateway ID를 확보한다. 따라서 첫 Cloud heartbeat가 사용자 snapshot에 없더라도 해당 ID로 claim을 재시도한다.
+- Gateway 재접속 전 진행 중인 STA 연결을 취소해 `sta is connecting` 상태에서 `WiFi.begin()`을 중복 호출하지 않는다. 실제 Wi-Fi 인증 실패 여부는 직렬 상태 코드로 구분해 확인한다.
+
+## 관리자 계정 장비 소유권 복구
+
+- 과거 단일 옷장 초기화에서 첫 Gateway heartbeat가 관리자 옷장에 자동 귀속될 수 있었다. 이 경우 일반 사용자는 다른 계정 소유로 차단되지만 관리자 계정은 일반 사용자 목록에서 숨겨져 장비가 보이지 않는 상태가 된다.
+- 데이터 schema v5 migration은 관리자 계정에 잘못 귀속된 실장비 Gateway와 해당 Hanger를 한 번만 등록 해제한다. 이후 일반 사용자가 정상적으로 claim할 수 있다.
+- 관리자 시스템 상태에는 남아 있는 관리자 귀속 장비를 소유권 복구 대상으로 표시하고, 관리자 2차 인증 세션에서만 등록 해제할 수 있다. 일반 사용자 장비의 소유권은 이 경로로 변경할 수 없다.
+- COM22 Hanger에는 `LEDTEST` 직렬 진단 명령을 추가했다. D1 active-high LED를 1초 ON/OFF씩 3회 점멸하며, 실기기 로그에서 완료를 확인했다.
+- `LED_BLINK` FIND 명령은 수신 즉시 D1을 HIGH로 올린 다음 ACK를 보낸다. 점멸 위상도 명령 수신 시점부터 ON으로 시작하므로, 기존처럼 최대 250ms OFF 상태에서 시작하지 않는다.
+
+## 태그 제거와 LED 찾기 동기화
+
+- C6는 PN532의 일시적인 읽기 실패를 태그 제거로 해석하지 않는다. 태그가 실제로 사라졌음을 확인하려면 연속된 clean no-tag 스캔 3회가 필요하다. 따라서 LED를 끈 직후에도 붙어 있는 태그가 잘못 `옷장 밖`으로 보고되지 않는다.
+- C6가 확정 `EMPTY`를 보고하면 backend는 해당 옷걸이의 `QUEUED`/`SENT`/`PARTIAL`/`ACKED` FIND를 즉시 `CANCELLED` 처리한다. 이미 늦게 도착한 ACK는 무시하므로 빈 옷걸이에 FIND가 되살아나지 않는다.
+- Public Web은 `태그 제거로 LED 찾기 종료` 이벤트를 보여주며, 옷장 밖 상태에서는 `LED 찾기 · 옷장 밖` 비활성 버튼과 삭제 버튼을 함께 표시한다.
+- `tests/tag-remove-cancel.test.js`는 `PRESENT → FIND ACK → EMPTY → CANCELLED → 지연 ACK 무시` 전 과정을 자동 검증한다. `npm test` 36/36 통과.
+- COM22 (`HC-87A828`)에는 위 PN532 펌웨어를 플래시하고 모든 기록 구간의 해시 검증을 확인했다. 부팅 직후 PN532 `0x32010607` 준비와 NTAG UID `0452A2026F2490` 검출도 직렬 로그에서 확인했다.
+- C6는 `EMPTY` 상태에서 늦게 도착한 `LED_BLINK`를 물리적으로 거부하고 LED를 강제 OFF로 유지한다. Gateway는 이 거부를 Cloud에 `ERROR` ACK로 전달한다. 따라서 실제 태그가 없는 옷걸이는 서버 재시도와 무관하게 LED가 켜질 수 없다.
+- 태그 재부착은 첫 정상 PN532 UID 읽기에서 바로 `PRESENT`로 전환한다. 제거는 clean no-tag 스캔 3회로 확인해 일시적인 RF 미스를 구분한다.
+- Gateway 상태·heartbeat·ACK POST는 PostgreSQL 저장 완료를 기다리지 않고 현재 상태를 반영한 뒤 즉시 HTTP 200을 반환한다. 저장은 기존 직렬 background queue에서 계속되므로, Render DB 응답 지연이 C6의 `PRESENT/EMPTY` 앱 동기화를 막지 않는다.
+- NFC no-tag poll은 80ms, 제거 확인은 220ms grace + 연속 3회로 조정했다. 태그 제거의 C6 확정 시간은 기존 약 600ms에서 약 250ms 수준으로 줄었다. Gateway는 이 물리 상태 이벤트를 Cloud 명령 폴링보다 먼저 업로드한다.
+- Gateway TLS command poll의 connect/response 상한은 800ms로 제한했다. 느리거나 끊긴 명령 조회가 이미 도착한 `EMPTY`/`PRESENT` 이벤트를 수 초 동안 막지 않으며, 다음 750ms poll에서 명령 조회를 다시 시도한다.
+- C6는 같은 Cloud command ID의 재전송과 과거 command sequence를 ACK만 하고 LED 상태를 다시 적용하지 않는다. Gateway command poll은 300ms 주기·250ms 상한으로 줄여, 정상적인 `PRESENT/EMPTY` 앱 반영의 최악 대기 시간을 1초 이내로 제한한다.
+- FIND/LED 명령 API는 명령을 메모리 큐에 넣은 직후 HTTP 202를 먼저 반환하고, PostgreSQL 저장은 background queue로 이어간다. 따라서 모바일 웹의 `점멸 중` 표시가 DB 저장 지연 때문에 늦어지지 않는다.
+- C6의 태그 제거는 80ms no-tag 스캔 5회로 확인한다. 실제 제거는 1초 안에 처리하면서도, LED 점멸 중 태그를 잠시 떼었다가 바로 다시 붙일 때의 PN532 일시 미검출로 `옷장 밖`이 잘못 확정되는 일을 줄인다. 재부착은 첫 정상 UID 읽기에서 즉시 `PRESENT`로 복귀한다.
+- C6 no-tag scan은 40ms 고정 주기이며, 제거 확인에 영향을 주던 보드별 0~72ms 스캔 지터를 제거했다. 5회 clean no-tag 확인은 유지하되 실제 제거 확정은 약 200ms로 줄었다. COM22에 플래시 후 PN532 `0x32010607`과 실제 NTAG UID를 재확인했다.
+- Public Web은 FIND/LED OFF의 HTTP 응답에 포함된 명령을 즉시 로컬 모델에 반영하고 렌더한다. 이후 WebSocket과 snapshot이 실제 ACK/EMPTY 상태를 동기화하므로, 명령 후 `점멸 중` 박스가 추가 snapshot 왕복을 기다리지 않는다.
+- 태그/LED의 단일 제품 규칙: 태그가 없으면 `옷장 밖`과 FIND 비활성, `PRESENT + tagUid`일 때만 `옷장 안`과 FIND 활성이다. 서버는 빈 옷걸이에 대한 `LED_BLINK`를 HTTP 409로 거부하며, `LED_OFF`는 항상 허용한다. EMPTY WebSocket을 받은 앱도 취소 이벤트를 기다리지 않고 즉시 로컬 FIND 표시를 제거한다.
+
+## 새 Gateway 하드웨어 ID
+
+- Gateway는 ESP efuse의 잘못된 바이트 순서 때문에 서로 다른 S3가 같은 `GW-D4DB1C` ID를 만들 수 있었다. 이제 station MAC 마지막 세 바이트로 ID를 만들며, 기존 실물 S3 MAC만 호환성 매핑으로 `GW-D4DB1C`를 유지한다.
+- 새 S3(COM24, MAC suffix `7495A0`)에는 최신 Gateway 펌웨어를 플래시하고 `GW-7495A0` 부팅 로그를 확인했다. 새 보드는 이전 Wi-Fi 저장값이 유효하지 않아 BLE Wi-Fi provisioning 대기 상태로 시작한다.
+
+## ESP-NOW 단절 시 옷장 밖 처리
+
+- C6는 200ms 고정 ESP-NOW heartbeat를 전송한다. 서버는 옷걸이 상태만 750ms 무응답이면 `OFFLINE`으로 바꾸고, 해당 garment를 즉시 `OUT`으로 재계산하며 진행 중 LED FIND도 `ESPNOW_LINK_LOST`로 취소한다. COM23의 HC-85C438에 플래시한 뒤 연속 heartbeat sequence로 실제 전송을 확인했다.
+- Gateway Wi-Fi/Cloud의 일반 30초 offline 판정은 유지한다. 이 규칙은 C6 전원 단절 또는 C6↔Gateway ESP-NOW 단절에서만 빠르게 적용된다.
+- `tests/espnow-link-loss.test.js`는 C6 heartbeat 단절 후 garment OUT, currentHanger 제거, FIND CANCELLED를 자동 검증한다.
+
+## C6 수동 Bluetooth 페어링
+
+- C6는 Gateway beacon을 받더라도 더 이상 Gateway ID를 자동 저장하거나 Cloud 상태를 보고하지 않는다. beacon은 BLE 화면에서 발견된 옷봉을 보여 주는 용도뿐이다.
+- 사용자가 BLE에서 **옷봉과 연결**을 누른 경우에만 Gateway ID를 NVS에 `manualPairingApproved`와 함께 저장한다. 이후 전원 재인가에서는 그 명시적으로 승인한 Gateway에만 자동 재연결한다.
+- 이전 펌웨어의 자동 beacon 연결 기록은 승인 플래그가 없으므로 플래시 후 제거된다. COM23 HC-85C438에서 `[PAIR] manual BLE pairing required` 부팅 로그로 확인했다.
+
+## 등록 해제 뒤 옷걸이 재등장 방지
+
+- 원인: 등록 해제된 C6의 ESP-NOW 상태 패킷은 DB에서 소유자가 없는 discovery telemetry인데, WebSocket이 소유자 없는 이벤트를 모든 브라우저에 broadcast했다. 앱은 이 패킷을 등록된 옷걸이처럼 렌더링할 수 있었다.
+- 서버는 이제 wardrobeId가 없는 discovery telemetry를 진단 이벤트로만 보관하고 사용자 WebSocket에는 전송하지 않는다. 따라서 Gateway 근처, ESP-NOW 수신, 태그 감지 자체로는 어떤 계정의 옷걸이도 다시 생기지 않는다.
+- 앱은 소유자 없는 hanger.state를 방어적으로 무시한다. 등록 제거 API가 성공하면 현재 화면 모델에서도 즉시 제거해 지연된 packet/snapshot이 카드를 되살리지 못한다.
+- BLE 등록 요청은 단일 전역 플래그가 아니라 사용자가 chooser에서 선택한 C6 hardware ID에 묶인다. **옷걸이 찾기 → 해당 C6 선택 → 옷봉과 연결**을 누른 그 C6만 claim할 수 있으며, 다른 근처 C6의 알림은 승인으로 취급하지 않는다.
+- 검증: `npm test` 40/40 통과. `Ownership guard` 회귀 테스트에서 소유자 없는 C6 상태가 WebSocket에 전달되지 않고 사용자 snapshot에도 나타나지 않음을 확인했다. JavaScript 문법 검사와 `git diff --check`도 통과했다.
+
+## C6 Bluetooth 연결 요청 직렬화
+
+- Chrome Web Bluetooth는 동시에 두 GATT read/write가 시작되면 `GATT operation already in progress`를 반환한다. 초기 상태 읽기, 상태 요청, 사용자의 **옷봉과 연결** 쓰기가 겹치던 경로를 하나의 promise queue로 직렬화했다.
+- 연결 버튼은 pair write가 끝날 때까지 비활성화되고, 실패 시 사용자 승인 ID를 즉시 취소한다. 따라서 이전 요청이나 다른 C6의 알림이 뒤늦게 등록을 유발하지 않는다.
+- 이 변경은 공개 웹 코드만 해당한다. C6/S3 재플래시는 필요 없으며 `npm test` 40/40 및 `node --check web/public/app.js`를 통과했다.
+
+## C6 등록 확인 재시도와 ESP-NOW 표시 분리
+
+- C6가 BLE `paired` 알림을 보낸 시점과 S3가 그 첫 상태 패킷을 Cloud에 올리는 시점은 다를 수 있다. 웹은 이제 **옷봉과 연결** 승인 뒤 최대 약 3초 동안 gateway/hanger claim을 재확인한다. 따라서 BLE 알림 한 번이 누락되거나 Cloud 상태가 약간 늦어도 수동 등록이 끊기지 않는다.
+- C6에 저장된 Gateway ID는 과거에는 `정상 통신 중`으로 표시됐지만, 이는 실제 S3 수신 ACK가 아니다. 화면은 이제 `옷봉 ID 저장됨 · 수신 확인 중`으로 정확히 표시한다.
+- 실제 S3 직렬 검증에서 `HC-87A828`의 `[ESPNOW-RX]`와 해당 `[CLOUD_POST] ... http=200`을 확인했다. 반면 새 C6 `HC-85C438`가 `[PAIR] manual BLE pairing required`일 때는 `queued=false`이고 S3 수신이 없음을 확인했다.
+
+## NFC 제거 경로 추적 및 수동 등록 보강 (로컬 검증, 미배포/미플래시)
+
+- 현재 C6 소스의 실제 NFC는 PN532 **SPI**다: D8=SCK, D9=MISO, D10=MOSI, D6=SS, LED=D1 active-high. 예전 I2C 배선 문서는 이 현재 보드 판정의 근거로 사용하지 않는다.
+- PN532는 `setPassiveActivationRetries(0x01)`과 40ms 제한 poll을 사용한다. PRESENT에서 clean no-tag가 3회 연속이고 마지막 확인 후 350ms가 지나야 EMPTY가 된다. 태그는 같은 UID 2회 연속 읽힐 때 PRESENT가 되며, 미감지 카운터는 실제 UID 읽기에서만 초기화된다.
+- PN532 firmware probe가 실패하면 오래된 PRESENT를 보존하지 않고 750ms 뒤 `SENSOR_ERROR`를 보고한다. EMPTY/SENSOR_ERROR는 LED와 FIND를 즉시 끄고, EMPTY는 비차단 방식으로 ESP-NOW 이벤트를 추가 2회만 재전송한다.
+- 진단 로그는 `[NFC_FOUND]`, `[NFC_MISS]`, `[NFC_EMPTY]`, `[ESPNOW_TX]`, `[ESPNOW_RX]`, `[CLOUD_POST]`, `[DB_STATE]`, 브라우저 `[APP_STATE]`로 연결된다. 서버는 `updatedAt`과 `sequence`를 상태에 저장하고 WebSocket/snapshot에서 앱이 이를 기록한다.
+- 서버 상태 패킷은 discovery telemetry일 뿐이다. 이미 등록된 Gateway가 수신해도, BLE의 **옷봉과 연결** 확인 뒤 별도 `/api/hangers/:id/claim`이 성공하기 전에는 C6 소유권을 자동 부여하지 않는다. 따라서 삭제한 옷걸이가 단순 근접 통신만으로 다시 사용자 장비 목록에 나타나지 않는다.
+- 검증: `npm test` 38/38, C6/Gateway `pio run`, JavaScript syntax check, `git diff --check` 통과. 이 기록 시점에는 사용자 지시에 따라 GitHub push, Render 배포, 실제 보드 플래시 및 NTAG 실측은 수행하지 않았다.
+
+## 두 C6 동시 태그 상태 업로드 병목 완화
+
+- 원인: Gateway는 C6 상태를 Render에 HTTPS로 한 건씩 올린다. 실제 POST가 약 700ms인 상황에서 C6 두 대가 200ms heartbeat를 동시에 보내면 일반 상태 큐가 계속 쌓이고, 서버의 750ms 옷걸이 단절 판정이 정상 `PRESENT`를 거짓 `OFFLINE`으로 바꿔 앱의 `옷장 안/밖`이 반복될 수 있었다.
+- Gateway는 이제 NFC 전환(`PRESENT`/`EMPTY` EVENT), ACK를 우선 큐에 그대로 보존한다. 반면 단순 `STATUS` heartbeat는 C6 hardware ID별 최신 한 건만 남겨, 다른 C6의 오래된 heartbeat가 최신 태그 제거 상태를 막지 않는다.
+- C6 기본 heartbeat는 500ms로 낮춰 두 보드의 불필요한 HTTPS 경쟁을 줄였다. 실제 태그 제거의 `EMPTY` EVENT와 LED OFF는 heartbeat 주기와 독립적으로 즉시 전송된다.
+- 서버 기본 ESP-NOW 단절 판정은 2.5초로 조정했다. 이는 정상 HTTPS 전달 지연을 전원 단절로 오판하지 않기 위한 liveness 여유이며, PN532 태그 제거는 즉시 `EMPTY` 이벤트로 계속 처리된다.
+- 검증: Gateway/C6 `pio run` 성공, `npm test` 40/40 성공, `node --check backend/server-v3.js`와 `git diff --check` 성공. 이 변경을 실제로 보려면 최신 Gateway와 두 C6 펌웨어를 각각 플래시한 뒤, 두 태그를 동시에 인식·각각 제거하는 실기기 시험이 필요하다.
+
+## 다중 C6 최신 상태 배치 전송
+
+- Gateway는 최대 8개 C6의 일반 `STATUS`를 hardware ID별 최신값으로만 보관하고, 최대 1초에 한 번 `/api/gateway/status/batch`로 보낸다. C6가 6대여도 과거 heartbeat가 HTTPS 대기열을 채우지 않는다.
+- `PRESENT`/`EMPTY`/`SENSOR_ERROR` 전환 EVENT와 LED ACK는 일반 heartbeat 배치보다 먼저 처리한다. HTTPS 재시도 중 같은 C6의 더 새로운 EVENT가 도착하면, 이전 retry 후보를 새 packet으로 교체한다.
+- batch 요청이 실패하면 이전 batch snapshot을 그대로 다시 보내지 않는다. 수신 중인 최신 상태와 병합한 뒤 짧은 간격 후 새 batch를 만든다. 따라서 실패한 과거 `PRESENT`가 뒤늦은 `EMPTY`를 막지 않는다.
+- 서버 batch endpoint는 상태들을 메모리에서 모두 반영한 뒤 저장 작업을 한 번만 예약한다. `bootId + sequence` 판정과 기존 단일 상태 endpoint 호환성은 유지한다.
+- 검증: Gateway/C6 `pio run` 성공, `npm test` 41/41 성공. `gateway batches current statuses for multiple hangers in one request` 회귀 테스트가 batch 수신과 snapshot 반영을 검증한다.
+
+## FIND 명령 polling과 상태 전송 분리
+
+- Gateway의 FIND command polling은 300ms마다 새 TLS 연결을 만들어 status batch와 경쟁할 수 있었다. polling 간격을 600ms로 조정해 일반 Cloud 요청 점유를 줄였다.
+- NFC `PRESENT`/`EMPTY` EVENT가 Gateway에 대기 중이면, blocking command GET을 시작하지 않는다. 따라서 사용자가 LED 찾기를 눌러도 태그 제거 상태가 command polling 뒤에 밀리지 않는다.
+- 검증: Gateway `pio run` 성공, `npm test` 41/41 성공, `git diff --check` 성공. 이 변경은 Gateway 펌웨어 재플래시가 필요하다.
+
+## 2026-08-25 실기기 인수인계: A828 FIND와 상태 플래핑 추적
+
+### Git / 배포 기준
+
+- 작업 브랜치는 **`feat/real-hardware-nfc-ble-photo-ai`** 이다. `main`은 merge, reset, force-push 하지 않았다.
+- 현재 원격 브랜치 최신 커밋은 `63400f8 [Chore] 옷봉 진단 명령 들여쓰기 정리`이다. 기능 변경은 직전 `9c3714c [Fix] 옷봉 재시작 후 LED 명령 수신 보완`에 있다.
+- `9c3714c`는 S3가 재부팅해 command sequence가 1부터 다시 시작해도 C6가 새 FIND/LED_OFF를 오래된 명령으로 폐기하지 않도록 한다. COMMAND packet에 S3의 random `gatewayBootId`를 포함하고, C6는 같은 Gateway boot session 안에서만 sequence를 비교한다.
+- 이 기능 변경은 S3와 C6 양쪽 펌웨어가 한 세트다. `63400f8`은 진단 명령 들여쓰기만 정리한 커밋이므로, `9c3714c`가 올라간 뒤에는 그 차이만으로 재플래시할 필요가 없다.
+- 기존 미추적 Supabase 복구/이관 파일은 사용자 파일로 보존했다. 현 시점에도 커밋하지 않는다:
+  - `scripts/copy-supabase-project.js`
+  - `scripts/run-new-supabase-recovery-verify.ps1`
+  - `scripts/run-supabase-project-copy.ps1`
+  - `scripts/run-target-supabase-pooler-test.ps1`
+  - `scripts/test-target-supabase-pooler.js`
+  - `scripts/verify-new-supabase-recovery.js`
+  - `supabase/migrations/20260824_new_project_bootstrap.sql`
+
+### 마지막 실제 보드 상태
+
+- S3 Gateway: `GW-7495A0`, COM24, MAC `1C:DB:D4:74:95:A0`, Wi-Fi `Gaon303_2.5G`, channel 4, IP `192.168.0.6`.
+- C6 Hanger: `HC-87A828`, COM22, MAC `A0:F2:62:87:A8:28`.
+- C6의 실제 PN532 배선은 SPI `D8=SCK`, `D9=MISO`, `D10=MOSI`, `D6=SS`; LED는 D1 active-high이다.
+- 실제 NTAG UID `0452A3026F2490`을 C6가 약 520ms 간격으로 계속 읽었다.
+- C6 → S3 ESP-NOW `STATUS/PRESENT` 수신도 동일 간격으로 계속 확인됐다.
+- S3 → Render `/api/gateway/status/batch`는 실제로 HTTP 200, 보통 약 700ms(한 번 1317ms)를 기록했다. Gateway heartbeat 역시 OK였다.
+- Public `/api/health`는 HTTP 200, PostgreSQL ready, `gatewayOnline:true`를 반환했다.
+
+### 실제 FIND 검증 결과
+
+- 앱 FIND 후 C6에서 다음 실제 로그를 확인했다. 즉 Cloud → S3 → C6 명령 전달과 C6 ACK는 성공했다.
+  ```text
+  [COMMAND-RX] ... target=yes ... link=enabled
+  [COMMAND] 1149077108 cmd=1
+  [ACK-TX] 1149077108 error=0
+  ```
+- 이전 실패의 직접 원인은 C6가 `[COMMAND-IGNORE] stale seq=...`로 S3 재부팅 뒤 새 명령을 버린 것이었다. `9c3714c` 플래시 뒤 그 stale 로그는 사라졌다.
+- Gateway의 동일 명령 4회 ESP-NOW burst는 전송 보강이다. C6는 같은 command ID에 대해 LED 점멸을 다시 시작하지 않고 ACK만 다시 보낸다.
+
+### 남은 문제: 태그가 붙어 있는데 앱이 잠시 `옷장 밖`으로 전환
+
+- 마지막 30초 동시 캡처에서 C6는 단 한 번도 `NFC_EMPTY` 또는 `state=EMPTY`를 보내지 않았고, S3도 `State=1(PRESENT)`만 연속 수신했다.
+- 따라서 이 현상은 PN532 태그 제거, C6 LED 처리, C6↔S3 ESP-NOW 단절이 원인이 아니다. 남은 조사 범위는 Render의 liveness 처리와 브라우저 state merge뿐이다.
+- 가장 유력한 운영 원인은 Render Environment에 과거 `HANGER_OFFLINE_TIMEOUT_MS=750` 같은 작은 override가 남아 있는 경우다. 실제 batch 한 번이 1317ms였으므로, 750ms면 서버가 정상 C6를 `OFFLINE → OUT`으로 바꾼 뒤 다음 PRESENT batch에서 다시 `IN`으로 되돌릴 수 있다.
+- 소스 기본값은 `HANGER_OFFLINE_TIMEOUT_MS=2500`이다. Render Environment에서 이 변수가 존재하면 **2500 이상**으로 바꾸거나 삭제해 기본값을 쓰도록 확인한다. 이 값은 NFC 태그 제거 처리와 별개다. 태그 제거는 C6의 즉시 EMPTY EVENT로 처리된다.
+- Render 로그에서 다음을 같은 시간대에 대조한다:
+  - `[STATUS_RX] hanger=HC-87A828 state=PRESENT sequence=...`
+  - `[DB_STATE] hanger=HC-87A828 state=PRESENT ...`
+  - `hanger.offline` 이벤트
+  - `[COMMAND] ACK ...`
+- 앱 브라우저 console은 `[APP_STATE] source=API|WS ... state=... updatedAt=... sequence=...`를 남긴다. 서버가 PRESENT를 유지하는데 화면만 OUT이면 이 로그로 stale snapshot/WS merge를 확인한다.
+
+### 다음 작업자가 할 안전한 순서
+
+1. `git status --short`, `git branch --show-current`로 브랜치와 미추적 Supabase 파일을 확인한다. 절대 reset/revert/main merge 하지 않는다.
+2. Render Environment의 `HANGER_OFFLINE_TIMEOUT_MS` 유무와 값을 확인한다. 비밀값은 출력/커밋하지 않는다.
+3. COM22(C6)와 COM24(S3)의 다른 serial monitor를 닫은 뒤 두 보드 로그를 수집한다. 이전 작업에서 중단된 PowerShell serial reader가 포트를 잡을 수 있으므로, 실제 포트 점유 프로세스만 종료한다.
+4. 태그를 계속 붙인 상태에서 FIND를 한 번 눌러 C6 `NFC_FOUND`, S3 `ESPNOW-RX State=1`, `CLOUD_BATCH http=200`, Render `STATUS_RX/DB_STATE`, 앱 `[APP_STATE]`를 시간순으로 비교한다.
+5. 태그를 실제 제거하는 별도 시험에서는 C6 `NFC_EMPTY`, LED OFF, S3 `State=EMPTY`, Render DB 상태, 앱 OUT 순서를 확인한다. 태그가 붙은 시험과 섞지 않는다.
+6. 실제 원인이 확정되기 전에는 NFC threshold, 배선, 사진 AI, 관련 없는 UI를 변경하지 않는다.
+
+### 마지막 정적 검증
+
+- Gateway `pio run`: PASS
+- Hanger `pio run`: PASS
+- `npm test`: 41/41 PASS
+- `git diff --check`: PASS

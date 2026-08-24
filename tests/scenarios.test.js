@@ -12,11 +12,17 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pa-scenarios-'));
 if (!process.env.DATA_PATH) process.env.DATA_PATH = path.join(tmpDir, 'wardrobe-scenarios.json');
 if (!process.env.DEVICE_TOKEN) process.env.DEVICE_TOKEN = 'test-device';
 if (!process.env.JWT_SECRET) process.env.JWT_SECRET = 'test-secret';
+if (!process.env.ADMIN_EMAIL) process.env.ADMIN_EMAIL = 'admin-scenarios@example.com';
+if (!process.env.ADMIN_SECONDARY_PASSWORD) process.env.ADMIN_SECONDARY_PASSWORD = 'secondary-test-password';
+// The virtual hardware scenarios deliberately exercise simulator-only IDs.
+if (!process.env.SIMULATION_ENABLED) process.env.SIMULATION_ENABLED = 'true';
 
 const deviceToken = 'test-device';
 
 const { server } = require('../backend/server');
 const { VirtualGateway } = require('../simulator/virtual-hardware');
+const HangerFreshness = require('../web/public/hanger-freshness.js');
+const CloudImageService = require('../backend/cloud-image-service');
 
 let baseUrl, wsUrl, userToken, vgw;
 
@@ -46,10 +52,26 @@ test.before(async () => {
     deviceToken,
     gatewayId: 'GW-TEST01',
     pollIntervalMs: 150,
-    heartbeatIntervalMs: 2000,
+    // Match the physical C6 liveness contract: a missing ESP-NOW heartbeat
+    // makes the garment OUT in under a second.
+    heartbeatIntervalMs: 250,
     silent: true,
   });
   await vgw.start();
+
+  // Device telemetry is discovery-only. It must not register a nearby
+  // Gateway/C6 to the only signed-in user until the explicit setup claim.
+  const beforeClaim = await api('/api/snapshot', { userAuth: true });
+  assert.equal(beforeClaim.body.gateways.some(gateway => gateway.gatewayId === 'GW-TEST01'), false);
+  assert.equal(beforeClaim.body.hangers.some(hanger => hanger.hangerId === 'HC-000001'), false);
+  assert.equal((await api('/api/gateways/GW-TEST01/claim', { method: 'POST', userAuth: true, body: '{}' })).status, 200);
+  // An owned Gateway must not turn nearby/unapproved C6 telemetry into
+  // account ownership. The user must separately confirm the hanger in BLE.
+  const afterGatewayOnly = await api('/api/snapshot', { userAuth: true });
+  assert.equal(afterGatewayOnly.body.hangers.some(hanger => hanger.hangerId === 'HC-000001'), false);
+  for (const hangerId of vgw.hangers.keys()) {
+    assert.equal((await api(`/api/hangers/${hangerId}/claim`, { method: 'POST', userAuth: true, body: '{}' })).status, 200);
+  }
 });
 
 test.after(async () => {
@@ -65,7 +87,9 @@ async function api(path, options = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(options.authToken ? { 'Authorization': `Bearer ${options.authToken}` } : {}),
       ...(options.userAuth ? { 'Authorization': `Bearer ${userToken}` } : {}),
+      ...(options.adminSession ? { 'X-Admin-Session': options.adminSession } : {}),
       ...(options.deviceAuth ? { 'Authorization': `Bearer ${deviceToken}` } : {}),
       ...options.headers,
     },
@@ -135,6 +159,167 @@ test('Scenario D: Duplicate sequence/bootId rejection', async () => {
   // Re-send with same or lower sequence
   const dupRes = await vgw.sendStatus(h, initialSeq, initialBoot);
   assert.equal(dupRes.duplicate, true);
+});
+
+test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected', async () => {
+  const sendStatus = (gatewayId, hangerId, sequence = 1) => api('/api/gateway/status', {
+    method: 'POST', deviceAuth: true,
+    body: JSON.stringify({ gatewayId, hangerId, state: 'EMPTY', sequence, bootId: `boot-${hangerId}`, channel: 4 }),
+  });
+  await sendStatus('GW-A0B001', 'HC-A0B001');
+  await sendStatus('GW-A0B001', 'HC-A0B002');
+  await sendStatus('GW-A0B002', 'HC-A0B003');
+  await api('/api/gateways/GW-A0B001/claim', { method: 'POST', userAuth: true, body: '{}' });
+  await api('/api/gateways/GW-A0B002/claim', { method: 'POST', userAuth: true, body: '{}' });
+  await api('/api/hangers/HC-A0B001/claim', { method: 'POST', userAuth: true, body: '{}' });
+  await api('/api/hangers/HC-A0B002/claim', { method: 'POST', userAuth: true, body: '{}' });
+  await api('/api/hangers/HC-A0B003/claim', { method: 'POST', userAuth: true, body: '{}' });
+  let snap = await api('/api/snapshot', { userAuth: true });
+  const gw1 = snap.body.gateways.find(g => g.gatewayId === 'GW-A0B001');
+  const gw2 = snap.body.gateways.find(g => g.gatewayId === 'GW-A0B002');
+  assert.equal(gw2.gatewayNumber, gw1.gatewayNumber + 1);
+  assert.equal(snap.body.hangers.find(h => h.hangerId === 'HC-A0B001').hangerNumber, 1);
+  assert.equal(snap.body.hangers.find(h => h.hangerId === 'HC-A0B002').hangerNumber, 2);
+  assert.equal(snap.body.hangers.find(h => h.hangerId === 'HC-A0B003').hangerNumber, 1);
+  await api('/api/hangers/HC-A0B002', { method: 'PATCH', userAuth: true, body: JSON.stringify({ gatewayId: 'GW-A0B002', name: '이동한 옷걸이' }) });
+  snap = await api('/api/snapshot', { userAuth: true });
+  const moved = snap.body.hangers.find(h => h.hangerId === 'HC-A0B002');
+  assert.equal(moved.gatewayId, 'GW-A0B002');
+  assert.equal(moved.hangerNumber, 2);
+  assert.equal(moved.alias, '이동한 옷걸이');
+  await api('/api/gateways/GW-A0B002', { method: 'DELETE', userAuth: true });
+  const adminSignup = await api('/api/auth/signup', { method: 'POST', body: JSON.stringify({ email: 'admin-scenarios@example.com', password: 'admin-password-1234', name: '테스트관리자' }) });
+  assert.equal(adminSignup.status, 201);
+  const adminAuth = { authToken: adminSignup.body.token };
+  const beforeVerification = await api('/api/admin/overview', adminAuth);
+  assert.equal(beforeVerification.status, 403);
+  const statusBeforeVerification = await api('/api/admin/status', adminAuth);
+  assert.equal(statusBeforeVerification.status, 200);
+  assert.equal(statusBeforeVerification.body.verified, false);
+  const wrongVerification = await api('/api/admin/verify', { method: 'POST', ...adminAuth, body: JSON.stringify({ password: 'wrong-password' }) });
+  assert.equal(wrongVerification.status, 403);
+  const verification = await api('/api/admin/verify', { method: 'POST', ...adminAuth, body: JSON.stringify({ password: 'secondary-test-password' }) });
+  assert.equal(verification.status, 200);
+  assert.ok(verification.body.adminSession);
+  const provisioningTimeout = await api('/api/gateways/GW-A0B001/provisioning-status', {
+    method: 'POST', userAuth: true,
+    body: JSON.stringify({ detail: 'BLE 설정 뒤 heartbeat가 확인되지 않았습니다.' }),
+  });
+  assert.equal(provisioningTimeout.status, 200);
+  assert.equal(provisioningTimeout.body.provisioning.status, 'TIMEOUT');
+  const statusAfterVerification = await api('/api/admin/status', { ...adminAuth, adminSession: verification.body.adminSession });
+  assert.equal(statusAfterVerification.status, 200);
+  assert.equal(statusAfterVerification.body.verified, true);
+  const admin = await api('/api/admin/overview', { ...adminAuth, adminSession: verification.body.adminSession });
+  assert.equal(admin.status, 200);
+  assert.equal(admin.body.users.some(row => row.email === 'admin-scenarios@example.com'), false);
+  assert.ok(admin.body.users.every(row => row.role === 'user'));
+  assert.equal(admin.body.totals.users, admin.body.users.length);
+  assert.ok(admin.body.totals.hangers >= 3);
+  assert.ok(admin.body.totals.garments >= 1);
+  assert.equal(admin.body.system.backend.ready, true);
+  assert.equal(typeof admin.body.system.imageProcessing.configured, 'boolean');
+  assert.ok(Array.isArray(admin.body.problems));
+  assert.equal(typeof admin.body.system.gateways.online, 'number');
+  assert.equal(typeof admin.body.system.hangers.nfcAttention, 'number');
+  assert.ok(admin.body.users.every(row => !Object.prototype.hasOwnProperty.call(row, 'passwordHash')));
+  const owner = admin.body.users.find(row => row.id === admin.body.users.find(item => item.email === 'owner-scenarios@example.com')?.id);
+  assert.ok(owner);
+  assert.equal(owner.connectedHangerCount + owner.unassignedHangerCount, owner.hangerCount);
+  assert.ok(Array.isArray(owner.unassignedHangers));
+  assert.ok(admin.body.users.flatMap(row => row.gateways).flatMap(gateway => gateway.hangers).every(hanger => Object.hasOwn(hanger, 'nfcStatus') && Object.hasOwn(hanger, 'garmentName')));
+  assert.ok(admin.body.users.flatMap(row => row.gateways).every(gateway => Object.hasOwn(gateway, 'wifiStatus') && Object.hasOwn(gateway, 'cloudStatus')));
+  const ownerGateway = owner.gateways.find(gateway => gateway.gatewayId === 'GW-A0B001');
+  assert.ok(ownerGateway);
+  assert.equal(ownerGateway.provisioningStatus, 'TIMEOUT');
+  assert.ok(['UNKNOWN', 'CONNECTED'].includes(ownerGateway.wifiStatus));
+  assert.ok(['UNKNOWN', 'CONNECTED'].includes(ownerGateway.cloudStatus));
+  assert.equal(ownerGateway.problem, true);
+  assert.ok(owner.problemDeviceCount > 0);
+  assert.ok(admin.body.totals.provisioningTimeouts > 0);
+  assert.equal(admin.body.users[0].id, owner.id);
+  const ownerAfterUnclaim = admin.body.users.find(row => row.id === owner.id);
+  assert.equal(ownerAfterUnclaim.unassignedHangers.some(hanger => hanger.hangerId === 'HC-A0B002'), true);
+  assert.equal(ownerAfterUnclaim.unassignedHangers.find(hanger => hanger.hangerId === 'HC-A0B002').name, '미연결 옷걸이 · A0B002');
+  const system = await api('/api/admin/system', { ...adminAuth, adminSession: verification.body.adminSession });
+  assert.equal(system.status, 200);
+  assert.ok(Array.isArray(system.body.system.recentDeviceEvents));
+
+  const signup = await api('/api/auth/signup', { method: 'POST', body: JSON.stringify({ email: 'ordinary-user@example.com', password: 'ordinary-password', name: '일반사용자' }) });
+  const otherGatewayLabel = await api('/api/gateways/GW-A0B001/pairing-status', { authToken: signup.body.token });
+  assert.equal(otherGatewayLabel.status, 200);
+  assert.equal(otherGatewayLabel.body.ownership, 'OTHER_ACCOUNT');
+  assert.equal(otherGatewayLabel.body.displayName, '다른 계정에 등록된 옷봉');
+  assert.ok(!otherGatewayLabel.body.displayName.includes('옷장주인'));
+  const ordinary = await fetch(`${baseUrl}/api/admin/overview`, { headers: { Authorization: `Bearer ${signup.body.token}` } });
+  assert.equal(ordinary.status, 403);
+  const ordinaryStatus = await fetch(`${baseUrl}/api/admin/status`, { headers: { Authorization: `Bearer ${signup.body.token}` } });
+  assert.equal(ordinaryStatus.status, 403);
+  const ordinarySystem = await fetch(`${baseUrl}/api/admin/system`, { headers: { Authorization: `Bearer ${signup.body.token}` } });
+  assert.equal(ordinarySystem.status, 403);
+  const selfDelete = await api(`/api/admin/users/${encodeURIComponent(adminSignup.body.user.id)}`, { method: 'DELETE', ...adminAuth, adminSession: verification.body.adminSession });
+  assert.equal(selfDelete.status, 409);
+  const deleteTestUser = await api(`/api/admin/users/${encodeURIComponent(signup.body.user.id)}`, { method: 'DELETE', ...adminAuth, adminSession: verification.body.adminSession });
+  assert.equal(deleteTestUser.status, 200);
+  const overviewAfterDelete = await api('/api/admin/overview', { ...adminAuth, adminSession: verification.body.adminSession });
+  assert.equal(overviewAfterDelete.body.users.some(row => row.id === signup.body.user.id), false);
+});
+
+test('Race A: WebSocket PRESENT seq=10 wins over delayed snapshot EMPTY seq=9', () => {
+  const tracker = HangerFreshness.createTracker();
+  const present = { hangerId: 'HC-RACE01', state: 'PRESENT', reportedState: 'PRESENT', tagUid: '04RACE00000001', bootId: 'boot-a', lastSequence: 10 };
+  const staleSnapshot = { ...present, state: 'EMPTY', reportedState: 'EMPTY', tagUid: null, lastSequence: 9 };
+  tracker.remember(present);
+  assert.equal(tracker.isFresher(staleSnapshot, present), false);
+});
+
+test('Race B: WebSocket EMPTY seq=11 wins over delayed snapshot PRESENT seq=10', () => {
+  const tracker = HangerFreshness.createTracker();
+  const empty = { hangerId: 'HC-RACE02', state: 'EMPTY', reportedState: 'EMPTY', tagUid: null, bootId: 'boot-a', lastSequence: 11 };
+  const staleSnapshot = { ...empty, state: 'PRESENT', reportedState: 'PRESENT', tagUid: '04RACE00000002', lastSequence: 10 };
+  tracker.remember(empty);
+  assert.equal(tracker.isFresher(staleSnapshot, empty), false);
+});
+
+test('Race C: an old boot packet is rejected after a new boot is accepted', async () => {
+  const send = (state, tagUid, sequence, bootId) => api('/api/gateway/status', {
+    method: 'POST',
+    deviceAuth: true,
+    body: JSON.stringify({ gatewayId: 'GW-A1B2C3', hangerId: 'HC-A1B2C3', state, tagUid, sequence, bootId, channel: 1 }),
+  });
+
+  await send('PRESENT', '04RACE00000003', 10, 'boot-a');
+  const newBoot = await send('PRESENT', '04RACE00000003', 1, 'boot-b');
+  assert.equal(newBoot.status, 200);
+  const oldBoot = await send('EMPTY', null, 99, 'boot-a');
+  assert.equal(oldBoot.status, 200);
+  assert.equal(oldBoot.body.duplicate, true);
+  assert.equal(oldBoot.body.stale, true);
+
+  await api('/api/gateways/GW-A1B2C3/claim', { method: 'POST', userAuth: true, body: '{}' });
+  await api('/api/hangers/HC-A1B2C3/claim', { method: 'POST', userAuth: true, body: '{}' });
+
+  const snap = await api('/api/snapshot', { userAuth: true });
+  const hanger = snap.body.hangers.find(h => h.hangerId === 'HC-A1B2C3');
+  assert.equal(hanger.reportedState, 'PRESENT');
+  assert.equal(hanger.tagUid, '04ACE00000003');
+  assert.equal(hanger.bootId, 'boot-b');
+  assert.equal(hanger.lastSequence, 1);
+});
+
+test('Race D: UNKNOWN_TAG with a UID is rendered as an unregistered tag, never empty', () => {
+  const text = HangerFreshness.clothingStatus({ state: 'UNKNOWN_TAG', reportedState: 'PRESENT', tagUid: '04UNKNOWN00001' }, []);
+  assert.match(text, /새 옷 감지됨/);
+  assert.doesNotMatch(text, /걸린 옷 없음/);
+});
+
+test('Cloud image multipart parser accepts a bounded JPEG image part without local disk paths', () => {
+  const boundary = '----wardrobe-test-boundary';
+  const raw = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="shirt.jpg"\r\nContent-Type: image/jpeg\r\n\r\nJPEG-BYTES\r\n--${boundary}--\r\n`);
+  const file = CloudImageService.multipartImage(raw, `multipart/form-data; boundary=${boundary}`);
+  assert.equal(file.mime, 'image/jpeg');
+  assert.equal(file.filename, 'shirt.jpg');
+  assert.equal(file.image.toString(), 'JPEG-BYTES');
 });
 
 test('Scenario E: Same Tag reported by two Hangers -> CONFLICT', async () => {
@@ -232,7 +417,7 @@ test('Scenario G: Find + ACK IGNORE -> TIMEOUT', async () => {
 });
 
 test('Scenario H: WebSocket real-time event streaming and state sync', async () => {
-  const ws = new WebSocket(`${wsUrl}?token=${encodeURIComponent(userToken)}`);
+  const ws = new WebSocket(wsUrl, `wardrobe-token.${userToken}`);
   const receivedEvents = [];
 
   ws.on('message', data => {
@@ -283,6 +468,32 @@ test('Scenario H: WebSocket real-time event streaming and state sync', async () 
   assert.equal(stateEvent.payload.tagUid, wsTag);
 
   // Clean close
+  ws.terminate();
+});
+
+test('Ownership guard: unclaimed C6 telemetry never becomes a user WebSocket event', async () => {
+  const hangerId = 'HC-FEED01';
+  const received = [];
+  const ws = new WebSocket(wsUrl, `wardrobe-token.${userToken}`);
+  ws.on('message', data => {
+    try { received.push(JSON.parse(data.toString())); } catch (_) {}
+  });
+  await new Promise((resolve, reject) => {
+    ws.once('open', resolve);
+    ws.once('error', reject);
+  });
+  await new Promise(resolve => setTimeout(resolve, 25));
+
+  const posted = await api('/api/gateway/status', {
+    method: 'POST', deviceAuth: true,
+    body: JSON.stringify({ gatewayId: 'GW-TEST01', hangerId, state: 'PRESENT', tagUid: '04FEED000001', sequence: 1, bootId: 'boot-feed', channel: 4 }),
+  });
+  assert.equal(posted.status, 200);
+  await new Promise(resolve => setTimeout(resolve, 80));
+
+  assert.equal(received.some(event => event.type === 'hanger.state' && event.payload?.hangerId === hangerId), false);
+  const snapshot = await api('/api/snapshot', { userAuth: true });
+  assert.equal(snapshot.body.hangers.some(hanger => hanger.hangerId === hangerId), false);
   ws.terminate();
 });
 
@@ -386,6 +597,17 @@ test('Scenario L: Multi-Hanger Outfit FIND & STOP flow', async () => {
   const h2 = vgw.hangers.get('HC-000002');
   h1.ledUntil = 0;
   h2.ledUntil = 0;
+
+  // The real-product rule is that every FIND target must currently have a
+  // registered tag in the wardrobe. Give the second hanger one before the
+  // multi-hanger request instead of allowing an EMPTY/unknown hanger to blink.
+  const h2Tag = '04B2B3B4B5B6B7';
+  const garmentRes = await api('/api/garments', {
+    method: 'POST', userAuth: true,
+    body: JSON.stringify({ name: '코디 테스트 하의', tagUid: h2Tag }),
+  });
+  assert.equal(garmentRes.status, 201);
+  await vgw.tagInsert('HC-000002', h2Tag);
 
   // Multi-target start
   const startRes = await api('/api/commands', {
@@ -527,7 +749,3 @@ test('Scenario N: Empty Hanger Physical Lifecycle (A, B, C, D) & Logout Persiste
 
   assert.ok(snapRelogin.garments.some(g => g.id === garment.id), 'Garment data is preserved after logout and relogin');
 });
-
-
-
-

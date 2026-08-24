@@ -1,0 +1,60 @@
+services:
+  - type: web
+    name: smart-wardrobe-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DEVICE_TOKEN
+        generateValue: true
+      - key: PUBLIC_ORIGIN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_SECONDARY_PASSWORD
+        sync: false
+      - key: ADMIN_SESSION_TTL_MS
+        value: 900000
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: IMAGE_PROCESSOR_URL
+        sync: false
+      - key: IMAGE_PROCESSOR_TOKEN
+        sync: false
+      - key: SUPABASE_GARMENT_BUCKET
+        value: garments
+  # Kept as a separate service: no Python/model process is embedded in the
+  # Node API. Both services can be deployed on Render Free for the demo.
+  - type: web
+    name: smart-wardrobe-image-processor
+    runtime: python
+    plan: free
+    rootDir: services/image-processor
+    buildCommand: pip install -r requirements.txt
+    startCommand: python cloud_server.py
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: IMAGE_PROCESSOR_TOKEN
+        sync: false
+      - key: SUPABASE_GARMENT_BUCKET
+        value: garments
+      - key: GARMENT_BACKGROUND_MODEL
+        value: u2netp
+      - key: IMAGE_PROCESSING_PROFILE
+        value: fast
