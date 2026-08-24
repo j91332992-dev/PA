@@ -754,12 +754,12 @@ void runFindTest(const String& hangerId) {
     Serial.println("[FIND-TEST] usage: FINDTEST HC-XXXXXX");
     return;
   }
-    sw::Packet p;
-    p.type = sw::Type::COMMAND;
-    strlcpy(p.gatewayId, gateway.c_str(), sizeof p.gatewayId);
-    p.sequence = ++sequence;
-    p.bootId = gatewayBootId;
-    p.commandId = 0; // Reserved local diagnostic command: never sent to Cloud ACK.
+  sw::Packet p;
+  p.type = sw::Type::COMMAND;
+  strlcpy(p.gatewayId, gateway.c_str(), sizeof p.gatewayId);
+  p.sequence = ++sequence;
+  p.bootId = gatewayBootId;
+  p.commandId = 0; // Reserved local diagnostic command: never sent to Cloud ACK.
   p.command = sw::Command::LED_BLINK;
   p.durationMs = 6000;
   p.targetCount = 1;
