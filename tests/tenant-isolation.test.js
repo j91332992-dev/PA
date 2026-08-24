@@ -19,3 +19,27 @@ test('users only receive their own garments, rods and hangers',async()=>{
   const forbidden=await call(`/api/garments/${shirt.body.id}`,{method:'DELETE',headers:auth(b.body.token)});assert.equal(forbidden.status,404);
   const command=await call('/api/commands',{method:'POST',headers:auth(b.body.token),body:JSON.stringify({targets:['HC-AABBCC']})});assert.equal(command.status,404);
 });
+
+test('one browser can sign up A, log out, then sign up B and C without IP or local token coupling',async()=>{
+  const accounts=[];
+  for(const [name,email,tagUid] of [['계정A','browser-a@example.com','04AA0000000001'],['계정B','browser-b@example.com','04BB0000000002'],['계정C','browser-c@example.com','04CC0000000003']]){
+    // A browser logout only removes its local token. The signup endpoint must
+    // not use that old token, PC identity, IP, or Wi-Fi as a registration key.
+    const signup=await call('/api/auth/signup',{method:'POST',body:JSON.stringify({name,email,password:'password-123'})});
+    assert.equal(signup.status,201);
+    accounts.push(signup.body);
+    const status=await call('/api/auth/status',{headers:auth(signup.body.token)});
+    assert.equal(status.status,200);assert.equal(status.body.user.email,email);
+    const garment=await call('/api/garments',{method:'POST',headers:auth(signup.body.token),body:JSON.stringify({name:`${name}의 옷`,tagUid})});
+    assert.equal(garment.status,201);
+  }
+  for(let i=0;i<accounts.length;i++){
+    const snap=await call('/api/snapshot',{headers:auth(accounts[i].token)});
+    assert.equal(snap.status,200);assert.equal(snap.body.garments.length,1);
+    assert.equal(snap.body.garments[0].name,`${['계정A','계정B','계정C'][i]}의 옷`);
+  }
+  const duplicateEmail=await call('/api/auth/signup',{method:'POST',body:JSON.stringify({name:'새이름',email:'browser-a@example.com',password:'password-123'})});
+  assert.equal(duplicateEmail.status,409);
+  const duplicateName=await call('/api/auth/signup',{method:'POST',body:JSON.stringify({name:'계정A',email:'new-email@example.com',password:'password-123'})});
+  assert.equal(duplicateName.status,409);
+});

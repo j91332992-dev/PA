@@ -44,11 +44,11 @@ function postgresStorage(connectionString, initial){
     max:Number(process.env.PG_POOL_MAX||10),
   });
   const scalar={
-    users:['id','email','name','passwordHash','createdAt'],
+    users:['id','email','name','passwordHash','role','lastLoginAt','createdAt'],
     wardrobes:['id','userId','name','createdAt'],
-    gateways:['gatewayId','wardrobeId','name','state','lastSeen','channel','firmwareVersion','createdAt'],
-    hangers:['hangerId','wardrobeId','gatewayId','alias','state','reportedState','tagUid','lastSeen','lastSequence','bootId','channel','rssi','errorFlags','firmwareVersion','createdAt'],
-    garments:['id','wardrobeId','createdBy','tagUid','name','category','color','season','brand','memo','imageUrl','currentState','currentHanger','lastSeen','createdAt'],
+    gateways:['gatewayId','wardrobeId','name','customName','gatewayNumber','state','lastSeen','channel','firmwareVersion','createdAt'],
+    hangers:['hangerId','wardrobeId','gatewayId','alias','customName','hangerNumber','state','reportedState','tagUid','lastSeen','lastSequence','bootId','channel','rssi','errorFlags','firmwareVersion','createdAt'],
+    garments:['id','wardrobeId','createdBy','tagUid','name','category','color','season','brand','memo','imageUrl','originalImagePath','processedImagePath','imageProcessingStatus','classification','classificationConfidence','processingError','currentState','currentHanger','lastSeen','createdAt'],
     commands:['id','numericId','wardrobeId','requestedBy','command','targets','durationMs','status','acknowledgements','createdAt','expiresAt','sentAt'],
     events:['id','wardrobeId','type','severity','payload','at'],
   };
@@ -87,7 +87,7 @@ function postgresStorage(connectionString, initial){
         console.log(`[STORAGE] importing empty cloud DB from ${seed}`);
         return {...initial(),...JSON.parse(fs.readFileSync(seed,'utf8'))};
       }
-      return {...out,schemaVersion:3};
+      return {...out,schemaVersion:4};
     }finally{client.release();}
   }
   async function insertBatch(client, tableName, columns, rows, mapRow, batchSize = 100) {
@@ -121,11 +121,11 @@ function postgresStorage(connectionString, initial){
       }
       const asJson = value => JSON.stringify(value ?? {});
 
-      await insertBatch(client, 'app_users', ['id', 'email', 'name', 'password_hash', 'created_at', 'payload'], data.users, u => [u.id, u.email, u.name, u.passwordHash, u.createdAt, asJson(u)]);
+      await insertBatch(client, 'app_users', ['id', 'email', 'name', 'password_hash', 'role', 'last_login_at', 'created_at', 'payload'], data.users, u => [u.id, u.email, u.name, u.passwordHash, u.role || 'user', u.lastLoginAt || null, u.createdAt, asJson(u)]);
       await insertBatch(client, 'wardrobes', ['id', 'user_id', 'name', 'created_at', 'payload'], data.wardrobes, w => [w.id, w.userId, w.name, w.createdAt, asJson(w)]);
-      await insertBatch(client, 'gateways', ['gateway_id', 'wardrobe_id', 'name', 'state', 'last_seen', 'channel', 'firmware_version', 'created_at', 'payload'], data.gateways, g => [g.gatewayId, g.wardrobeId, g.name || '새 옷봉', g.state || null, g.lastSeen || null, g.channel || null, g.firmwareVersion || null, g.createdAt || new Date().toISOString(), asJson(g)]);
-      await insertBatch(client, 'hangers', ['hanger_id', 'wardrobe_id', 'gateway_id', 'alias', 'state', 'reported_state', 'tag_uid', 'last_seen', 'last_sequence', 'boot_id', 'channel', 'rssi', 'error_flags', 'firmware_version', 'created_at', 'payload'], data.hangers, h => [h.hangerId, h.wardrobeId, h.gatewayId || null, h.alias || '', h.state || null, h.reportedState || null, h.tagUid || null, h.lastSeen || null, h.lastSequence ?? -1, h.bootId || null, h.channel || null, h.rssi || null, h.errorFlags || null, h.firmwareVersion || null, h.createdAt || new Date().toISOString(), asJson(h)]);
-      await insertBatch(client, 'garments', ['id', 'wardrobe_id', 'created_by', 'tag_uid', 'name', 'category', 'color', 'season', 'brand', 'memo', 'image_url', 'current_state', 'current_hanger', 'last_seen', 'created_at', 'payload'], data.garments, g => [g.id, g.wardrobeId, g.createdBy || null, g.tagUid, g.name, g.category || '', g.color || '', g.season || '', g.brand || '', g.memo || '', g.imageUrl || '', g.currentState || 'OUT', g.currentHanger || null, g.lastSeen || null, g.createdAt || new Date().toISOString(), asJson(g)]);
+      await insertBatch(client, 'gateways', ['gateway_id', 'wardrobe_id', 'name', 'custom_name', 'gateway_number', 'state', 'last_seen', 'channel', 'firmware_version', 'created_at', 'payload'], data.gateways, g => [g.gatewayId, g.wardrobeId, g.name || '새 옷봉', g.customName || '', g.gatewayNumber || null, g.state || null, g.lastSeen || null, g.channel || null, g.firmwareVersion || null, g.createdAt || new Date().toISOString(), asJson(g)]);
+      await insertBatch(client, 'hangers', ['hanger_id', 'wardrobe_id', 'gateway_id', 'alias', 'custom_name', 'hanger_number', 'state', 'reported_state', 'tag_uid', 'last_seen', 'last_sequence', 'boot_id', 'channel', 'rssi', 'error_flags', 'firmware_version', 'created_at', 'payload'], data.hangers, h => [h.hangerId, h.wardrobeId, h.gatewayId || null, h.alias || '', h.customName || '', h.hangerNumber || null, h.state || null, h.reportedState || null, h.tagUid || null, h.lastSeen || null, h.lastSequence ?? -1, h.bootId || null, h.channel || null, h.rssi || null, h.errorFlags || null, h.firmwareVersion || null, h.createdAt || new Date().toISOString(), asJson(h)]);
+      await insertBatch(client, 'garments', ['id', 'wardrobe_id', 'created_by', 'tag_uid', 'name', 'category', 'color', 'season', 'brand', 'memo', 'image_url', 'original_image_path', 'processed_image_path', 'image_processing_status', 'classification', 'classification_confidence', 'processing_error', 'current_state', 'current_hanger', 'last_seen', 'created_at', 'payload'], data.garments, g => [g.id, g.wardrobeId, g.createdBy || null, g.tagUid, g.name, g.category || '', g.color || '', g.season || '', g.brand || '', g.memo || '', g.imageUrl || '', g.originalImagePath || '', g.processedImagePath || '', g.imageProcessingStatus || 'ready', asJson(g.classification || {}), asJson(g.classificationConfidence || {}), g.processingError || '', g.currentState || 'OUT', g.currentHanger || null, g.lastSeen || null, g.createdAt || new Date().toISOString(), asJson(g)]);
       await insertBatch(client, 'device_commands', ['id', 'numeric_id', 'wardrobe_id', 'requested_by', 'command', 'targets', 'duration_ms', 'status', 'acknowledgements', 'created_at', 'expires_at', 'sent_at', 'payload'], data.commands, c => [c.id, c.numericId, c.wardrobeId, c.requestedBy || null, c.command, asJson(c.targets || []), c.durationMs || 0, c.status, asJson(c.acknowledgements || {}), c.createdAt, c.expiresAt || null, c.sentAt || null, asJson(c)]);
       await insertBatch(client, 'wardrobe_events', ['id', 'wardrobe_id', 'type', 'severity', 'payload', 'at'], data.events, e => [e.id, e.wardrobeId || null, e.type, e.severity || 'info', asJson(e), e.at]);
 

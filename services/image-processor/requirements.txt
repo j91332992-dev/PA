@@ -1,0 +1,5 @@
+rembg[cpu]>=2.0.75,<2.1
+Pillow>=10,<12
+# Quality profile only (default fast profile does not load it):
+torch>=2.3,<3
+transformers>=4.40,<5

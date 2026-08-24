@@ -18,3 +18,37 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_USERNAME
+        value: hpo2002
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: IMAGE_PROCESSOR_URL
+        sync: false
+      - key: IMAGE_PROCESSOR_TOKEN
+        generateValue: true
+  # Kept as a separate service: no Python/model process is embedded in the
+  # Node API. Both services can be deployed on Render Free for the demo.
+  - type: web
+    name: smart-wardrobe-image-processor
+    runtime: python
+    plan: free
+    rootDir: services/image-processor
+    buildCommand: pip install -r requirements.txt
+    startCommand: python cloud_server.py
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: IMAGE_PROCESSOR_TOKEN
+        sync: false
+      - key: GARMENT_BACKGROUND_MODEL
+        value: u2netp
+      - key: IMAGE_PROCESSING_PROFILE
+        value: fast

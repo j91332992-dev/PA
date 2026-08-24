@@ -12,6 +12,7 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pa-scenarios-'));
 if (!process.env.DATA_PATH) process.env.DATA_PATH = path.join(tmpDir, 'wardrobe-scenarios.json');
 if (!process.env.DEVICE_TOKEN) process.env.DEVICE_TOKEN = 'test-device';
 if (!process.env.JWT_SECRET) process.env.JWT_SECRET = 'test-secret';
+if (!process.env.ADMIN_EMAIL) process.env.ADMIN_EMAIL = 'owner-scenarios@example.com';
 // The virtual hardware scenarios deliberately exercise simulator-only IDs.
 if (!process.env.SIMULATION_ENABLED) process.env.SIMULATION_ENABLED = 'true';
 
@@ -20,6 +21,7 @@ const deviceToken = 'test-device';
 const { server } = require('../backend/server');
 const { VirtualGateway } = require('../simulator/virtual-hardware');
 const HangerFreshness = require('../web/public/hanger-freshness.js');
+const CloudImageService = require('../backend/cloud-image-service');
 
 let baseUrl, wsUrl, userToken, vgw;
 
@@ -140,6 +142,41 @@ test('Scenario D: Duplicate sequence/bootId rejection', async () => {
   assert.equal(dupRes.duplicate, true);
 });
 
+test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected', async () => {
+  const sendStatus = (gatewayId, hangerId, sequence = 1) => api('/api/gateway/status', {
+    method: 'POST', deviceAuth: true,
+    body: JSON.stringify({ gatewayId, hangerId, state: 'EMPTY', sequence, bootId: `boot-${hangerId}`, channel: 4 }),
+  });
+  await sendStatus('GW-A0B001', 'HC-A0B001');
+  await sendStatus('GW-A0B001', 'HC-A0B002');
+  await sendStatus('GW-A0B002', 'HC-A0B003');
+  await api('/api/gateways/GW-A0B001/claim', { method: 'POST', userAuth: true, body: '{}' });
+  await api('/api/gateways/GW-A0B002/claim', { method: 'POST', userAuth: true, body: '{}' });
+  await api('/api/hangers/HC-A0B001/claim', { method: 'POST', userAuth: true, body: '{}' });
+  await api('/api/hangers/HC-A0B002/claim', { method: 'POST', userAuth: true, body: '{}' });
+  await api('/api/hangers/HC-A0B003/claim', { method: 'POST', userAuth: true, body: '{}' });
+  let snap = await api('/api/snapshot', { userAuth: true });
+  const gw1 = snap.body.gateways.find(g => g.gatewayId === 'GW-A0B001');
+  const gw2 = snap.body.gateways.find(g => g.gatewayId === 'GW-A0B002');
+  assert.equal(gw2.gatewayNumber, gw1.gatewayNumber + 1);
+  assert.equal(snap.body.hangers.find(h => h.hangerId === 'HC-A0B001').hangerNumber, 1);
+  assert.equal(snap.body.hangers.find(h => h.hangerId === 'HC-A0B002').hangerNumber, 2);
+  assert.equal(snap.body.hangers.find(h => h.hangerId === 'HC-A0B003').hangerNumber, 1);
+  await api('/api/hangers/HC-A0B002', { method: 'PATCH', userAuth: true, body: JSON.stringify({ gatewayId: 'GW-A0B002', name: '이동한 옷걸이' }) });
+  snap = await api('/api/snapshot', { userAuth: true });
+  const moved = snap.body.hangers.find(h => h.hangerId === 'HC-A0B002');
+  assert.equal(moved.gatewayId, 'GW-A0B002');
+  assert.equal(moved.hangerNumber, 2);
+  assert.equal(moved.alias, '이동한 옷걸이');
+  const admin = await api('/api/admin/overview', { userAuth: true });
+  assert.equal(admin.status, 200);
+  assert.ok(admin.body.totals.hangers >= 3);
+
+  const signup = await api('/api/auth/signup', { method: 'POST', body: JSON.stringify({ email: 'ordinary-user@example.com', password: 'ordinary-password', name: '일반사용자' }) });
+  const ordinary = await fetch(`${baseUrl}/api/admin/overview`, { headers: { Authorization: `Bearer ${signup.body.token}` } });
+  assert.equal(ordinary.status, 403);
+});
+
 test('Race A: WebSocket PRESENT seq=10 wins over delayed snapshot EMPTY seq=9', () => {
   const tracker = HangerFreshness.createTracker();
   const present = { hangerId: 'HC-RACE01', state: 'PRESENT', reportedState: 'PRESENT', tagUid: '04RACE00000001', bootId: 'boot-a', lastSequence: 10 };
@@ -171,6 +208,9 @@ test('Race C: an old boot packet is rejected after a new boot is accepted', asyn
   assert.equal(oldBoot.body.duplicate, true);
   assert.equal(oldBoot.body.stale, true);
 
+  await api('/api/gateways/GW-A1B2C3/claim', { method: 'POST', userAuth: true, body: '{}' });
+  await api('/api/hangers/HC-A1B2C3/claim', { method: 'POST', userAuth: true, body: '{}' });
+
   const snap = await api('/api/snapshot', { userAuth: true });
   const hanger = snap.body.hangers.find(h => h.hangerId === 'HC-A1B2C3');
   assert.equal(hanger.reportedState, 'PRESENT');
@@ -183,6 +223,15 @@ test('Race D: UNKNOWN_TAG with a UID is rendered as an unregistered tag, never e
   const text = HangerFreshness.clothingStatus({ state: 'UNKNOWN_TAG', reportedState: 'PRESENT', tagUid: '04UNKNOWN00001' }, []);
   assert.match(text, /새 옷 감지됨/);
   assert.doesNotMatch(text, /걸린 옷 없음/);
+});
+
+test('Cloud image multipart parser accepts a bounded JPEG image part without local disk paths', () => {
+  const boundary = '----wardrobe-test-boundary';
+  const raw = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="shirt.jpg"\r\nContent-Type: image/jpeg\r\n\r\nJPEG-BYTES\r\n--${boundary}--\r\n`);
+  const file = CloudImageService.multipartImage(raw, `multipart/form-data; boundary=${boundary}`);
+  assert.equal(file.mime, 'image/jpeg');
+  assert.equal(file.filename, 'shirt.jpg');
+  assert.equal(file.image.toString(), 'JPEG-BYTES');
 });
 
 test('Scenario E: Same Tag reported by two Hangers -> CONFLICT', async () => {

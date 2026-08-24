@@ -13,7 +13,8 @@ let token = localStorage.getItem('wardrobeToken'),
   refreshGeneration = 0,
   refreshInFlight = null,
   refreshQueued = false,
-  refreshTimer = null;
+  refreshTimer = null,
+  sessionUser = null;
 
 const hangerFreshness = window.HangerFreshness.createTracker();
 
@@ -52,6 +53,7 @@ const setHTML = (selector, value) => {
 function hangerDisplayName(hanger) {
   if (!hanger) return '옷걸이';
   if (hanger.alias && hanger.alias !== hanger.hangerId && !/^HC-/i.test(hanger.alias)) return hanger.alias;
+  if (Number(hanger.hangerNumber) > 0) return `${Number(hanger.hangerNumber)}번 옷걸이`;
   if (/^HC-00000[1-5]$/i.test(hanger.hangerId || '')) return hanger.alias || hanger.hangerId;
   const physical = (model.hangers || [])
     .filter(item => !/^HC-00000[1-5]$/i.test(item.hangerId || ''))
@@ -65,8 +67,9 @@ function ownerDisplayName() {
 }
 
 function nextHangerDisplayName() {
-  const physical = (model.hangers || []).filter(item => !/^HC-00000[1-5]$/i.test(item.hangerId || ''));
-  return `${ownerDisplayName()}의 옷걸이 ${physical.length + 1}번`;
+  // The server owns numbering. BLE only needs a human-friendly temporary
+  // label; claim/move allocates the final number in its selected gateway.
+  return '새 옷걸이';
 }
 
 function garmentNameForTag(tagUid) {
@@ -870,6 +873,7 @@ function render() {
       <img src="${imgSrc}" onerror="this.onerror=null;this.src='${fallbackSrc}'" alt="">
       <h3>${esc(x.name)}</h3>
       <p>${esc(x.category || '미분류')} · ${esc(x.color || '색상 미지정')}</p>
+      ${x.imageProcessingStatus === 'processing' ? '<small class="muted" style="display:block;margin:3px 0">사진 처리 중…</small>' : x.imageProcessingStatus === 'failed' ? '<small class="error" style="display:block;margin:3px 0">사진 처리 실패 · 기본 이미지를 표시합니다.</small>' : ''}
       <span class="pill ${x.currentState}">${korState}</span> ${findingBadge}
       <small class="muted" style="display:block;margin-top:4px">${esc(x.currentHanger || '옷장 밖')} · UID <code>${esc(x.tagUid)}</code></small>
       <div class="actions">
@@ -1135,6 +1139,7 @@ function switchView(viewName) {
   if (targetView === 'outfit') {
     renderOutfitRecs();
   }
+  if (targetView === 'admin') renderAdminOverview();
   if (simTimer) {
     clearInterval(simTimer);
     simTimer = null;
@@ -1150,6 +1155,7 @@ async function enter() {
     $('#auth').style.display = 'none';
     $('#app').hidden = false;
     $('#app').style.display = 'block';
+    try { sessionUser = (await api('/api/auth/status')).user || null; ensureAdminUi(); } catch { sessionUser = null; }
     switchView('dashboard');
     window.scrollTo({ top: 0, behavior: 'smooth' });
     try {
@@ -1451,6 +1457,35 @@ if (authFormElement) {
   if (authSubmitElement) authSubmitElement.type = 'submit';
 }
 
+function ensureAdminUi() {
+  const existing = $('#admin');
+  const existingNav = $('nav button[data-view="admin"]');
+  if (sessionUser?.role !== 'admin') { existing?.remove(); existingNav?.remove(); return; }
+  if (!existingNav) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.dataset.view = 'admin'; button.textContent = '관리자';
+    button.onclick = () => switchView('admin');
+    $('nav')?.append(button);
+  }
+  if (!existing) {
+    const section = document.createElement('section');
+    section.id = 'admin'; section.className = 'view'; section.hidden = true;
+    section.innerHTML = '<div class="title"><div><h2>관리자 대시보드</h2><p>계정·옷봉·옷걸이 현황입니다. 비밀정보는 표시하지 않습니다.</p></div><button type="button" id="adminRefresh">새로고침</button></div><div id="adminOverview" class="panel"><p class="muted">관리자 현황을 불러오는 중입니다.</p></div>';
+    $('main')?.append(section);
+    $('#adminRefresh').onclick = renderAdminOverview;
+  }
+}
+
+async function renderAdminOverview() {
+  const target = $('#adminOverview');
+  if (!target || sessionUser?.role !== 'admin') return;
+  try {
+    const data = await api('/api/admin/overview');
+    const t = data.totals || {};
+    target.innerHTML = `<div class="summary">${[['전체 사용자',t.users],['전체 옷봉',t.gateways],['전체 옷걸이',t.hangers],['온라인 옷봉',t.onlineGateways],['온라인 옷걸이',t.onlineHangers]].map(([label,value]) => `<article><b>${Number(value||0)}</b><span>${esc(label)}</span></article>`).join('')}</div>${(data.users || []).map(user => `<article class="panel" style="margin-top:14px"><h3>${esc(user.name)} <small class="muted">${esc(user.email)}</small></h3><p class="muted">가입일 ${user.createdAt ? new Date(user.createdAt).toLocaleString() : '-'} · 최근 로그인 ${user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : '-'}</p><p>보유 옷봉 ${Number(user.gatewayCount||0)}개</p>${(user.gateways || []).map(g => `<div style="border-top:1px solid #e3e9e4;padding:10px 0"><b>${esc(g.name || `${g.gatewayNumber}번 옷봉`)}</b> <small class="muted">${esc(g.gatewayId)} · ${esc(g.state)}</small><ul>${(g.hangers || []).map(h => `<li>${esc(h.name || `${h.hangerNumber}번 옷걸이`)} <small class="muted">${esc(h.hangerId)} · ${esc(h.state)}</small></li>`).join('') || '<li class="muted">연결된 옷걸이 없음</li>'}</ul></div>`).join('') || '<p class="muted">등록된 옷봉 없음</p>'}</article>`).join('')}`;
+  } catch (error) { target.innerHTML = `<p class="error">관리자 현황을 불러오지 못했습니다: ${esc(error.message)}</p>`; }
+}
+
 $('#authToggle').onclick = () => setAuthMode(currentAuthMode === 'login' ? 'signup' : 'login', false);
 
 $('#authForm').onsubmit = async e => {
@@ -1488,6 +1523,8 @@ $('#authForm').onsubmit = async e => {
 
 let garmentPhotoObjectUrl = '';
 let garmentPhotoRequestId = 0;
+let garmentPhotoFile = null;
+let garmentPhotoMode = 'local';
 
 function uploadGarmentPhoto(path, formData) {
   return fetch(path, {
@@ -1505,6 +1542,7 @@ function resetGarmentPhoto() {
   garmentPhotoRequestId += 1;
   if (garmentPhotoObjectUrl) URL.revokeObjectURL(garmentPhotoObjectUrl);
   garmentPhotoObjectUrl = '';
+  garmentPhotoFile = null;
   const imageInput = $('#garmentImageUrl');
   const fileInput = $('#garmentPhotoFile');
   const preview = $('#garmentPhotoPreview');
@@ -1541,12 +1579,17 @@ function setupGarmentPhotoField() {
   const field = document.createElement('section');
   field.id = 'garmentPhotoField';
   field.className = 'garment-photo-field';
-  field.innerHTML = `<b>옷 사진 <small class="muted">선택 사항</small></b><div class="garment-photo-controls"><input id="garmentPhotoFile" type="file" accept="image/jpeg,image/png,image/webp" hidden><button type="button" id="garmentPhotoChoose" class="photo-secondary">사진 선택</button><span id="garmentPhotoStatus" class="garment-photo-status">사진을 선택하면 배경을 제거하고 옷 정보를 추천합니다.</span></div><div id="garmentPhotoPreview" class="garment-photo-preview" hidden><img alt="배경이 제거된 옷 사진"><button type="button" id="garmentPhotoClear" class="photo-secondary">사진 제거</button></div><p class="muted garment-photo-note">사진은 이 PC의 로컬 AI로 처리됩니다. 자동 추천값은 언제든 수정할 수 있습니다.</p>`;
+  field.innerHTML = `<b>옷 사진 <small class="muted">선택 사항</small></b><div class="garment-photo-controls"><input id="garmentPhotoFile" type="file" accept="image/jpeg,image/png,image/webp" hidden><button type="button" id="garmentPhotoChoose" class="photo-secondary">사진 선택</button><span id="garmentPhotoStatus" class="garment-photo-status">사진을 선택하면 배경을 제거하고 옷 정보를 추천합니다.</span></div><div id="garmentPhotoPreview" class="garment-photo-preview" hidden><img alt="배경이 제거된 옷 사진"><button type="button" id="garmentPhotoClear" class="photo-secondary">사진 제거</button></div><p id="garmentPhotoNote" class="muted garment-photo-note">사진 처리 환경을 확인하는 중입니다.</p>`;
   // Keep the photo immediately after the dialog title and before the garment name.
   const dialogTitle = form.querySelector(':scope > .title');
   if (dialogTitle) dialogTitle.after(field);
   else form.prepend(field);
   const fileInput = $('#garmentPhotoFile');
+  api('/api/garments/image/status').then(info => {
+    garmentPhotoMode = info.mode || 'local';
+    const note = $('#garmentPhotoNote');
+    if (note) note.textContent = garmentPhotoMode === 'cloud' ? '사진은 클라우드에서 비동기 처리됩니다. 등록 후에도 처리 중 상태를 확인할 수 있습니다.' : '사진은 이 PC의 로컬 AI로 처리됩니다. 자동 추천값은 언제든 수정할 수 있습니다.';
+  }).catch(() => {});
   $('#garmentPhotoChoose').onclick = () => fileInput.click();
   $('#garmentPhotoClear').onclick = resetGarmentPhoto;
   fileInput.onchange = async () => {
@@ -1558,11 +1601,17 @@ function setupGarmentPhotoField() {
       return;
     }
     if (garmentPhotoObjectUrl) URL.revokeObjectURL(garmentPhotoObjectUrl);
+    garmentPhotoFile = file;
     garmentPhotoObjectUrl = URL.createObjectURL(file);
     const preview = $('#garmentPhotoPreview');
     preview.querySelector('img').src = garmentPhotoObjectUrl;
     preview.hidden = false;
     const status = $('#garmentPhotoStatus');
+    if (garmentPhotoMode === 'cloud') {
+      status.textContent = '등록하면 클라우드에 저장한 뒤 배경 제거를 시작합니다. 처리 중에도 다른 작업을 할 수 있습니다.';
+      status.className = 'garment-photo-status is-working';
+      return;
+    }
     status.textContent = '배경 제거와 옷 정보 분석을 준비 중입니다. 처음 한 번은 모델 준비에 시간이 걸릴 수 있습니다.';
     status.className = 'garment-photo-status is-working';
     const buildData = () => { const data = new FormData(); data.append('image', file, file.name); return data; };
@@ -1665,10 +1714,21 @@ $('#garmentForm').onsubmit = async e => {
   if (submitBtn) submitBtn.disabled = true;
 
   try {
-    await api('/api/garments', {
+    const garment = await api('/api/garments', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+
+    if (garmentPhotoMode === 'cloud' && garmentPhotoFile) {
+      const upload = new FormData();
+      upload.append('image', garmentPhotoFile, garmentPhotoFile.name);
+      await uploadGarmentPhoto(`/api/garments/${encodeURIComponent(garment.id)}/image`, upload);
+      const photoStatus = $('#garmentPhotoStatus');
+      if (photoStatus) {
+        photoStatus.textContent = '클라우드 사진 처리 중입니다. 완료되면 옷 사진이 자동으로 표시됩니다.';
+        photoStatus.className = 'garment-photo-status is-working';
+      }
+    }
 
     if (successBox) {
       successBox.textContent = '✓ 옷 등록 완료';

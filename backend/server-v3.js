@@ -3,14 +3,20 @@ const http=require('http'),fs=require('fs'),path=require('path'),crypto=require(
 const {createStorage}=require('./storage');
 const {WebSocketServer}=require('ws');
 const garmentImageService=require('./garment-image-service');
+const cloudImageService=require('./cloud-image-service');
 const ROOT=path.resolve(__dirname,'..');
 function loadEnv(file){if(!fs.existsSync(file))return;for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)){const i=line.indexOf('=');if(i>0&&line[0]!=='#'&&!(line.slice(0,i).trim() in process.env))process.env[line.slice(0,i).trim()]=line.slice(i+1).trim();}}
 loadEnv(path.join(ROOT,'.env'));
 const PORT=Number(process.env.PORT||8787),DATA=path.resolve(ROOT,process.env.DATA_PATH||'data/wardrobe.json'),PUBLIC=path.join(ROOT,'web','public');
 const SECRET=process.env.JWT_SECRET||'development-secret',DEVICE=process.env.DEVICE_TOKEN||'development-device-token';
 const OFFLINE=Number(process.env.OFFLINE_TIMEOUT_MS||30000),CMD_TIMEOUT=Number(process.env.COMMAND_TIMEOUT_MS||15000),SIM=process.env.SIMULATION_ENABLED==='true';
+// Set ADMIN_EMAIL in Render (or .env locally) to the real email address of
+// the hpo2002 administrator. It is intentionally server-only: the browser
+// receives its own role but never decides authorization by itself.
+const ADMIN_EMAIL=String(process.env.ADMIN_EMAIL||'').trim().toLowerCase();
+const ADMIN_USERNAME=String(process.env.ADMIN_USERNAME||'hpo2002').trim().toLocaleLowerCase('ko-KR');
 const now=()=>new Date().toISOString(),id=p=>`${p}_${crypto.randomUUID()}`,uid=x=>String(x||'').replace(/[^0-9a-f]/gi,'').toUpperCase();
-const initial=()=>({schemaVersion:3,users:[],wardrobes:[],gateways:[],hangers:[],garments:[],events:[],commands:[]});
+const initial=()=>({schemaVersion:4,users:[],wardrobes:[],gateways:[],hangers:[],garments:[],events:[],commands:[]});
 let db=initial();const storage=createStorage({file:DATA,initial});function save(){return storage.save(db)}
 const safe=(a,b)=>{const x=Buffer.from(String(a)),y=Buffer.from(String(b));return x.length===y.length&&crypto.timingSafeEqual(x,y)};
 function hash(p,s=crypto.randomBytes(16).toString('hex')){return `${s}:${crypto.pbkdf2Sync(p,s,210000,32,'sha256').toString('hex')}`}
@@ -18,6 +24,24 @@ function error(status,message){const e=new Error(message);e.status=status;return
 function wardrobeFor(user){return db.wardrobes.find(w=>w.userId===user.id)}
 function makeWardrobe(user){const w={id:id('wd'),userId:user.id,name:`${user.name||'나'}의 스마트 옷장`,createdAt:now()};db.wardrobes.push(w);return w}
 function simulated(x){return /^GW-SIM/i.test(x.gatewayId||'')||/^HC-00000[1-5]$/i.test(x.hangerId||'')}
+function ownerForWardrobe(wardrobeId){const wardrobe=db.wardrobes.find(w=>w.id===wardrobeId);return db.users.find(u=>u.id===wardrobe?.userId)||null}
+function ownerName(wardrobeId){return ownerForWardrobe(wardrobeId)?.name||'내'}
+function gatewayDefaultName(gateway){return `${ownerName(gateway.wardrobeId)}의 ${Number(gateway.gatewayNumber)||1}번 옷봉`}
+function hangerDefaultName(hanger){return `${Number(hanger.hangerNumber)||1}번 옷걸이`}
+function nextGatewayNumber(wardrobeId){return Math.max(0,...db.gateways.filter(g=>g.wardrobeId===wardrobeId&&!simulated(g)).map(g=>Number(g.gatewayNumber)||0))+1}
+function nextHangerNumber(gatewayId){return Math.max(0,...db.hangers.filter(h=>h.gatewayId===gatewayId&&!simulated(h)).map(h=>Number(h.hangerNumber)||0))+1}
+function syncGatewayName(gateway){gateway.name=String(gateway.customName||'').trim()||gatewayDefaultName(gateway);return gateway}
+function syncHangerName(hanger){hanger.alias=String(hanger.customName||'').trim()||hangerDefaultName(hanger);return hanger}
+function assignGateway(gateway,wardrobeId){
+  if(gateway.wardrobeId!==wardrobeId||!Number.isInteger(Number(gateway.gatewayNumber))||Number(gateway.gatewayNumber)<1)gateway.gatewayNumber=nextGatewayNumber(wardrobeId);
+  gateway.wardrobeId=wardrobeId;return syncGatewayName(gateway);
+}
+function assignHanger(hanger,wardrobeId,gatewayId,{moved=false}={}){
+  if(moved||hanger.gatewayId!==gatewayId||!Number.isInteger(Number(hanger.hangerNumber))||Number(hanger.hangerNumber)<1)hanger.hangerNumber=nextHangerNumber(gatewayId);
+  hanger.wardrobeId=wardrobeId;hanger.gatewayId=gatewayId;return syncHangerName(hanger);
+}
+function isConfiguredAdmin(user){return (!!ADMIN_EMAIL&&String(user.email||'').toLowerCase()===ADMIN_EMAIL)||String(user.name||'').trim().toLocaleLowerCase('ko-KR')===ADMIN_USERNAME}
+function userPublic(user){return {id:user.id,email:user.email,name:user.name,role:user.role||'user',createdAt:user.createdAt,lastLoginAt:user.lastLoginAt||null}}
 function migrate(){
   db.wardrobes=Array.isArray(db.wardrobes)?db.wardrobes:[];
   for(const u of db.users)if(!wardrobeFor(u))makeWardrobe(u);
@@ -34,12 +58,29 @@ function migrate(){
   for(const h of db.hangers)if(!h.wardrobeId)h.wardrobeId=db.gateways.find(g=>g.gatewayId===h.gatewayId)?.wardrobeId||null;
   for(const g of db.gateways)if(!g.wardrobeId&&!simulated(g))g.wardrobeId=legacyOwner;
   for(const h of db.hangers)if(!h.wardrobeId&&!simulated(h))h.wardrobeId=db.gateways.find(g=>g.gatewayId===h.gatewayId)?.wardrobeId||legacyOwner;
-  // Give newly discovered physical hardware a readable default. Preserve any
-  // name the owner has already chosen in the dashboard.
-  for(const w of db.wardrobes){const owner=db.users.find(u=>u.id===w.userId),ownerName=owner?.name||'내';const gateways=db.gateways.filter(g=>g.wardrobeId===w.id&&!simulated(g));for(const g of gateways)if(!g.name||g.name==='새 옷봉'||g.name==='Gateway')g.name=`${ownerName}의 옷봉`;const hangers=db.hangers.filter(h=>h.wardrobeId===w.id&&!simulated(h)).sort((a,b)=>String(a.createdAt||a.hangerId).localeCompare(String(b.createdAt||b.hangerId)));hangers.forEach((h,index)=>{if(!h.alias||/^HC-/i.test(h.alias))h.alias=`${ownerName}의 옷걸이 ${index+1}번`})}
+  // Migrate visible names without changing immutable hardware IDs. Numbers
+  // are assigned only when absent, so deletion never compacts/reuses them.
+  for(const user of db.users){if(!['admin','user'].includes(user.role))user.role='user';if(isConfiguredAdmin(user))user.role='admin';}
+  if(!db.users.some(user=>user.role==='admin')&&db.users.length===1)db.users[0].role='admin';
+  for(const w of db.wardrobes){
+    const gateways=db.gateways.filter(g=>g.wardrobeId===w.id&&!simulated(g)).sort((a,b)=>String(a.createdAt||a.gatewayId).localeCompare(String(b.createdAt||b.gatewayId)));
+    gateways.forEach((g,index)=>{
+      if(!Number.isInteger(Number(g.gatewayNumber))||Number(g.gatewayNumber)<1)g.gatewayNumber=index+1;
+      if(typeof g.customName!=='string'){const old=String(g.name||'');g.customName=old&&old!=='새 옷봉'&&old!=='Gateway'&&!/의(?: \d+번)? 옷봉$/.test(old)?old:'';}
+      syncGatewayName(g);
+    });
+    for(const g of gateways){
+      const hangers=db.hangers.filter(h=>h.gatewayId===g.gatewayId&&!simulated(h)).sort((a,b)=>String(a.createdAt||a.hangerId).localeCompare(String(b.createdAt||b.hangerId)));
+      hangers.forEach((h,index)=>{
+        if(!Number.isInteger(Number(h.hangerNumber))||Number(h.hangerNumber)<1)h.hangerNumber=index+1;
+        if(typeof h.customName!=='string'){const old=String(h.alias||'');h.customName=old&&!/^HC-/i.test(old)&&!/^\d+번 옷걸이$/.test(old)&&!/의 옷걸이 \d+번$/.test(old)?old:'';}
+        if(h.wardrobeId===w.id)syncHangerName(h);
+      });
+    }
+  }
   for(const c of db.commands)if(!c.wardrobeId){const h=db.hangers.find(h=>c.targets?.includes(h.hangerId));c.wardrobeId=h?.wardrobeId||byUser.get(c.requestedBy)||null;}
-  const changed = db.schemaVersion !== 3;
-  db.schemaVersion = 3;
+  const changed = db.schemaVersion !== 4;
+  db.schemaVersion = 4;
   return changed;
 }
 let isReady = false;
@@ -59,6 +100,7 @@ const ready = storage.load().then(loaded => {
 function token(user){const p=Buffer.from(JSON.stringify({sub:user.id,exp:Date.now()+604800000})).toString('base64url');return `${p}.${crypto.createHmac('sha256',SECRET).update(p).digest('base64url')}`}
 function getUser(req){const [p,s]=String(req.headers.authorization||'').replace(/^Bearer /,'').split('.');if(!p||!s||!safe(s,crypto.createHmac('sha256',SECRET).update(p).digest('base64url')))return null;try{const x=JSON.parse(Buffer.from(p,'base64url'));return x.exp>Date.now()?db.users.find(u=>u.id===x.sub):null}catch{return null}}
 function needUser(req){const u=getUser(req);if(!u)throw error(401,'로그인이 필요합니다.');return u}
+function requireAdmin(req){const u=needUser(req);if(u.role!=='admin')throw error(403,'관리자 권한이 필요합니다.');return u}
 function needDevice(req){if(!safe(req.headers.authorization||'',`Bearer ${DEVICE}`))throw error(401,'옷봉 인증에 실패했습니다.')}
 const sockets=new Set();
 function emit(type,payload,severity='info',wardrobeId=payload?.wardrobeId){
@@ -77,8 +119,8 @@ function gatewayOwner(gatewayId){return db.gateways.find(g=>g.gatewayId===gatewa
 function attachGateway(gatewayId){
   let g=db.gateways.find(x=>x.gatewayId===gatewayId);
   const defaultWid=db.wardrobes.length===1?db.wardrobes[0].id:null;
-  if(!g){g={gatewayId,name:'새 옷봉',createdAt:now(),wardrobeId:defaultWid};db.gateways.push(g)}
-  else if(!g.wardrobeId&&defaultWid){g.wardrobeId=defaultWid}
+  if(!g){g={gatewayId,name:'새 옷봉',createdAt:now(),wardrobeId:defaultWid};if(defaultWid)assignGateway(g,defaultWid);db.gateways.push(g)}
+  else if(!g.wardrobeId&&defaultWid)assignGateway(g,defaultWid);
   return g;
 }
 function status(x){
@@ -87,8 +129,13 @@ function status(x){
   if(!['PRESENT','EMPTY','UNKNOWN_TAG','UNSTABLE'].includes(state)||!Number.isSafeInteger(sequence)||sequence<0)throw error(400,'옷걸이 상태 형식 오류');
   const gateway=attachGateway(gatewayId);
   let h=db.hangers.find(v=>v.hangerId===hangerId);
-  if(!h){h={hangerId,alias:'',createdAt:now(),lastSequence:-1,bootHistory:[],wardrobeId:gateway.wardrobeId||null};db.hangers.push(h)}
-  if(!h.wardrobeId)h.wardrobeId=gateway.wardrobeId||(db.wardrobes.length===1?db.wardrobes[0].id:null);
+  if(!h){h={hangerId,alias:'',createdAt:now(),lastSequence:-1,bootHistory:[],wardrobeId:gateway.wardrobeId||null};if(h.wardrobeId)assignHanger(h,h.wardrobeId,gatewayId);db.hangers.push(h)}
+  const targetWardrobeId=gateway.wardrobeId||(db.wardrobes.length===1?db.wardrobes[0].id:null);
+  if(!h.wardrobeId&&targetWardrobeId)assignHanger(h,targetWardrobeId,gatewayId);
+  // A paired hanger may later report through a different *owned* gateway.
+  // Keep its immutable hardware ID, but allocate its next number in the
+  // destination gateway. Cross-account packets are never allowed to move it.
+  if(h.wardrobeId&&gateway.wardrobeId===h.wardrobeId&&h.gatewayId!==gatewayId)assignHanger(h,h.wardrobeId,gatewayId,{moved:true});
   const currentBoot=String(h.bootId||''),history=Array.isArray(h.bootHistory)?h.bootHistory.map(String):[];
   if(currentBoot&&!history.includes(currentBoot))history.push(currentBoot);
   // A bootId is a session identifier. Once a hanger has moved to a new
@@ -122,18 +169,20 @@ const server=http.createServer(async(req,res)=>{try{
   }
   if(storageInitError)throw error(503,'스토리지 초기화에 실패했습니다.');
   if(!isReady)await ready;
+  if(await cloudImageService.handle(req,res,{needUser,wardrobeFor,findGarment:garmentId=>db.garments.find(g=>g.id===garmentId),persist:save,emit}))return;
   if(await garmentImageService.handle(req,res,{needUser}))return;
-  if(p==='/api/auth/status'){const u=getUser(req);return json(res,200,{setupRequired:!db.users.length,user:u&&{id:u.id,email:u.email,name:u.name}})}
-if(p==='/api/auth/signup'&&req.method==='POST'){const x=await body(req);if(!/^\S+@\S+\.\S+$/.test(x.email||'')||String(x.password||'').length<10)throw error(400,'이메일과 10자 이상 비밀번호가 필요합니다.');if(db.users.some(u=>u.email===String(x.email).toLowerCase()))throw error(409,'이미 등록된 이메일입니다.');const u={id:id('usr'),email:String(x.email).toLowerCase(),name:String(x.name||'사용자').slice(0,40),passwordHash:hash(x.password),createdAt:now()};db.users.push(u);makeWardrobe(u);await save();return json(res,201,{token:token(u),user:{id:u.id,email:u.email,name:u.name}})}
-if(p==='/api/auth/login'&&req.method==='POST'){const x=await body(req),u=db.users.find(v=>v.email===String(x.email||'').toLowerCase());if(!u||!safe(hash(x.password,u.passwordHash.split(':')[0]),u.passwordHash))throw error(401,'이메일 또는 비밀번호가 맞지 않습니다.');return json(res,200,{token:token(u),user:{id:u.id,email:u.email,name:u.name}})}
+  if(p==='/api/auth/status'){const u=getUser(req);return json(res,200,{setupRequired:!db.users.length,user:u&&userPublic(u)})}
+if(p==='/api/auth/signup'&&req.method==='POST'){const x=await body(req),email=String(x.email||'').trim().toLowerCase(),name=String(x.name||'').trim().slice(0,40),nameKey=name.toLocaleLowerCase('ko-KR');if(!/^\S+@\S+\.\S+$/.test(email)||String(x.password||'').length<10||!name)throw error(400,'이름, 이메일과 10자 이상 비밀번호가 필요합니다.');if(db.users.some(u=>u.email===email))throw error(409,'이미 등록된 이메일입니다.');if(db.users.some(u=>String(u.name||'').trim().toLocaleLowerCase('ko-KR')===nameKey))throw error(409,'이미 사용 중인 사용자명입니다.');const u={id:id('usr'),email,name,passwordHash:hash(x.password),role:isConfiguredAdmin({email})?'admin':'user',createdAt:now(),lastLoginAt:now()};db.users.push(u);makeWardrobe(u);await save();return json(res,201,{token:token(u),user:userPublic(u)})}
+if(p==='/api/auth/login'&&req.method==='POST'){const x=await body(req),u=db.users.find(v=>v.email===String(x.email||'').toLowerCase());if(!u||!safe(hash(x.password,u.passwordHash.split(':')[0]),u.passwordHash))throw error(401,'이메일 또는 비밀번호가 맞지 않습니다.');u.lastLoginAt=now();if(isConfiguredAdmin(u))u.role='admin';await save();return json(res,200,{token:token(u),user:userPublic(u)})}
+if(p==='/api/admin/overview'){requireAdmin(req);const online=x=>Date.now()-Date.parse(x.lastSeen||0)<OFFLINE;const users=db.users.map(u=>{const w=wardrobeFor(u),gateways=w?visible(db.gateways,w.id):[];return{...userPublic(u),gatewayCount:gateways.length,gateways:gateways.map(g=>({gatewayId:g.gatewayId,gatewayNumber:g.gatewayNumber||null,name:g.name,state:online(g)?'ONLINE':'OFFLINE',hangers:db.hangers.filter(h=>h.wardrobeId===w.id&&h.gatewayId===g.gatewayId&&!simulated(h)).map(h=>({hangerId:h.hangerId,hangerNumber:h.hangerNumber||null,name:h.alias,state:online(h)?'ONLINE':'OFFLINE'}))}))}});return json(res,200,{totals:{users:users.length,gateways:db.gateways.filter(g=>!simulated(g)).length,hangers:db.hangers.filter(h=>!simulated(h)).length,onlineGateways:db.gateways.filter(g=>!simulated(g)&&online(g)).length,onlineHangers:db.hangers.filter(h=>!simulated(h)&&online(h)).length},users})}
 if(p==='/api/snapshot'){const u=needUser(req);return json(res,200,snapshot(u))}
-if(p==='/api/garments'&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),x=await body(req),tagUid=uid(x.tagUid);if(!String(x.name||'').trim()||tagUid.length<8)throw error(400,'옷 이름과 NFC UID가 필요합니다.');if(db.garments.some(g=>g.wardrobeId===w.id&&g.tagUid===tagUid))throw error(409,'이 NFC 태그는 이미 내 옷장에 등록되어 있습니다.');const g={id:id('garment'),name:String(x.name).slice(0,80),tagUid,category:String(x.category||''),color:String(x.color||''),season:String(x.season||''),brand:String(x.brand||''),memo:String(x.memo||''),imageUrl:String(x.imageUrl||''),currentState:'OUT',currentHanger:null,createdBy:u.id,wardrobeId:w.id,createdAt:now()};db.garments.push(g);reconcile();emit('garment.created',g,'info',w.id);await save();return json(res,201,g)}
+if(p==='/api/garments'&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),x=await body(req),tagUid=uid(x.tagUid);if(!String(x.name||'').trim()||tagUid.length<8)throw error(400,'옷 이름과 NFC UID가 필요합니다.');if(db.garments.some(g=>g.wardrobeId===w.id&&g.tagUid===tagUid))throw error(409,'이 NFC 태그는 이미 내 옷장에 등록되어 있습니다.');const g={id:id('garment'),name:String(x.name).slice(0,80),tagUid,category:String(x.category||''),color:String(x.color||''),season:String(x.season||''),brand:String(x.brand||''),memo:String(x.memo||''),imageUrl:String(x.imageUrl||''),originalImagePath:'',processedImagePath:'',imageProcessingStatus:'ready',classification:{},classificationConfidence:{},processingError:'',currentState:'OUT',currentHanger:null,createdBy:u.id,wardrobeId:w.id,createdAt:now()};db.garments.push(g);reconcile();emit('garment.created',g,'info',w.id);await save();return json(res,201,g)}
 const gd=match(req.url,/^\/api\/garments\/([^/]+)$/);if(gd&&req.method==='DELETE'){const u=needUser(req),w=wardrobeFor(u),i=db.garments.findIndex(g=>g.id===gd[1]&&g.wardrobeId===w.id);if(i<0)throw error(404,'내 옷장에서 옷을 찾을 수 없습니다.');const g=db.garments.splice(i,1)[0];reconcile();emit('garment.deleted',{id:g.id,tagUid:g.tagUid},'info',w.id);await save();return json(res,200,{ok:true,deletedId:g.id})}
 const find=match(req.url,/^\/api\/garments\/([^/]+)\/find$/);if(find&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),g=db.garments.find(g=>g.id===find[1]&&g.wardrobeId===w.id);if(!g?.currentHanger)throw error(409,'이 옷은 현재 옷장에 없습니다.');const c=command([g.currentHanger],u);await save();return json(res,202,c)}
 if(p==='/api/commands'&&req.method==='POST'){const u=needUser(req),x=await body(req),c=command(x.targets,u,x.durationMs,x.command);await save();return json(res,202,c)}
-const claim=match(req.url,/^\/api\/(gateways|hangers)\/([^/]+)\/claim$/);if(claim&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),kind=claim[1],key=decodeURIComponent(claim[2]),list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',item=list.find(v=>v[field]===key);if(!item)throw error(404,'장비 신호를 아직 받지 못했습니다. 전원을 확인한 뒤 다시 시도하세요.');if(item.wardrobeId&&item.wardrobeId!==w.id)throw error(409,'이미 다른 계정의 옷장에 등록된 장비입니다.');item.wardrobeId=w.id;if(kind==='gateways'){if(!item.name||item.name==='새 옷봉')item.name=`${u.name||'내'}의 옷봉`;for(const h of db.hangers)if(h.gatewayId===item.gatewayId&&!h.wardrobeId)h.wardrobeId=w.id;}else if(!item.alias||/^HC-/i.test(item.alias)){const count=db.hangers.filter(h=>h.wardrobeId===w.id&&!simulated(h)).sort((a,b)=>String(a.createdAt||a.hangerId).localeCompare(String(b.createdAt||b.hangerId))).indexOf(item)+1;item.alias=`${u.name||'내'}의 옷걸이 ${Math.max(1,count)}번`;}emit(`${kind}.claimed`,item,'info',w.id);await save();return json(res,200,item)}
-const device=match(req.url,/^\/api\/(gateways|hangers)\/([^/]+)$/);if(device&&req.method==='PATCH'){const u=needUser(req),w=wardrobeFor(u),x=await body(req),kind=device[1],key=decodeURIComponent(device[2]),list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',item=list.find(v=>v[field]===key&&v.wardrobeId===w.id);if(!item)throw error(404,kind==='gateways'?'내 옷봉을 찾을 수 없습니다.':'내 옷걸이를 찾을 수 없습니다.');const name=String(x.name??x.alias??'').trim().slice(0,40);if(!name)throw error(400,'이름을 입력하세요.');if(kind==='gateways')item.name=name;else item.alias=name;emit(`${kind}.updated`,item,'info',w.id);await save();return json(res,200,item)}
-if(device&&req.method==='DELETE'){const u=needUser(req),w=wardrobeFor(u),kind=device[1],key=decodeURIComponent(device[2]),list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',i=list.findIndex(v=>v[field]===key&&v.wardrobeId===w.id);if(i<0)throw error(404,'내 장비를 찾을 수 없습니다.');const item=list[i];if(kind==='gateways'){for(const h of db.hangers)if(h.gatewayId===item.gatewayId&&h.wardrobeId===w.id)h.wardrobeId=null;}else{item.wardrobeId=null;item.alias='';}item.wardrobeId=null;emit(`${kind}.removed`,{[field]:key},'warning',w.id);await save();return json(res,200,{ok:true})}
+const claim=match(req.url,/^\/api\/(gateways|hangers)\/([^/]+)\/claim$/);if(claim&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),kind=claim[1],key=decodeURIComponent(claim[2]),list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',item=list.find(v=>v[field]===key);if(!item)throw error(404,'장비 신호를 아직 받지 못했습니다. 전원을 확인한 뒤 다시 시도하세요.');if(item.wardrobeId&&item.wardrobeId!==w.id)throw error(409,'이미 다른 계정의 옷장에 등록된 장비입니다.');if(kind==='gateways'){assignGateway(item,w.id);for(const h of db.hangers)if(h.gatewayId===item.gatewayId&&!h.wardrobeId)assignHanger(h,w.id,item.gatewayId);}else{const gateway=db.gateways.find(g=>g.gatewayId===item.gatewayId&&g.wardrobeId===w.id);if(!gateway)throw error(409,'먼저 같은 계정의 옷봉과 연결하세요.');assignHanger(item,w.id,gateway.gatewayId);}emit(`${kind}.claimed`,item,'info',w.id);await save();return json(res,200,item)}
+const device=match(req.url,/^\/api\/(gateways|hangers)\/([^/]+)$/);if(device&&req.method==='PATCH'){const u=needUser(req),w=wardrobeFor(u),x=await body(req),kind=device[1],key=decodeURIComponent(device[2]),list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',item=list.find(v=>v[field]===key&&v.wardrobeId===w.id);if(!item)throw error(404,kind==='gateways'?'내 옷봉을 찾을 수 없습니다.':'내 옷걸이를 찾을 수 없습니다.');const name=String(x.name??x.alias??'').trim().slice(0,40);if(name){if(kind==='gateways'){item.customName=name;syncGatewayName(item)}else{item.customName=name;syncHangerName(item)}}else if(x.resetName===true){if(kind==='gateways'){item.customName='';syncGatewayName(item)}else{item.customName='';syncHangerName(item)}}else throw error(400,'이름을 입력하세요.');if(kind==='hangers'&&x.gatewayId&&x.gatewayId!==item.gatewayId){const target=db.gateways.find(g=>g.gatewayId===String(x.gatewayId).toUpperCase()&&g.wardrobeId===w.id);if(!target)throw error(404,'대상 옷봉을 찾을 수 없습니다.');assignHanger(item,w.id,target.gatewayId,{moved:true});}emit(`${kind}.updated`,item,'info',w.id);await save();return json(res,200,item)}
+if(device&&req.method==='DELETE'){const u=needUser(req),w=wardrobeFor(u),kind=device[1],key=decodeURIComponent(device[2]),list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',i=list.findIndex(v=>v[field]===key&&v.wardrobeId===w.id);if(i<0)throw error(404,'내 장비를 찾을 수 없습니다.');const item=list[i];if(kind==='gateways'){for(const h of db.hangers)if(h.gatewayId===item.gatewayId&&h.wardrobeId===w.id){h.wardrobeId=null;h.gatewayId=null;h.alias='';h.customName='';}}else{item.wardrobeId=null;item.gatewayId=null;item.alias='';item.customName='';}item.wardrobeId=null;emit(`${kind}.removed`,{[field]:key},'warning',w.id);await save();return json(res,200,{ok:true})}
 if(p==='/api/gateway/status'&&req.method==='POST'){needDevice(req);const x=status(await body(req));await save();return json(res,200,x)}if(p==='/api/gateway/heartbeat'&&req.method==='POST'){needDevice(req);const x=heartbeat(await body(req));await save();return json(res,200,x)}
 if(p==='/api/gateway/commands'){needDevice(req);const gatewayId=String(req.headers['x-gateway-id']||'').toUpperCase(),wid=gatewayOwner(gatewayId);const cs=db.commands.filter(c=>wid&&c.wardrobeId===wid&&['QUEUED','SENT','PARTIAL'].includes(c.status)&&Date.parse(c.expiresAt)>Date.now()&&c.targets.some(t=>db.hangers.some(h=>h.hangerId===t&&h.gatewayId===gatewayId)));for(const c of cs){c.status='SENT';c.sentAt=now()}if(cs.length)await save();return json(res,200,{commands:cs})}
 if(p==='/api/gateway/ack'&&req.method==='POST'){needDevice(req);const a=await body(req),c=db.commands.find(x=>x.numericId===Number(a.commandId));if(!c)throw error(404,'명령이 없습니다.');const h=String(a.hangerId).toUpperCase();if(!c.targets.includes(h))throw error(400,'명령 대상 오류');c.acknowledgements[h]={result:a.result||'ERROR',errorCode:Number(a.errorCode||0),at:now()};c.status=c.targets.every(t=>c.acknowledgements[t]?.result==='OK')?'ACKED':'PARTIAL';emit('command.ack',c,'info',c.wardrobeId);await save();return json(res,200,c)}

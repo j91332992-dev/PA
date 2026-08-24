@@ -25,7 +25,7 @@ HOST = os.getenv("BG_DEMO_HOST", "127.0.0.1")
 PORT = int(os.getenv("BG_DEMO_PORT", "8790"))
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 MAX_IMAGE_EDGE = 2400
-BACKGROUND_MODEL = "birefnet-general-lite"
+BACKGROUND_MODEL = os.getenv("GARMENT_BACKGROUND_MODEL", "birefnet-general-lite")
 CLASSIFIER_MODEL = "patrickjohncyh/fashion-clip"
 
 _background_session = None
