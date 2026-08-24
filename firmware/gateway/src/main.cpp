@@ -663,10 +663,9 @@ void handleSerialDiagnostics() {
 
 void fetchCommands() {
   String out;
-  // A free Render instance can take a few seconds to finish a database write
-  // after accepting the request.  Commands are latency-sensitive, so allow a
-  // complete HTTP response instead of dropping it after the old 2.5 seconds.
-  if (!request("/api/gateway/commands", "GET", "", out, 15000)) return;
+  // The server returns this response before its asynchronous status save.  A
+  // bounded timeout keeps command polling responsive without starving beacons.
+  if (!request("/api/gateway/commands", "GET", "", out, 5000)) return;
   JsonDocument doc;
   if (deserializeJson(doc, out)) return;
   for (JsonObject c : doc["commands"].as<JsonArray>()) {

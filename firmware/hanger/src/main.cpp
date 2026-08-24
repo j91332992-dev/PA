@@ -66,6 +66,8 @@ constexpr uint32_t CHANNEL_SEARCH_DWELL_MS = 450;
 // beacons. Keep the last Wi-Fi channel long enough that a Web FIND arriving
 // during that delay is still received by this hanger.
 constexpr uint32_t BEACON_LOST_TIMEOUT_MS = 30000;
+constexpr uint32_t CHANNEL_RESCAN_TIMEOUT_MS = 90000;
+uint32_t lastBeaconWarningMs = 0;
 constexpr uint32_t PN532_REINIT_COOLDOWN_MS = 500;
 constexpr uint32_t NO_RESPONSE_REMOVE_MS = 350;
 constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 200;
@@ -532,9 +534,19 @@ void maintainChannel() {
   const uint32_t now = millis();
   if (channelState == ChannelState::LOCKED) {
     if (now - lastBeaconMs >= BEACON_LOST_TIMEOUT_MS) {
+      // Keep using the last proven Gateway channel while HTTPS is briefly
+      // blocking the S3 loop.  Sweeping channels immediately makes a Cloud
+      // FIND miss the C6 even though both boards are still on channel 4.
+      if (now - lastBeaconMs < CHANNEL_RESCAN_TIMEOUT_MS) {
+        if (now - lastBeaconWarningMs >= BEACON_LOST_TIMEOUT_MS) {
+          lastBeaconWarningMs = now;
+          Serial.printf("[CHANNEL] Beacon delayed; holding ch=%u for FIND\n", channel);
+        }
+        return;
+      }
       channelState = ChannelState::SEARCHING;
       channelDwellStartMs = now;
-      Serial.println("[CHANNEL] Gateway beacon lost -> SEARCHING");
+      Serial.println("[CHANNEL] Gateway beacon absent 90s -> SEARCHING");
     }
     return;
   }
@@ -574,7 +586,11 @@ void setup() {
   lastKnownGatewayChannel = prefs.getUChar("channel", 1);
   if (lastKnownGatewayChannel < 1 || lastKnownGatewayChannel > 13) lastKnownGatewayChannel = 1;
   channel = lastKnownGatewayChannel;
-  channelState = ChannelState::SEARCHING;
+  // A reboot must not start sweeping away from the last paired S3 channel
+  // while the S3 is in a cloud request.  Beacons will still correct the
+  // channel immediately if the router moved it.
+  channelState = pairedGateway.length() ? ChannelState::LOCKED : ChannelState::SEARCHING;
+  lastBeaconMs = millis();
   channelDwellStartMs = millis();
   Serial.printf("[CHANNEL] trying last known ch=%u\n", channel);
 
