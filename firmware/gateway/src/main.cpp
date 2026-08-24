@@ -90,6 +90,7 @@ const char GOOGLE_ROOT_BUNDLE[] =
 
 String gateway;
 uint32_t beaconAt = 0, cloudAt = 0, gatewayHeartbeatAt = 0, wifiRetryAt = 0, sequence = 0;
+constexpr uint32_t COMMAND_POLL_INTERVAL_MS = 750;
 Preferences wifiPrefs;
 WebServer setupServer(80);
 DNSServer setupDns;
@@ -583,7 +584,7 @@ void upload(const sw::Packet& p) {
   String body, out;
   serializeJson(d, body);
   int httpCode = 0;
-  const uint16_t timeoutMs = 8000;
+  const uint16_t timeoutMs = 2500;
   if (request("/api/gateway/status", "POST", body, out, timeoutMs, &httpCode)) {
     Serial.printf("[CLOUD] %s OK\n", p.hangerId);
   } else {
@@ -602,7 +603,7 @@ void gatewayHeartbeat() {
   String body, out;
   serializeJson(d, body);
   int httpCode = 0;
-  if (request("/api/gateway/heartbeat", "POST", body, out, 8000, &httpCode)) {
+  if (request("/api/gateway/heartbeat", "POST", body, out, 2500, &httpCode)) {
     Serial.println("[CLOUD] gateway heartbeat OK");
     setBleStatus("server_connected", "옷봉이 인터넷과 내 옷장 서버에 연결되었습니다.");
   } else {
@@ -686,7 +687,7 @@ void fetchCommands() {
   String out;
   // The server returns this response before its asynchronous status save.  A
   // bounded timeout keeps command polling responsive without starving beacons.
-  if (!request("/api/gateway/commands", "GET", "", out, 5000)) {
+  if (!request("/api/gateway/commands", "GET", "", out, 3500)) {
     Serial.println("[COMMAND-POLL] HTTP request failed");
     return;
   }
@@ -875,7 +876,13 @@ void loop() {
     wifiRetryCount = 0;
   }
   
-  // 1. Process pending ESP-NOW EVENTs / ACKs immediately!
+  // 1. Cloud FIND is latency-sensitive. Poll before slower status uploads.
+  if (WiFi.status() == WL_CONNECTED && t - cloudAt > COMMAND_POLL_INTERVAL_MS) {
+    cloudAt = t;
+    fetchCommands();
+  }
+
+  // 2. Process pending ESP-NOW EVENTs / ACKs.
   sw::Packet p;
   while (dequeue(p)) {
     if (duplicateStatus(p)) {
@@ -887,12 +894,6 @@ void loop() {
     } else if (p.type == sw::Type::STATUS || p.type == sw::Type::EVENT) {
       if (WiFi.status() == WL_CONNECTED) upload(p);
     }
-  }
-
-  // 2. Command polling (every 2.5s when queue is clear)
-  if (WiFi.status() == WL_CONNECTED && t - cloudAt > 2500) {
-    cloudAt = t;
-    fetchCommands();
   }
 
   // A connected C3 must remain online even if no C6 tag packet arrived.
