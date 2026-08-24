@@ -136,3 +136,9 @@
 - C6는 200ms 고정 ESP-NOW heartbeat를 전송한다. 서버는 옷걸이 상태만 750ms 무응답이면 `OFFLINE`으로 바꾸고, 해당 garment를 즉시 `OUT`으로 재계산하며 진행 중 LED FIND도 `ESPNOW_LINK_LOST`로 취소한다. COM23의 HC-85C438에 플래시한 뒤 연속 heartbeat sequence로 실제 전송을 확인했다.
 - Gateway Wi-Fi/Cloud의 일반 30초 offline 판정은 유지한다. 이 규칙은 C6 전원 단절 또는 C6↔Gateway ESP-NOW 단절에서만 빠르게 적용된다.
 - `tests/espnow-link-loss.test.js`는 C6 heartbeat 단절 후 garment OUT, currentHanger 제거, FIND CANCELLED를 자동 검증한다.
+
+## C6 수동 Bluetooth 페어링
+
+- C6는 Gateway beacon을 받더라도 더 이상 Gateway ID를 자동 저장하거나 Cloud 상태를 보고하지 않는다. beacon은 BLE 화면에서 발견된 옷봉을 보여 주는 용도뿐이다.
+- 사용자가 BLE에서 **옷봉과 연결**을 누른 경우에만 Gateway ID를 NVS에 `manualPairingApproved`와 함께 저장한다. 이후 전원 재인가에서는 그 명시적으로 승인한 Gateway에만 자동 재연결한다.
+- 이전 펌웨어의 자동 beacon 연결 기록은 승인 플래그가 없으므로 플래시 후 제거된다. COM23 HC-85C438에서 `[PAIR] manual BLE pairing required` 부팅 로그로 확인했다.

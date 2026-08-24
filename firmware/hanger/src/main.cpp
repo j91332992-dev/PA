@@ -31,6 +31,7 @@ String pairedGateway;
 String discoveredGateway;
 String displayName;
 bool hangerLinkDisabled = false;
+bool manualPairingApproved = false;
 volatile bool reportAfterGatewayBeacon = false;
 uint32_t sequence = 0, bootId = 0, lastHeartbeat = 0, lastScan = 0, lastBeacon = 0, ledUntil = 0, ledBlinkStartedAt = 0;
 uint32_t lastCommandId = 0, lastCommandSequence = 0, lastCommandError = 0;
@@ -171,11 +172,13 @@ class HangerBleConfigCallbacks : public BLECharacteristicCallbacks {
       }
       pairedGateway = discoveredGateway;
       hangerLinkDisabled = false;
+      manualPairingApproved = true;
       prefs.putString("gateway", pairedGateway);
       // The BLE advertising name is always a neutral hardware label. Do not
       // persist an account or UI display name on a transferable hanger.
       prefs.remove("displayName");
       prefs.putBool("linkDisabled", false);
+      prefs.putBool("manualPairingApproved", true);
       setHangerBleStatus("paired", "옷봉과 연결했습니다. 이제 옷 태그 상태를 확인할 수 있습니다.");
       report(true);
       return;
@@ -183,8 +186,10 @@ class HangerBleConfigCallbacks : public BLECharacteristicCallbacks {
     if (action == "forget") {
       pairedGateway = "";
       hangerLinkDisabled = true;
+      manualPairingApproved = false;
       prefs.remove("gateway");
       prefs.putBool("linkDisabled", true);
+      prefs.putBool("manualPairingApproved", false);
       setHangerBleStatus("unpaired", "옷봉 연결을 제거했습니다. 다시 연결하려면 옷걸이 찾기를 누르세요.");
       return;
     }
@@ -293,7 +298,9 @@ void fill(sw::Packet& p, sw::Type type) {
 }
 
 bool send(sw::Packet& p) {
-  if (hangerLinkDisabled) return false;
+  // A C6 must never announce itself to a Gateway or accept Cloud commands
+  // until the user has explicitly approved that Gateway in the BLE flow.
+  if (hangerLinkDisabled || !manualPairingApproved || !pairedGateway.length()) return false;
   sw::seal(p);
   return esp_now_send(sw::BROADCAST, reinterpret_cast<uint8_t*>(&p), sizeof p) == ESP_OK;
 }
@@ -351,10 +358,11 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
   if (p.type == sw::Type::BEACON) {
     discoveredGateway = p.gatewayId;
     if (hangerLinkDisabled) return;
-    if (!pairedGateway.length()) {
-      pairedGateway = discoveredGateway;
-      prefs.putString("gateway", pairedGateway);
-      Serial.printf("[GATEWAY] adopted gatewayId=%s\n", pairedGateway.c_str());
+    if (!manualPairingApproved || !pairedGateway.length()) {
+      // Discovery is intentionally not pairing. BLE can show this ID and the
+      // user must press the pairing action before any ESP-NOW data is sent.
+      setHangerBleStatus("gateway_found", "옷봉을 찾았습니다. 블루투스에서 ‘옷봉과 연결’을 눌러 승인하세요.");
+      return;
     }
     if (pairedGateway != discoveredGateway) return;
 
@@ -381,7 +389,7 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
     return;
   }
   if (p.type == sw::Type::COMMAND) {
-    const bool gatewayMatches = !pairedGateway.length() || pairedGateway == String(p.gatewayId);
+    const bool gatewayMatches = manualPairingApproved && pairedGateway.length() && pairedGateway == String(p.gatewayId);
     const bool targeted = sw::target(p, hanger.c_str());
     Serial.printf("[COMMAND-RX] id=%lu cmd=%u from=%s paired=%s target=%s ch=%u link=%s\n",
                   p.commandId, unsigned(p.command), p.gatewayId,
@@ -635,6 +643,16 @@ void setup() {
                 hanger == LEGACY_HANGER_ID ? " (legacy-preserved)" : "");
   bootId = esp_random();
   pairedGateway = prefs.getString("gateway", "");
+  manualPairingApproved = prefs.getBool("manualPairingApproved", false);
+  // Firmware before this version auto-adopted the first beacon it heard.
+  // Those records have no explicit BLE approval and must not survive as an
+  // implicit pairing. The user pairs once through the visible BLE action.
+  if (!manualPairingApproved) {
+    pairedGateway = "";
+    prefs.remove("gateway");
+    prefs.remove("channel");
+    Serial.println("[PAIR] manual BLE pairing required");
+  }
   lastKnownGatewayChannel = prefs.getUChar("channel", 1);
   if (lastKnownGatewayChannel < 1 || lastKnownGatewayChannel > 13) lastKnownGatewayChannel = 1;
   channel = lastKnownGatewayChannel;
