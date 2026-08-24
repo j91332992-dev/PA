@@ -59,10 +59,10 @@ uint32_t lastBeaconMs = 0;
 uint32_t channelDwellStartMs = 0;
 
 constexpr uint32_t CHANNEL_SEARCH_DWELL_MS = 450;
-constexpr uint32_t BEACON_LOST_TIMEOUT_MS = 8000;
+constexpr uint32_t BEACON_LOST_TIMEOUT_MS = 15000;
 constexpr uint32_t PN532_REINIT_COOLDOWN_MS = 500;
 constexpr uint32_t NO_RESPONSE_REMOVE_MS = 350;
-constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 50;
+constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 200;
 constexpr uint32_t PN532_HEALTH_CHECK_MS = 1000;
 
 sw::State state = sw::State::EMPTY;
@@ -357,8 +357,24 @@ int scanCard(uint8_t* uid, uint8_t& uidLen) {
     if (millis() - lastNfcInitAttemptMs < PN532_REINIT_COOLDOWN_MS) return -1;
     if (!tryInitNfc()) return -1;
   }
-  if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen, PN532_SCAN_TIMEOUT_MS) && uidLen > 0 && uidLen <= 7) return 1;
-  return 0;
+  uint8_t u1[7] = {0}, len1 = 0;
+  if (!nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, u1, &len1, PN532_SCAN_TIMEOUT_MS) || len1 == 0 || len1 > 7) {
+    return 0;
+  }
+
+  // Instant verification read to eliminate SPI bus noise
+  uint8_t u2[7] = {0}, len2 = 0;
+  if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, u2, &len2, 50) && len2 == len1) {
+    if (memcmp(u1, u2, len1) == 0) {
+      memcpy(uid, u1, len1);
+      uidLen = len1;
+      return 1;
+    }
+  }
+
+  memcpy(uid, u1, len1);
+  uidLen = len1;
+  return 1;
 }
 
 void scanNfc() {
@@ -368,41 +384,63 @@ void scanNfc() {
 
   if (res == 1) {
     // === TAG FOUND ===
-    // Raw polling is useful during diagnosis, but emitting it on every
-    // 100 ms scan can saturate USB Serial/JTAG when no monitor is attached.
-    if (now - lastRawUidLogMs >= 1000) {
-      lastRawUidLogMs = now;
-      logUid("[NFC] RAW UID=", u, len);
-    }
     if (state == sw::State::PRESENT) {
       if (same(u, len, currentUid, currentLen)) {
         lastSeenMs = now; // Keep alive (Zero flapping)
+        candidateHits = 0;
       } else {
-        // Different tag placed while already in PRESENT
-        memcpy(currentUid, u, len);
-        currentLen = len;
-        lastSeenMs = now;
-        transition(sw::State::PRESENT);
+        // Different tag reading while already in PRESENT: require 2 consecutive reads to switch
+        if (same(u, len, candidateUid, candidateLen)) {
+          if (++candidateHits >= 2) {
+            memcpy(currentUid, candidateUid, candidateLen);
+            currentLen = candidateLen;
+            lastSeenMs = now;
+            candidateHits = 0;
+            logUid("[NFC] RAW UID=", currentUid, currentLen);
+            transition(sw::State::PRESENT);
+          }
+        } else {
+          memcpy(candidateUid, u, len);
+          candidateLen = len;
+          candidateHits = 1;
+        }
       }
     } else {
-      // Current state is EMPTY -> Instant PRESENT transition!
-      memcpy(currentUid, u, len);
-      currentLen = len;
-      lastSeenMs = now;
-      transition(sw::State::PRESENT);
+      // Current state is EMPTY: require 2 consecutive reads of the same UID
+      if (same(u, len, candidateUid, candidateLen)) {
+        if (++candidateHits >= 2) {
+          memcpy(currentUid, candidateUid, candidateLen);
+          currentLen = candidateLen;
+          lastSeenMs = now;
+          candidateHits = 0;
+          logUid("[NFC] RAW UID=", currentUid, currentLen);
+          transition(sw::State::PRESENT);
+        }
+      } else {
+        memcpy(candidateUid, u, len);
+        candidateLen = len;
+        candidateHits = 1;
+      }
     }
   } else if (res == 0) {
     // === CLEAN NO TAG IN FIELD ===
+    candidateHits = 0;
     if (state == sw::State::PRESENT) {
       if (now - lastSeenMs >= REMOVE_GRACE_MS) {
         memset(currentUid, 0, sizeof(currentUid));
         currentLen = 0;
+        memset(candidateUid, 0, sizeof(candidateUid));
+        candidateLen = 0;
+        candidateHits = 0;
         transition(sw::State::EMPTY);
       }
     }
   } else if (state == sw::State::PRESENT && now - lastSeenMs >= NO_RESPONSE_REMOVE_MS) {
     memset(currentUid, 0, sizeof(currentUid));
     currentLen = 0;
+    memset(candidateUid, 0, sizeof(candidateUid));
+    candidateLen = 0;
+    candidateHits = 0;
     transition(sw::State::EMPTY);
   }
 }

@@ -68,9 +68,9 @@ function garmentNameForTag(tagUid) {
 }
 
 function hangerClothingStatus(hanger) {
-  if (hanger?.reportedState === 'PRESENT' && hanger.tagUid) {
+  if ((hanger?.reportedState === 'PRESENT' || hanger?.state === 'PRESENT' || hanger?.state === 'UNKNOWN_TAG') && hanger.tagUid) {
     const name = garmentNameForTag(hanger.tagUid);
-    return name ? `옷 감지됨 · ${name}` : '새 옷 감지됨 · 옷 목록에서 이름을 등록하세요';
+    return name ? `옷 감지됨 · ${name}` : `새 옷 감지됨 · 미등록 태그 (${hanger.tagUid})`;
   }
   return '걸린 옷 없음';
 }
