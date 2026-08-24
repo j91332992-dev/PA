@@ -11,6 +11,7 @@
 #include <time.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <esp_mac.h>
 #include <ArduinoJson.h>
 #include <esp_crt_bundle.h>
 #if __has_include("config.h")
@@ -105,6 +106,24 @@ String provisionMessage = "블루투스로 옷봉을 연결하세요.";
 constexpr char BLE_SERVICE_UUID[] = "a4e66a10-0fb0-4dce-8be0-18cf7bc82001";
 constexpr char BLE_CONFIG_UUID[] = "a4e66a11-0fb0-4dce-8be0-18cf7bc82001";
 constexpr char BLE_STATUS_UUID[] = "a4e66a12-0fb0-4dce-8be0-18cf7bc82001";
+
+// The original physical S3 was registered before the efuse byte-order bug
+// was fixed. Preserve that one cloud identity; every other S3 uses the last
+// three station-MAC bytes, matching the C6 hardware-ID rule.
+constexpr uint8_t LEGACY_GATEWAY_MAC[6] = {0x1C, 0xDB, 0xD4, 0x76, 0x65, 0x14};
+constexpr char LEGACY_GATEWAY_ID[] = "GW-D4DB1C";
+
+String hardwareGatewayId() {
+  uint8_t mac[6] = {0};
+  if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
+    uint64_t raw = ESP.getEfuseMac();
+    memcpy(mac, &raw, 6);
+  }
+  if (memcmp(mac, LEGACY_GATEWAY_MAC, sizeof mac) == 0) return LEGACY_GATEWAY_ID;
+  char id[16];
+  snprintf(id, sizeof id, "GW-%02X%02X%02X", mac[3], mac[4], mac[5]);
+  return id;
+}
 
 class GatewayBleServerCallbacks : public BLEServerCallbacks {
   void onDisconnect(BLEServer*) override {
@@ -834,10 +853,7 @@ void setup() {
   // stall packet forwarding while its serial buffer is full.
   Serial.setTxTimeoutMs(0);
   delay(500);
-  uint64_t mac = ESP.getEfuseMac();
-  char id[16];
-  snprintf(id, sizeof id, "GW-%06llX", mac & 0xffffff);
-  gateway = id;
+  gateway = hardwareGatewayId();
   wifiPrefs.begin("wardrobe-wifi", false);
   // BLE stays available even after Wi-Fi succeeds, so first setup and later
   // router changes always use the same user-facing flow.  It must start

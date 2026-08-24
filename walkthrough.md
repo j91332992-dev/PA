@@ -125,3 +125,8 @@
 - C6 no-tag scan은 40ms 고정 주기이며, 제거 확인에 영향을 주던 보드별 0~72ms 스캔 지터를 제거했다. 5회 clean no-tag 확인은 유지하되 실제 제거 확정은 약 200ms로 줄었다. COM22에 플래시 후 PN532 `0x32010607`과 실제 NTAG UID를 재확인했다.
 - Public Web은 FIND/LED OFF의 HTTP 응답에 포함된 명령을 즉시 로컬 모델에 반영하고 렌더한다. 이후 WebSocket과 snapshot이 실제 ACK/EMPTY 상태를 동기화하므로, 명령 후 `점멸 중` 박스가 추가 snapshot 왕복을 기다리지 않는다.
 - 태그/LED의 단일 제품 규칙: 태그가 없으면 `옷장 밖`과 FIND 비활성, `PRESENT + tagUid`일 때만 `옷장 안`과 FIND 활성이다. 서버는 빈 옷걸이에 대한 `LED_BLINK`를 HTTP 409로 거부하며, `LED_OFF`는 항상 허용한다. EMPTY WebSocket을 받은 앱도 취소 이벤트를 기다리지 않고 즉시 로컬 FIND 표시를 제거한다.
+
+## 새 Gateway 하드웨어 ID
+
+- Gateway는 ESP efuse의 잘못된 바이트 순서 때문에 서로 다른 S3가 같은 `GW-D4DB1C` ID를 만들 수 있었다. 이제 station MAC 마지막 세 바이트로 ID를 만들며, 기존 실물 S3 MAC만 호환성 매핑으로 `GW-D4DB1C`를 유지한다.
+- 새 S3(COM24, MAC suffix `7495A0`)에는 최신 Gateway 펌웨어를 플래시하고 `GW-7495A0` 부팅 로그를 확인했다. 새 보드는 이전 Wi-Fi 저장값이 유효하지 않아 BLE Wi-Fi provisioning 대기 상태로 시작한다.
