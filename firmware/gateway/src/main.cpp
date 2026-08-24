@@ -90,7 +90,7 @@ const char GOOGLE_ROOT_BUNDLE[] =
 
 String gateway;
 uint32_t beaconAt = 0, cloudAt = 0, gatewayHeartbeatAt = 0, wifiRetryAt = 0, sequence = 0;
-constexpr uint32_t COMMAND_POLL_INTERVAL_MS = 750;
+constexpr uint32_t COMMAND_POLL_INTERVAL_MS = 300;
 Preferences wifiPrefs;
 WebServer setupServer(80);
 DNSServer setupDns;
@@ -693,7 +693,7 @@ void fetchCommands() {
   // bounded timeout keeps command polling responsive without starving beacons.
   // The next poll follows quickly. Prefer a bounded physical-state latency to
   // waiting several seconds for one stale/slow command response.
-  if (!request("/api/gateway/commands", "GET", "", out, 800)) {
+  if (!request("/api/gateway/commands", "GET", "", out, 250)) {
     Serial.println("[COMMAND-POLL] HTTP request failed");
     return;
   }

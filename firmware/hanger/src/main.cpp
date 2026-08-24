@@ -33,6 +33,7 @@ String displayName;
 bool hangerLinkDisabled = false;
 volatile bool reportAfterGatewayBeacon = false;
 uint32_t sequence = 0, bootId = 0, lastHeartbeat = 0, lastScan = 0, lastBeacon = 0, ledUntil = 0, ledBlinkStartedAt = 0;
+uint32_t lastCommandId = 0, lastCommandSequence = 0, lastCommandError = 0;
 uint8_t channel = 1;
 BLECharacteristic* bleStatusCharacteristic = nullptr;
 bool bleActive = false;
@@ -389,7 +390,21 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
                     gatewayMatches ? "yes" : "no", targeted ? "yes" : "no");
       return;
     }
+    // Gateway sends a short ESP-NOW burst and may re-poll the same Cloud
+    // command. A duplicate must ACK but must never restart a blink or undo a
+    // later NFC removal. Old sequence packets are discarded for the same
+    // reason.
+    if (p.commandId != 0 && p.commandId == lastCommandId) {
+      ack(p, lastCommandError);
+      return;
+    }
+    if (p.commandId != 0 && lastCommandSequence != 0 && p.sequence <= lastCommandSequence) {
+      Serial.printf("[COMMAND-IGNORE] stale seq=%lu last=%lu id=%lu\n", p.sequence, lastCommandSequence, p.commandId);
+      return;
+    }
+    if (p.commandId != 0) lastCommandSequence = p.sequence;
     Serial.printf("[COMMAND] %lu cmd=%u\n", p.commandId, (unsigned)p.command);
+    uint32_t commandError = 0;
     if (p.command == sw::Command::LED_OFF) {
       ledUntil = 0;
       ledBlinkStartedAt = 0;
@@ -403,16 +418,20 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
         ledBlinkStartedAt = 0;
         led(false);
         Serial.printf("[LED] REJECT FIND: no confirmed tag, id=%lu\n", p.commandId);
-        ack(p, FIND_REJECTED_EMPTY);
-        return;
+        commandError = FIND_REJECTED_EMPTY;
+      } else {
+        // The LED must visibly turn on before this command is acknowledged.
+        // Use a command-relative phase so a FIND never starts in an OFF slice.
+        ledBlinkStartedAt = millis();
+        ledUntil = p.durationMs == 0 ? (ledBlinkStartedAt + LED_SAFETY_TIMEOUT_MS) : (ledBlinkStartedAt + p.durationMs);
+        led(true);
       }
-      // The LED must visibly turn on before this command is acknowledged.
-      // Use a command-relative phase so a FIND never starts in an OFF slice.
-      ledBlinkStartedAt = millis();
-      ledUntil = p.durationMs == 0 ? (ledBlinkStartedAt + LED_SAFETY_TIMEOUT_MS) : (ledBlinkStartedAt + p.durationMs);
-      led(true);
     }
-    ack(p);
+    if (p.commandId != 0) {
+      lastCommandId = p.commandId;
+      lastCommandError = commandError;
+    }
+    ack(p, commandError);
   }
 }
 
