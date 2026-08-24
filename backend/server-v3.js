@@ -178,19 +178,24 @@ function adminOverview(){
   const gateways=db.gateways.filter(g=>!simulated(g)),hangers=db.hangers.filter(h=>!simulated(h)),garments=db.garments,problems=[];
   const onlineAge=item=>online(item)?'ONLINE':'OFFLINE';
   const users=db.users.map(user=>{
-    const wardrobe=wardrobeFor(user),ownedGateways=wardrobe?visible(db.gateways,wardrobe.id):[],ownedHangers=wardrobe?visible(db.hangers,wardrobe.id):[],ownedGarments=wardrobe?visible(db.garments,wardrobe.id):[];
-    return {...userPublic(user),gatewayCount:ownedGateways.length,hangerCount:ownedHangers.length,garmentCount:ownedGarments.length,gateways:ownedGateways.map(gateway=>{
+    const wardrobe=wardrobeFor(user),ownedGateways=wardrobe?visible(db.gateways,wardrobe.id):[],ownedHangers=wardrobe?visible(db.hangers,wardrobe.id):[],ownedGarments=wardrobe?visible(db.garments,wardrobe.id):[],gatewayIds=new Set(ownedGateways.map(gateway=>gateway.gatewayId));
+    let problemDeviceCount=0;
+    const serializeHanger=(hanger,gateway)=>{
+      const garment=ownedGarments.find(item=>item.tagUid===hanger.tagUid&&hanger.state==='PRESENT');
+      const hangerState=onlineAge(hanger),nfcStatus=Number(hanger.errorFlags||0)>0?'점검 필요':hanger.firmwareVersion&&hanger.firmwareVersion!=='unknown'?'정상':'알 수 없음';
+      if(hangerState==='OFFLINE'){problemDeviceCount++;problems.push({level:'problem',kind:'hanger',userId:user.id,userName:user.name,gatewayId:gateway?.gatewayId||'',hangerId:hanger.hangerId,title:hanger.alias||hanger.hangerId,message:`옷걸이가 OFFLINE입니다. 마지막 통신 ${hanger.lastSeen||'알 수 없음'}`});}
+      else if(nfcStatus==='점검 필요'){problemDeviceCount++;problems.push({level:'warning',kind:'hanger',userId:user.id,userName:user.name,gatewayId:gateway?.gatewayId||'',hangerId:hanger.hangerId,title:hanger.alias||hanger.hangerId,message:'PN532/NFC 점검이 필요합니다.'});}
+      return {hangerId:hanger.hangerId,hangerNumber:hanger.hangerNumber||null,name:hanger.alias,customName:hanger.customName||'',gatewayId:gateway?.gatewayId||null,lastGatewayId:hanger.gatewayId||null,state:hangerState,reportedState:hanger.reportedState||hanger.state||'UNKNOWN',nfcStatus,tagDetected:!!hanger.tagUid,garmentName:garment?.name||'',lastSeen:hanger.lastSeen||null,channel:Number.isFinite(Number(hanger.channel))?Number(hanger.channel):null,errorFlags:Number(hanger.errorFlags||0)};
+    };
+    const unassignedRaw=ownedHangers.filter(hanger=>!hanger.gatewayId||!gatewayIds.has(hanger.gatewayId));
+    const unassignedHangers=unassignedRaw.map(hanger=>serializeHanger(hanger,null));
+    const userGateways=ownedGateways.map(gateway=>{
       const gatewayHangers=ownedHangers.filter(hanger=>hanger.gatewayId===gateway.gatewayId);
       const gatewayState=onlineAge(gateway),wifiStatus=gateway.ssid?'CONNECTED':'UNKNOWN',cloudStatus=gatewayState==='ONLINE'?'CONNECTED':'UNKNOWN';
-      if(gatewayState==='OFFLINE')problems.push({level:'problem',kind:'gateway',userId:user.id,userName:user.name,gatewayId:gateway.gatewayId,title:gateway.name||gateway.gatewayId,message:`옷봉이 OFFLINE입니다. 마지막 heartbeat ${gateway.lastSeen||'알 수 없음'}`});
-      return {gatewayId:gateway.gatewayId,gatewayNumber:gateway.gatewayNumber||null,name:gateway.name,customName:gateway.customName||'',state:gatewayState,lastSeen:gateway.lastSeen||null,wifiStatus,cloudStatus,ssid:gateway.ssid||'',rssi:Number.isFinite(Number(gateway.rssi))?Number(gateway.rssi):null,channel:Number.isFinite(Number(gateway.channel))?Number(gateway.channel):null,hangerCount:gatewayHangers.length,hangers:gatewayHangers.map(hanger=>{
-        const garment=ownedGarments.find(item=>item.tagUid===hanger.tagUid&&hanger.state==='PRESENT');
-        const hangerState=onlineAge(hanger),nfcStatus=Number(hanger.errorFlags||0)>0?'점검 필요':hanger.firmwareVersion&&hanger.firmwareVersion!=='unknown'?'정상':'알 수 없음';
-        if(hangerState==='OFFLINE')problems.push({level:'problem',kind:'hanger',userId:user.id,userName:user.name,gatewayId:gateway.gatewayId,hangerId:hanger.hangerId,title:hanger.alias||hanger.hangerId,message:`옷걸이가 OFFLINE입니다. 마지막 통신 ${hanger.lastSeen||'알 수 없음'}`});
-        else if(nfcStatus==='점검 필요')problems.push({level:'warning',kind:'hanger',userId:user.id,userName:user.name,gatewayId:gateway.gatewayId,hangerId:hanger.hangerId,title:hanger.alias||hanger.hangerId,message:'PN532/NFC 점검이 필요합니다.'});
-        return {hangerId:hanger.hangerId,hangerNumber:hanger.hangerNumber||null,name:hanger.alias,customName:hanger.customName||'',gatewayId:hanger.gatewayId,state:hangerState,reportedState:hanger.reportedState||hanger.state||'UNKNOWN',nfcStatus,tagDetected:!!hanger.tagUid,garmentName:garment?.name||'',lastSeen:hanger.lastSeen||null,channel:Number.isFinite(Number(hanger.channel))?Number(hanger.channel):null,errorFlags:Number(hanger.errorFlags||0)};
-      })};
-    })};
+      if(gatewayState==='OFFLINE'){problemDeviceCount++;problems.push({level:'problem',kind:'gateway',userId:user.id,userName:user.name,gatewayId:gateway.gatewayId,title:gateway.name||gateway.gatewayId,message:`옷봉이 OFFLINE입니다. 마지막 heartbeat ${gateway.lastSeen||'알 수 없음'}`});}
+      return {gatewayId:gateway.gatewayId,gatewayNumber:gateway.gatewayNumber||null,name:gateway.name,customName:gateway.customName||'',state:gatewayState,lastSeen:gateway.lastSeen||null,wifiStatus,cloudStatus,ssid:gateway.ssid||'',rssi:Number.isFinite(Number(gateway.rssi))?Number(gateway.rssi):null,channel:Number.isFinite(Number(gateway.channel))?Number(gateway.channel):null,hangerCount:gatewayHangers.length,hangers:gatewayHangers.map(hanger=>serializeHanger(hanger,gateway))};
+    });
+    return {...userPublic(user),gatewayCount:ownedGateways.length,hangerCount:ownedHangers.length,connectedHangerCount:ownedHangers.length-unassignedHangers.length,unassignedHangerCount:unassignedHangers.length,garmentCount:ownedGarments.length,problemDeviceCount,unassignedHangers,gateways:userGateways};
   });
   const onlineGateways=gateways.filter(online).length,onlineHangers=hangers.filter(online).length;
   const imageStates=garments.reduce((all,garment)=>{const state=String(garment.imageProcessingStatus||'ready');all[state]=(all[state]||0)+1;return all},{});
@@ -200,6 +205,22 @@ function adminOverview(){
   const recentDeviceEvents=db.events.filter(event=>/^(hanger\.|gateway\.)/.test(String(event.type||''))).slice(0,20).map(event=>({id:event.id,type:event.type,severity:event.severity,at:event.at,wardrobeId:event.wardrobeId||null,deviceId:event.payload?.hangerId||event.payload?.gatewayId||'',state:event.payload?.state||event.payload?.reportedState||''}));
   const nfcReady=hangers.filter(h=>online(h)&&Number(h.errorFlags||0)===0&&h.firmwareVersion&&h.firmwareVersion!=='unknown').length,nfcAttention=hangers.filter(h=>Number(h.errorFlags||0)>0).length;
   return {totals:{users:users.length,gateways:gateways.length,hangers:hangers.length,garments:garments.length,onlineGateways,offlineGateways:gateways.length-onlineGateways,onlineHangers,offlineHangers:hangers.length-onlineHangers},users,problems,system:{backend:{ready:isReady,storage:storage.mode},websocket:{status:sockets.size?'CONNECTED':'UNKNOWN',connectionCount:sockets.size},storage:{status:cloudImageService.configured()?'CONFIGURED':'UNKNOWN'},gateways:{total:gateways.length,online:onlineGateways,offline:gateways.length-onlineGateways},hangers:{total:hangers.length,online:onlineHangers,offline:hangers.length-onlineHangers,nfcReady,nfcAttention},imageProcessing:{configured:cloudImageService.configured(),ready:imageStates.ready||0,processing:imageStates.processing||0,pending:imageStates.pending||0,failed:imageStates.failed||0},recentDeviceEvents}};
+}
+function removeAdminUser(admin,targetUserId){
+  const target=db.users.find(user=>user.id===targetUserId);
+  if(!target)throw error(404,'사용자를 찾을 수 없습니다.');
+  if(target.id===admin.id)throw error(409,'현재 로그인한 관리자 계정은 삭제할 수 없습니다.');
+  const wardrobeIds=new Set(db.wardrobes.filter(wardrobe=>wardrobe.userId===target.id).map(wardrobe=>wardrobe.id));
+  for(const gateway of db.gateways)if(wardrobeIds.has(gateway.wardrobeId)){gateway.wardrobeId=null;gateway.customName='';gateway.name='새 옷봉';}
+  for(const hanger of db.hangers)if(wardrobeIds.has(hanger.wardrobeId)){hanger.wardrobeId=null;hanger.gatewayId=null;hanger.customName='';hanger.alias='';}
+  const garmentCount=db.garments.filter(garment=>wardrobeIds.has(garment.wardrobeId)).length;
+  db.garments=db.garments.filter(garment=>!wardrobeIds.has(garment.wardrobeId));
+  db.commands=db.commands.filter(command=>!wardrobeIds.has(command.wardrobeId));
+  db.events=db.events.filter(event=>!wardrobeIds.has(event.wardrobeId));
+  db.wardrobes=db.wardrobes.filter(wardrobe=>wardrobe.userId!==target.id);
+  db.users=db.users.filter(user=>user.id!==target.id);
+  revokeAdminSessions(target.id);
+  return {deletedUserId:target.id,garmentCount};
 }
 function json(res,status,data){res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','access-control-allow-origin':process.env.PUBLIC_ORIGIN||'*','access-control-allow-headers':'authorization,content-type,x-gateway-id,x-admin-session','access-control-allow-methods':'GET,POST,PATCH,DELETE,OPTIONS'});res.end(status===204?'':JSON.stringify(data))}
 function body(req){return new Promise((ok,no)=>{let s='';req.on('data',x=>{s+=x;if(s.length>1e6)req.destroy()});req.on('end',()=>{try{ok(s?JSON.parse(s):{})}catch{no(error(400,'JSON 형식 오류'))}});req.on('error',no)})}
@@ -225,6 +246,7 @@ if(p==='/api/admin/verify'&&req.method==='POST'){const u=needUser(req);if(u.role
 if(p==='/api/admin/logout'&&req.method==='POST'){const u=needUser(req);if(u.role!=='admin')throw error(403,'관리자 권한이 필요합니다.');const key=adminSessionKey(req.headers['x-admin-session']);const session=adminSessions.get(key);if(session?.userId===u.id)adminSessions.delete(key);return json(res,200,{ok:true})}
 if(p==='/api/admin/overview'){requireAdmin(req);return json(res,200,adminOverview())}
 if(p==='/api/admin/system'){requireAdmin(req);return json(res,200,{system:adminOverview().system})}
+const adminUserDelete=match(req.url,/^\/api\/admin\/users\/([^/]+)$/);if(adminUserDelete&&req.method==='DELETE'){const admin=requireAdmin(req),result=removeAdminUser(admin,decodeURIComponent(adminUserDelete[1]));await save();return json(res,200,{ok:true,...result})}
 if(p==='/api/snapshot'){const u=needUser(req);return json(res,200,snapshot(u))}
 if(p==='/api/garments'&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),x=await body(req),tagUid=uid(x.tagUid);if(!String(x.name||'').trim()||tagUid.length<8)throw error(400,'옷 이름과 NFC UID가 필요합니다.');if(db.garments.some(g=>g.wardrobeId===w.id&&g.tagUid===tagUid))throw error(409,'이 NFC 태그는 이미 내 옷장에 등록되어 있습니다.');const g={id:id('garment'),name:String(x.name).slice(0,80),tagUid,category:String(x.category||''),color:String(x.color||''),season:String(x.season||''),brand:String(x.brand||''),memo:String(x.memo||''),imageUrl:String(x.imageUrl||''),originalImagePath:'',processedImagePath:'',imageProcessingStatus:'ready',classification:{},classificationConfidence:{},processingError:'',currentState:'OUT',currentHanger:null,createdBy:u.id,wardrobeId:w.id,createdAt:now()};db.garments.push(g);reconcile();emit('garment.created',g,'info',w.id);await save();return json(res,201,g)}
 const gd=match(req.url,/^\/api\/garments\/([^/]+)$/);if(gd&&req.method==='DELETE'){const u=needUser(req),w=wardrobeFor(u),i=db.garments.findIndex(g=>g.id===gd[1]&&g.wardrobeId===w.id);if(i<0)throw error(404,'내 옷장에서 옷을 찾을 수 없습니다.');const g=db.garments.splice(i,1)[0];reconcile();emit('garment.deleted',{id:g.id,tagUid:g.tagUid},'info',w.id);await save();return json(res,200,{ok:true,deletedId:g.id})}

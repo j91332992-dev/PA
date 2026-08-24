@@ -193,6 +193,10 @@ test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected'
   assert.equal(typeof admin.body.system.gateways.online, 'number');
   assert.equal(typeof admin.body.system.hangers.nfcAttention, 'number');
   assert.ok(admin.body.users.every(row => !Object.prototype.hasOwnProperty.call(row, 'passwordHash')));
+  const owner = admin.body.users.find(row => row.id === admin.body.users.find(item => item.email === 'owner-scenarios@example.com')?.id);
+  assert.ok(owner);
+  assert.equal(owner.connectedHangerCount + owner.unassignedHangerCount, owner.hangerCount);
+  assert.ok(Array.isArray(owner.unassignedHangers));
   assert.ok(admin.body.users.flatMap(row => row.gateways).flatMap(gateway => gateway.hangers).every(hanger => Object.hasOwn(hanger, 'nfcStatus') && Object.hasOwn(hanger, 'garmentName')));
   assert.ok(admin.body.users.flatMap(row => row.gateways).every(gateway => Object.hasOwn(gateway, 'wifiStatus') && Object.hasOwn(gateway, 'cloudStatus')));
   const system = await api('/api/admin/system', { userAuth: true, adminSession: verification.body.adminSession });
@@ -206,6 +210,12 @@ test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected'
   assert.equal(ordinaryStatus.status, 403);
   const ordinarySystem = await fetch(`${baseUrl}/api/admin/system`, { headers: { Authorization: `Bearer ${signup.body.token}` } });
   assert.equal(ordinarySystem.status, 403);
+  const selfDelete = await api(`/api/admin/users/${encodeURIComponent(owner.id)}`, { method: 'DELETE', userAuth: true, adminSession: verification.body.adminSession });
+  assert.equal(selfDelete.status, 409);
+  const deleteTestUser = await api(`/api/admin/users/${encodeURIComponent(signup.body.user.id)}`, { method: 'DELETE', userAuth: true, adminSession: verification.body.adminSession });
+  assert.equal(deleteTestUser.status, 200);
+  const overviewAfterDelete = await api('/api/admin/overview', { userAuth: true, adminSession: verification.body.adminSession });
+  assert.equal(overviewAfterDelete.body.users.some(row => row.id === signup.body.user.id), false);
 });
 
 test('Race A: WebSocket PRESENT seq=10 wins over delayed snapshot EMPTY seq=9', () => {
