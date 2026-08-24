@@ -62,7 +62,10 @@ uint32_t lastBeaconMs = 0;
 uint32_t channelDwellStartMs = 0;
 
 constexpr uint32_t CHANNEL_SEARCH_DWELL_MS = 450;
-constexpr uint32_t BEACON_LOST_TIMEOUT_MS = 15000;
+// Gateway cloud HTTPS calls are synchronous and can briefly delay ESP-NOW
+// beacons. Keep the last Wi-Fi channel long enough that a Web FIND arriving
+// during that delay is still received by this hanger.
+constexpr uint32_t BEACON_LOST_TIMEOUT_MS = 30000;
 constexpr uint32_t PN532_REINIT_COOLDOWN_MS = 500;
 constexpr uint32_t NO_RESPONSE_REMOVE_MS = 350;
 constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 200;
