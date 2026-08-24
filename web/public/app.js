@@ -41,6 +41,7 @@ const HANGER_BLE_STATUS_UUID = 'a4e66a22-0fb0-4dce-8be0-18cf7bc82001';
 let bleConfigCharacteristic = null;
 let nearbyWifiNetworks = [];
 let hangerBleConfigCharacteristic = null;
+let hangerPairRequested = false;
 const claimedDeviceIds = new Set();
 const ROD_RECONNECT_WINDOW_MS = 30000;
 let rodReconnectStartedAt = Number(sessionStorage.getItem('wardrobeRodReconnectStartedAt') || 0);
@@ -2555,8 +2556,15 @@ async function handleHangerBleStatus(value) {
       if (pairBtn) pairBtn.hidden = true;
       return;
     }
-    if (gatewayId) await claimDevice('gateways', gatewayId, { quietNotFound: true });
-    if (gatewayId) await claimDevice('hangers', info.hangerId, { quietNotFound: true });
+    // Merely selecting a nearby C6 in the browser must not register it. The
+    // user has to press the visible “옷봉과 연결” action first. A paired C6
+    // can report before its first Cloud status arrives, so keep retrying on
+    // its paired/connected notifications until both explicit claims succeed.
+    if (hangerPairRequested && gatewayId && ['paired', 'connected'].includes(info.state)) {
+      const gatewayClaim = await claimDevice('gateways', gatewayId, { quietNotFound: true });
+      const hangerClaim = await claimDevice('hangers', info.hangerId, { quietNotFound: true });
+      if (gatewayClaim?.ok && hangerClaim?.ok) hangerPairRequested = false;
+    }
   } catch (_) {
     setHangerBleMessage('옷걸이 상태를 읽지 못했습니다.', true);
   }
@@ -3198,7 +3206,10 @@ function installGatewayWifiSetup() {
   if (connectPhysicalHangerBleBtn) connectPhysicalHangerBleBtn.onclick = connectPhysicalHangerBluetooth;
 
   const pairPhysicalHangerBtn = $('#pairPhysicalHanger');
-  if (pairPhysicalHangerBtn) pairPhysicalHangerBtn.onclick = () => writeHangerBle('pair');
+  if (pairPhysicalHangerBtn) pairPhysicalHangerBtn.onclick = () => {
+    hangerPairRequested = true;
+    writeHangerBle('pair');
+  };
 
   const forgetPhysicalHangerBtn = $('#forgetPhysicalHanger');
   if (forgetPhysicalHangerBtn) forgetPhysicalHangerBtn.onclick = forgetPhysicalHanger;

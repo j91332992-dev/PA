@@ -46,6 +46,14 @@ test('lost C6 ESP-NOW heartbeat makes the garment OUT and cancels FIND', async (
     body: JSON.stringify({ gatewayId: 'GW-ABCDEF', hangerId: 'HC-ABCDEF', state: 'PRESENT', tagUid: '04A1B2C3D4E5F6', sequence: 1, bootId: 'link-loss-boot' }),
   });
   assert.equal(response.status, 200);
+  response = await call('/api/gateways/GW-ABCDEF/claim', {
+    method: 'POST', headers: { authorization: 'Bearer ' + token }, body: '{}',
+  });
+  assert.equal(response.status, 200);
+  response = await call('/api/hangers/HC-ABCDEF/claim', {
+    method: 'POST', headers: { authorization: 'Bearer ' + token }, body: '{}',
+  });
+  assert.equal(response.status, 200);
   response = await call('/api/commands', {
     method: 'POST', headers: { authorization: 'Bearer ' + token },
     body: JSON.stringify({ targets: ['HC-ABCDEF'], command: 'LED_BLINK' }),

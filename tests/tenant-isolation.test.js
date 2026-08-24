@@ -11,6 +11,8 @@ test('users only receive their own garments, rods and hangers',async()=>{
   const a=await call('/api/auth/signup',{method:'POST',body:JSON.stringify({name:'A',email:'a@example.com',password:'password-123'})});assert.equal(a.status,201);
   const shirt=await call('/api/garments',{method:'POST',headers:auth(a.body.token),body:JSON.stringify({name:'A의 셔츠',tagUid:'04112233445566'})});assert.equal(shirt.status,201);
   const device=await call('/api/gateway/status',{method:'POST',headers:{authorization:'Bearer tenant-device'},body:JSON.stringify({gatewayId:'GW-AABBCC',hangerId:'HC-AABBCC',state:'PRESENT',tagUid:'04112233445566',sequence:1,bootId:'a'})});assert.equal(device.status,200);
+  const gatewayClaim=await call('/api/gateways/GW-AABBCC/claim',{method:'POST',headers:auth(a.body.token),body:'{}'});assert.equal(gatewayClaim.status,200);
+  const hangerClaim=await call('/api/hangers/HC-AABBCC/claim',{method:'POST',headers:auth(a.body.token),body:'{}'});assert.equal(hangerClaim.status,200);
   const b=await call('/api/auth/signup',{method:'POST',body:JSON.stringify({name:'B',email:'b@example.com',password:'password-123'})});assert.equal(b.status,201);
   const bShirt=await call('/api/garments',{method:'POST',headers:auth(b.body.token),body:JSON.stringify({name:'B의 셔츠',tagUid:'04112233445566'})});assert.equal(bShirt.status,201,'different wardrobes may use the same NFC UID');
   const aSnap=await call('/api/snapshot',{headers:auth(a.body.token)}),bSnap=await call('/api/snapshot',{headers:auth(b.body.token)});

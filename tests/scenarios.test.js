@@ -58,6 +58,16 @@ test.before(async () => {
     silent: true,
   });
   await vgw.start();
+
+  // Device telemetry is discovery-only. It must not register a nearby
+  // Gateway/C6 to the only signed-in user until the explicit setup claim.
+  const beforeClaim = await api('/api/snapshot', { userAuth: true });
+  assert.equal(beforeClaim.body.gateways.some(gateway => gateway.gatewayId === 'GW-TEST01'), false);
+  assert.equal(beforeClaim.body.hangers.some(hanger => hanger.hangerId === 'HC-000001'), false);
+  assert.equal((await api('/api/gateways/GW-TEST01/claim', { method: 'POST', userAuth: true, body: '{}' })).status, 200);
+  for (const hangerId of vgw.hangers.keys()) {
+    assert.equal((await api(`/api/hangers/${hangerId}/claim`, { method: 'POST', userAuth: true, body: '{}' })).status, 200);
+  }
 });
 
 test.after(async () => {

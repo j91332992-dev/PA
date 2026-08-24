@@ -62,17 +62,9 @@ function migrate(){
   for(const u of db.users)if(!wardrobeFor(u))makeWardrobe(u);
   const byUser=new Map(db.users.map(u=>[u.id,wardrobeFor(u)?.id]));
   for(const g of db.garments)if(!g.wardrobeId)g.wardrobeId=byUser.get(g.createdBy)||db.wardrobes[0]?.id||null;
-  const ownerByTag=new Map(db.garments.map(g=>[g.tagUid,g.wardrobeId]));
-  // Older single-wardrobe data can be EMPTY at the moment of migration, so no
-  // NFC UID is available to link the real hanger. In that case retain it for
-  // the legacy account that owns the most imported garments (never a simulator).
-  const ownershipCount=new Map();for(const garment of db.garments)ownershipCount.set(garment.wardrobeId,(ownershipCount.get(garment.wardrobeId)||0)+1);
-  const legacyOwner=[...ownershipCount.entries()].sort((a,b)=>b[1]-a[1])[0]?.[0]||null;
-  for(const h of db.hangers)if(!h.wardrobeId)h.wardrobeId=ownerByTag.get(h.tagUid)||null;
-  for(const g of db.gateways)if(!g.wardrobeId){const hs=db.hangers.filter(h=>h.gatewayId===g.gatewayId&&h.wardrobeId);g.wardrobeId=hs[0]?.wardrobeId||null;}
-  for(const h of db.hangers)if(!h.wardrobeId)h.wardrobeId=db.gateways.find(g=>g.gatewayId===h.gatewayId)?.wardrobeId||null;
-  for(const g of db.gateways)if(!g.wardrobeId&&!simulated(g))g.wardrobeId=legacyOwner;
-  for(const h of db.hangers)if(!h.wardrobeId&&!simulated(h))h.wardrobeId=db.gateways.find(g=>g.gatewayId===h.gatewayId)?.wardrobeId||legacyOwner;
+  // Hardware ownership is never inferred from a tag, a nearby Gateway, or a
+  // single account in the database. A user must explicitly claim it from the
+  // BLE setup flow. This also ensures a device stays removed after deletion.
   // Migrate visible names without changing immutable hardware IDs. Numbers
   // are assigned only when absent, so deletion never compacts/reuses them.
   for(const user of db.users){const role=isConfiguredAdmin(user)?'admin':'user';if(user.role!==role){user.role=role;changed=true;}}
@@ -168,18 +160,11 @@ function reconcile(){
   for(const g of db.garments){const h=db.hangers.find(h=>h.wardrobeId===g.wardrobeId&&h.tagUid===g.tagUid&&h.state==='PRESENT');g.currentState=h?'IN_WARDROBE':'OUT';g.currentHanger=h?.hangerId||null;if(h)g.lastSeen=h.lastSeen;}
 }
 function gatewayOwner(gatewayId){return db.gateways.find(g=>g.gatewayId===gatewayId)?.wardrobeId||null}
-function defaultWardrobeForNewGateway(){
-  if(db.wardrobes.length!==1)return null;
-  const only=db.wardrobes[0],owner=ownerForWardrobe(only.id);
-  // A service administrator is not a default hardware owner. Otherwise the
-  // first heartbeat creates a hidden cross-account ownership lock.
-  return owner?.role==='admin'?null:only.id;
-}
 function attachGateway(gatewayId){
   let g=db.gateways.find(x=>x.gatewayId===gatewayId);
-  const defaultWid=defaultWardrobeForNewGateway();
-  if(!g){g={gatewayId,name:neutralGatewayName({gatewayId}),customName:'',createdAt:now(),wardrobeId:defaultWid};if(defaultWid)assignGateway(g,defaultWid);db.gateways.push(g)}
-  else if(!g.wardrobeId&&defaultWid)assignGateway(g,defaultWid);
+  // A device heartbeat is only discovery telemetry. It must not make the
+  // device appear in a user's wardrobe before that user completes BLE setup.
+  if(!g){g={gatewayId,name:neutralGatewayName({gatewayId}),customName:'',createdAt:now(),wardrobeId:null};db.gateways.push(g)}
   return g;
 }
 function cancelActiveCommands(targets,wardrobeId,reason){
@@ -344,7 +329,7 @@ if(p==='/api/garments'&&req.method==='POST'){const u=needUser(req),w=wardrobeFor
 const gd=match(req.url,/^\/api\/garments\/([^/]+)$/);if(gd&&req.method==='DELETE'){const u=needUser(req),w=wardrobeFor(u),i=db.garments.findIndex(g=>g.id===gd[1]&&g.wardrobeId===w.id);if(i<0)throw error(404,'내 옷장에서 옷을 찾을 수 없습니다.');const g=db.garments.splice(i,1)[0];reconcile();emit('garment.deleted',{id:g.id,tagUid:g.tagUid},'info',w.id);await save();return json(res,200,{ok:true,deletedId:g.id})}
 const find=match(req.url,/^\/api\/garments\/([^/]+)\/find$/);if(find&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),g=db.garments.find(g=>g.id===find[1]&&g.wardrobeId===w.id);if(!g?.currentHanger)throw error(409,'이 옷은 현재 옷장에 없습니다.');const c=command([g.currentHanger],u);json(res,202,c);save().catch(e=>console.error('[FIND] background save failed',e.message));return}
 if(p==='/api/commands'&&req.method==='POST'){const u=needUser(req),x=await body(req),c=command(x.targets,u,x.durationMs,x.command);json(res,202,c);save().catch(e=>console.error('[COMMAND] background save failed',e.message));return}
-const claim=match(req.url,/^\/api\/(gateways|hangers)\/([^/]+)\/claim$/);if(claim&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),kind=claim[1],key=decodeURIComponent(claim[2]),list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',item=list.find(v=>v[field]===key);if(!item)throw error(404,'장비 신호를 아직 받지 못했습니다. 전원을 확인한 뒤 다시 시도하세요.');if(item.wardrobeId&&item.wardrobeId!==w.id)throw error(409,'이미 다른 계정의 옷장에 등록된 장비입니다.');if(kind==='gateways'){assignGateway(item,w.id);for(const h of db.hangers)if(h.gatewayId===item.gatewayId&&!h.wardrobeId)assignHanger(h,w.id,item.gatewayId);}else{const gateway=db.gateways.find(g=>g.gatewayId===item.gatewayId&&g.wardrobeId===w.id);if(!gateway)throw error(409,'먼저 같은 계정의 옷봉과 연결하세요.');assignHanger(item,w.id,gateway.gatewayId);}emit(`${kind}.claimed`,item,'info',w.id);await save();return json(res,200,item)}
+const claim=match(req.url,/^\/api\/(gateways|hangers)\/([^/]+)\/claim$/);if(claim&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),kind=claim[1],key=decodeURIComponent(claim[2]),list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',item=list.find(v=>v[field]===key);if(!item)throw error(404,'장비 신호를 아직 받지 못했습니다. 전원을 확인한 뒤 다시 시도하세요.');if(item.wardrobeId&&item.wardrobeId!==w.id)throw error(409,'이미 다른 계정의 옷장에 등록된 장비입니다.');if(kind==='gateways'){assignGateway(item,w.id);}else{const gateway=db.gateways.find(g=>g.gatewayId===item.gatewayId&&g.wardrobeId===w.id);if(!gateway)throw error(409,'먼저 같은 계정의 옷봉과 연결하세요.');assignHanger(item,w.id,gateway.gatewayId);}reconcile();emit(`${kind}.claimed`,item,'info',w.id);await save();return json(res,200,item)}
 const provision=match(req.url,/^\/api\/gateways\/([^/]+)\/provisioning-status$/);if(provision&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),gatewayId=decodeURIComponent(provision[1]).toUpperCase(),gateway=db.gateways.find(item=>item.gatewayId===gatewayId&&item.wardrobeId===w.id);if(!gateway)throw error(404,'내 옷봉을 찾을 수 없습니다.');const x=await body(req);gateway.provisioning={status:'TIMEOUT',wifiStatus:'UNKNOWN',cloudStatus:'UNKNOWN',detail:String(x.detail||'BLE 설정 후 heartbeat 확인 시간이 초과되었습니다.').slice(0,240),at:now()};emit('gateway.provisioning.timeout',{gatewayId,provisioning:gateway.provisioning},'warning',w.id);await save();return json(res,200,gateway)}
 const device=match(req.url,/^\/api\/(gateways|hangers)\/([^/]+)$/);if(device&&req.method==='PATCH'){const u=needUser(req),w=wardrobeFor(u),x=await body(req),kind=device[1],key=decodeURIComponent(device[2]),list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',item=list.find(v=>v[field]===key&&v.wardrobeId===w.id);if(!item)throw error(404,kind==='gateways'?'내 옷봉을 찾을 수 없습니다.':'내 옷걸이를 찾을 수 없습니다.');const name=String(x.name??x.alias??'').trim().slice(0,40);if(name){if(kind==='gateways'){item.customName=name;syncGatewayName(item)}else{item.customName=name;syncHangerName(item)}}else if(x.resetName===true){if(kind==='gateways'){item.customName='';syncGatewayName(item)}else{item.customName='';syncHangerName(item)}}else throw error(400,'이름을 입력하세요.');if(kind==='hangers'&&x.gatewayId&&x.gatewayId!==item.gatewayId){const target=db.gateways.find(g=>g.gatewayId===String(x.gatewayId).toUpperCase()&&g.wardrobeId===w.id);if(!target)throw error(404,'대상 옷봉을 찾을 수 없습니다.');assignHanger(item,w.id,target.gatewayId,{moved:true});}emit(`${kind}.updated`,item,'info',w.id);await save();return json(res,200,item)}
 if(device&&req.method==='DELETE'){const u=needUser(req),w=wardrobeFor(u),kind=device[1],key=decodeURIComponent(device[2]),list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',i=list.findIndex(v=>v[field]===key&&v.wardrobeId===w.id);if(i<0)throw error(404,'내 장비를 찾을 수 없습니다.');const item=list[i];if(kind==='gateways'){for(const h of db.hangers)if(h.gatewayId===item.gatewayId&&h.wardrobeId===w.id){h.gatewayId=null;h.customName='';syncHangerName(h);}}else{item.wardrobeId=null;item.gatewayId=null;item.customName='';syncHangerName(item);}item.wardrobeId=null;item.customName='';if(kind==='gateways')syncGatewayName(item);emit(`${kind}.removed`,{[field]:key},'warning',w.id);await save();return json(res,200,{ok:true})}

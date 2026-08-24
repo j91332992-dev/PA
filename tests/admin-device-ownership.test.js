@@ -76,6 +76,8 @@ test('legacy admin-owned physical hardware is released, and a verified admin can
   assert.equal(verify.status, 200);
   const claim = await request('/api/gateways/GW-ADMIN01/claim', { method: 'POST', token: login.body.token });
   assert.equal(claim.status, 200);
+  const hangerClaim = await request('/api/hangers/HC-ADMIN01/claim', { method: 'POST', token: login.body.token });
+  assert.equal(hangerClaim.status, 200);
   const release = await request('/api/admin/gateways/GW-ADMIN01/release', { method: 'POST', token: login.body.token, adminSession: verify.body.adminSession });
   assert.equal(release.status, 200);
   assert.deepEqual(release.body.releasedHangers, ['HC-ADMIN01']);
