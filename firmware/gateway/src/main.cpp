@@ -665,10 +665,21 @@ void fetchCommands() {
   String out;
   // The server returns this response before its asynchronous status save.  A
   // bounded timeout keeps command polling responsive without starving beacons.
-  if (!request("/api/gateway/commands", "GET", "", out, 5000)) return;
+  if (!request("/api/gateway/commands", "GET", "", out, 5000)) {
+    Serial.println("[COMMAND-POLL] HTTP request failed");
+    return;
+  }
   JsonDocument doc;
-  if (deserializeJson(doc, out)) return;
-  for (JsonObject c : doc["commands"].as<JsonArray>()) {
+  const DeserializationError parseError = deserializeJson(doc, out);
+  if (parseError) {
+    Serial.printf("[COMMAND-POLL] JSON parse failed=%s bytes=%u\n", parseError.c_str(), out.length());
+    return;
+  }
+  const JsonArray commands = doc["commands"].as<JsonArray>();
+  if (!commands.size()) {
+    Serial.printf("[COMMAND-POLL] received empty queue bytes=%u\n", out.length());
+  }
+  for (JsonObject c : commands) {
     sw::Packet p;
     p.type = sw::Type::COMMAND;
     strlcpy(p.gatewayId, gateway.c_str(), sizeof p.gatewayId);
