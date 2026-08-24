@@ -34,7 +34,7 @@ bool hangerLinkDisabled = false;
 bool manualPairingApproved = false;
 volatile bool reportAfterGatewayBeacon = false;
 uint32_t sequence = 0, bootId = 0, lastHeartbeat = 0, lastScan = 0, lastBeacon = 0, ledUntil = 0, ledBlinkStartedAt = 0;
-uint32_t lastCommandId = 0, lastCommandSequence = 0, lastCommandError = 0;
+uint32_t lastCommandId = 0, lastCommandSequence = 0, lastCommandGatewayBootId = 0, lastCommandError = 0;
 uint8_t channel = 1;
 BLECharacteristic* bleStatusCharacteristic = nullptr;
 bool bleActive = false;
@@ -413,17 +413,21 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
     }
     // Gateway sends a short ESP-NOW burst and may re-poll the same Cloud
     // command. A duplicate must ACK but must never restart a blink or undo a
-    // later NFC removal. Old sequence packets are discarded for the same
-    // reason.
+    // later NFC removal.  The Gateway command counter restarts after its own
+    // reset, so compare sequence only inside the same Gateway boot session.
     if (p.commandId != 0 && p.commandId == lastCommandId) {
       ack(p, lastCommandError);
       return;
     }
-    if (p.commandId != 0 && lastCommandSequence != 0 && p.sequence <= lastCommandSequence) {
+    if (p.commandId != 0 && p.bootId == lastCommandGatewayBootId &&
+        lastCommandSequence != 0 && p.sequence <= lastCommandSequence) {
       Serial.printf("[COMMAND-IGNORE] stale seq=%lu last=%lu id=%lu\n", p.sequence, lastCommandSequence, p.commandId);
       return;
     }
-    if (p.commandId != 0) lastCommandSequence = p.sequence;
+    if (p.commandId != 0) {
+      lastCommandGatewayBootId = p.bootId;
+      lastCommandSequence = p.sequence;
+    }
     Serial.printf("[COMMAND] %lu cmd=%u\n", p.commandId, (unsigned)p.command);
     uint32_t commandError = 0;
     if (p.command == sw::Command::LED_OFF) {

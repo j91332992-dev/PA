@@ -90,7 +90,7 @@ const char GOOGLE_ROOT_BUNDLE[] =
 "-----END CERTIFICATE-----\n";
 
 String gateway;
-uint32_t beaconAt = 0, cloudAt = 0, gatewayHeartbeatAt = 0, wifiRetryAt = 0, sequence = 0;
+uint32_t beaconAt = 0, cloudAt = 0, gatewayHeartbeatAt = 0, wifiRetryAt = 0, sequence = 0, gatewayBootId = 0;
 // A new TLS connection for every poll competes with status uploads.  600ms
 // keeps FIND response within roughly one second while leaving enough airtime
 // for physical NFC transitions and the one-second status batch.
@@ -754,11 +754,12 @@ void runFindTest(const String& hangerId) {
     Serial.println("[FIND-TEST] usage: FINDTEST HC-XXXXXX");
     return;
   }
-  sw::Packet p;
-  p.type = sw::Type::COMMAND;
-  strlcpy(p.gatewayId, gateway.c_str(), sizeof p.gatewayId);
-  p.sequence = ++sequence;
-  p.commandId = 0; // Reserved local diagnostic command: never sent to Cloud ACK.
+    sw::Packet p;
+    p.type = sw::Type::COMMAND;
+    strlcpy(p.gatewayId, gateway.c_str(), sizeof p.gatewayId);
+    p.sequence = ++sequence;
+    p.bootId = gatewayBootId;
+    p.commandId = 0; // Reserved local diagnostic command: never sent to Cloud ACK.
   p.command = sw::Command::LED_BLINK;
   p.durationMs = 6000;
   p.targetCount = 1;
@@ -830,6 +831,7 @@ void fetchCommands() {
     p.type = sw::Type::COMMAND;
     strlcpy(p.gatewayId, gateway.c_str(), sizeof p.gatewayId);
     p.sequence = ++sequence;
+    p.bootId = gatewayBootId;
     p.commandId = c["numericId"] | 0;
     const char* cmdStr = c["command"] | "LED_BLINK";
     if (strcmp(cmdStr, "LED_OFF") == 0) {
@@ -947,6 +949,11 @@ void setup() {
   Serial.setTxTimeoutMs(0);
   delay(500);
   gateway = hardwareGatewayId();
+  // A command sequence restarts after a Gateway reset.  Include this random
+  // boot session in COMMAND packets so a paired C6 can distinguish a new
+  // Gateway session from a delayed packet in the previous one.
+  gatewayBootId = esp_random();
+  if (gatewayBootId == 0) gatewayBootId = 1;
   wifiPrefs.begin("wardrobe-wifi", false);
   // BLE stays available even after Wi-Fi succeeds, so first setup and later
   // router changes always use the same user-facing flow.  It must start
