@@ -882,17 +882,19 @@ void loop() {
     fetchCommands();
   }
 
-  // 2. Process pending ESP-NOW EVENTs / ACKs.
+  // 2. Process only one pending ESP-NOW packet per loop.  Draining a burst of
+  // status heartbeats here performs several synchronous HTTPS uploads and
+  // makes the next FIND/STOP poll wait roughly 10 seconds.
   sw::Packet p;
-  while (dequeue(p)) {
+  if (dequeue(p)) {
     if (duplicateStatus(p)) {
       Serial.printf("[ESPNOW] duplicate skipped Hanger=%s Seq=%lu\n", p.hangerId, p.sequence);
-      continue;
-    }
-    if (p.type == sw::Type::ACK) {
-      if (WiFi.status() == WL_CONNECTED) ack(p);
-    } else if (p.type == sw::Type::STATUS || p.type == sw::Type::EVENT) {
-      if (WiFi.status() == WL_CONNECTED) upload(p);
+    } else {
+      if (p.type == sw::Type::ACK) {
+        if (WiFi.status() == WL_CONNECTED) ack(p);
+      } else if (p.type == sw::Type::STATUS || p.type == sw::Type::EVENT) {
+        if (WiFi.status() == WL_CONNECTED) upload(p);
+      }
     }
   }
 

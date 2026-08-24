@@ -303,6 +303,14 @@ void report(bool event) {
 void transition(sw::State s) {
   if (s == state) return;
   state = s;
+  // Once the garment tag leaves this hanger, a previous FIND must not keep
+  // advertising an empty hanger.  Stop the real LED before reporting EMPTY.
+  if (state == sw::State::EMPTY) {
+    ledUntil = 0;
+    ledBlinkStartedAt = 0;
+    led(false);
+    Serial.println("[LED] OFF: NFC tag removed");
+  }
   char uHex[16] = "";
   for (uint8_t i = 0; i < currentLen; i++) snprintf(uHex + i * 2, 3, "%02X", currentUid[i]);
   Serial.printf("\n⚡ [STATE-CHANGE] state=%u (UID=%s len=%u)\n", unsigned(state), uHex, currentLen);
