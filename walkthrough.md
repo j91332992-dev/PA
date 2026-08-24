@@ -118,3 +118,4 @@
 - 태그 재부착은 첫 정상 PN532 UID 읽기에서 바로 `PRESENT`로 전환한다. 제거는 clean no-tag 스캔 3회로 확인해 일시적인 RF 미스를 구분한다.
 - Gateway 상태·heartbeat·ACK POST는 PostgreSQL 저장 완료를 기다리지 않고 현재 상태를 반영한 뒤 즉시 HTTP 200을 반환한다. 저장은 기존 직렬 background queue에서 계속되므로, Render DB 응답 지연이 C6의 `PRESENT/EMPTY` 앱 동기화를 막지 않는다.
 - NFC no-tag poll은 80ms, 제거 확인은 220ms grace + 연속 3회로 조정했다. 태그 제거의 C6 확정 시간은 기존 약 600ms에서 약 250ms 수준으로 줄었다. Gateway는 이 물리 상태 이벤트를 Cloud 명령 폴링보다 먼저 업로드한다.
+- Gateway TLS command poll의 connect/response 상한은 800ms로 제한했다. 느리거나 끊긴 명령 조회가 이미 도착한 `EMPTY`/`PRESENT` 이벤트를 수 초 동안 막지 않으며, 다음 750ms poll에서 명령 조회를 다시 시도한다.
