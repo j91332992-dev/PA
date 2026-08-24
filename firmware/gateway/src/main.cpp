@@ -667,9 +667,12 @@ void fetchCommands() {
     JsonArray targets = c["targets"];
     p.targetCount = min<size_t>(targets.size(), sw::MAX_TARGETS);
     for (uint8_t i = 0; i < p.targetCount; i++) p.targetIds[i] = sw::idCode(targets[i] | "");
-    for (uint8_t i = 0; i < 2; i++) {
+    // The C6 can be completing an ESP-NOW channel relock when a cloud command
+    // arrives. A short burst makes a real FIND reliable without changing its
+    // command ID or producing a second cloud command.
+    for (uint8_t i = 0; i < 4; i++) {
       send(p);
-      if (i == 0) delay(10);
+      if (i < 3) delay(30);
     }
     Serial.printf("[COMMAND] %lu cmd=%u targets=%u\n", p.commandId, (unsigned)p.command, p.targetCount);
   }
