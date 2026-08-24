@@ -151,6 +151,12 @@
 - BLE 등록 요청은 단일 전역 플래그가 아니라 사용자가 chooser에서 선택한 C6 hardware ID에 묶인다. **옷걸이 찾기 → 해당 C6 선택 → 옷봉과 연결**을 누른 그 C6만 claim할 수 있으며, 다른 근처 C6의 알림은 승인으로 취급하지 않는다.
 - 검증: `npm test` 40/40 통과. `Ownership guard` 회귀 테스트에서 소유자 없는 C6 상태가 WebSocket에 전달되지 않고 사용자 snapshot에도 나타나지 않음을 확인했다. JavaScript 문법 검사와 `git diff --check`도 통과했다.
 
+## C6 Bluetooth 연결 요청 직렬화
+
+- Chrome Web Bluetooth는 동시에 두 GATT read/write가 시작되면 `GATT operation already in progress`를 반환한다. 초기 상태 읽기, 상태 요청, 사용자의 **옷봉과 연결** 쓰기가 겹치던 경로를 하나의 promise queue로 직렬화했다.
+- 연결 버튼은 pair write가 끝날 때까지 비활성화되고, 실패 시 사용자 승인 ID를 즉시 취소한다. 따라서 이전 요청이나 다른 C6의 알림이 뒤늦게 등록을 유발하지 않는다.
+- 이 변경은 공개 웹 코드만 해당한다. C6/S3 재플래시는 필요 없으며 `npm test` 40/40 및 `node --check web/public/app.js`를 통과했다.
+
 ## NFC 제거 경로 추적 및 수동 등록 보강 (로컬 검증, 미배포/미플래시)
 
 - 현재 C6 소스의 실제 NFC는 PN532 **SPI**다: D8=SCK, D9=MISO, D10=MOSI, D6=SS, LED=D1 active-high. 예전 I2C 배선 문서는 이 현재 보드 판정의 근거로 사용하지 않는다.

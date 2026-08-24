@@ -41,6 +41,10 @@ const HANGER_BLE_STATUS_UUID = 'a4e66a22-0fb0-4dce-8be0-18cf7bc82001';
 let bleConfigCharacteristic = null;
 let nearbyWifiNetworks = [];
 let hangerBleConfigCharacteristic = null;
+let hangerBleStatusCharacteristic = null;
+// Chrome rejects overlapping GATT operations. Keep every C6 read/write in
+// one promise chain so the initial status read cannot race the pair command.
+let hangerBleGattQueue = Promise.resolve();
 // Pairing approval is tied to one explicitly selected Bluetooth device.  A
 // later notification from another nearby C6 must never consume this approval.
 let hangerPairRequestedId = '';
@@ -2611,13 +2615,39 @@ async function claimDevice(kind, deviceId, { quietNotFound = false } = {}) {
 }
 
 async function writeHangerBle(action, extra = {}) {
-  if (!hangerBleConfigCharacteristic) return setHangerBleMessage('먼저 옷걸이를 블루투스로 연결하세요.', true);
+  if (!hangerBleConfigCharacteristic) {
+    setHangerBleMessage('먼저 옷걸이를 블루투스로 연결하세요.', true);
+    return false;
+  }
   try {
     const payload = new TextEncoder().encode(JSON.stringify({ action, ...extra }));
-    if (typeof hangerBleConfigCharacteristic.writeValueWithResponse === 'function') await hangerBleConfigCharacteristic.writeValueWithResponse(payload);
-    else await hangerBleConfigCharacteristic.writeValue(payload);
+    const characteristic = hangerBleConfigCharacteristic;
+    const operation = () => typeof characteristic.writeValueWithResponse === 'function'
+      ? characteristic.writeValueWithResponse(payload)
+      : characteristic.writeValue(payload);
+    const pending = hangerBleGattQueue.then(operation, operation);
+    // Keep the queue usable after a failed request; the caller receives the
+    // original failure and can show a useful message.
+    hangerBleGattQueue = pending.catch(() => {});
+    await pending;
+    return true;
   } catch (error) {
     setHangerBleMessage(bleErrorMessage(error, '옷걸이 요청'), true);
+    return false;
+  }
+}
+
+async function readHangerBleStatus() {
+  if (!hangerBleStatusCharacteristic) return false;
+  try {
+    const characteristic = hangerBleStatusCharacteristic;
+    const pending = hangerBleGattQueue.then(() => characteristic.readValue(), () => characteristic.readValue());
+    hangerBleGattQueue = pending.catch(() => {});
+    await handleHangerBleStatus(await pending);
+    return true;
+  } catch (error) {
+    setHangerBleMessage(bleErrorMessage(error, '옷걸이 상태 읽기'), true);
+    return false;
   }
 }
 
@@ -2641,16 +2671,19 @@ async function connectPhysicalHangerBluetooth() {
     // approval from a prior chooser session before reading this C6's status.
     hangerPairRequestedId = '';
     selectedHangerBleId = '';
+    hangerBleGattQueue = Promise.resolve();
     const gatt = await device.gatt.connect();
     const service = await gatt.getPrimaryService(HANGER_BLE_SERVICE_UUID);
     hangerBleConfigCharacteristic = await service.getCharacteristic(HANGER_BLE_CONFIG_UUID);
-    const status = await service.getCharacteristic(HANGER_BLE_STATUS_UUID);
-    await status.startNotifications();
-    status.addEventListener('characteristicvaluechanged', event => handleHangerBleStatus(event.target.value));
+    hangerBleStatusCharacteristic = await service.getCharacteristic(HANGER_BLE_STATUS_UUID);
+    const subscribe = hangerBleGattQueue.then(() => hangerBleStatusCharacteristic.startNotifications(), () => hangerBleStatusCharacteristic.startNotifications());
+    hangerBleGattQueue = subscribe.catch(() => {});
+    await subscribe;
+    hangerBleStatusCharacteristic.addEventListener('characteristicvaluechanged', event => handleHangerBleStatus(event.target.value));
     const knownHanger = (model.hangers || []).find(hanger => device.name?.includes(hanger.hangerId));
     const nameEl = $('#hangerBleDeviceName');
     if (nameEl) nameEl.textContent = `${knownHanger ? hangerDisplayName(knownHanger) : neutralBleLabel('hangers', device.name || '')} 연결됨`;
-    handleHangerBleStatus(await status.readValue());
+    await readHangerBleStatus();
     const pairBtn = $('#pairPhysicalHanger');
     if (pairBtn) pairBtn.hidden = false;
     const forgetBtn = $('#forgetPhysicalHanger');
@@ -2669,7 +2702,7 @@ async function connectPhysicalHangerBluetooth() {
 async function forgetPhysicalHanger() {
   if (!hangerBleConfigCharacteristic) return setHangerBleMessage('먼저 옷걸이를 블루투스로 연결하세요.', true);
   if (!window.confirm('이 옷걸이의 옷봉 연결을 제거할까요? 제거 후에는 태그 상태가 웹에 전송되지 않습니다.')) return;
-  await writeHangerBle('forget');
+  if (!await writeHangerBle('forget')) return;
   hangerPairRequestedId = '';
   setTimeout(refresh, 1500);
 }
@@ -3229,11 +3262,16 @@ function installGatewayWifiSetup() {
   if (connectPhysicalHangerBleBtn) connectPhysicalHangerBleBtn.onclick = connectPhysicalHangerBluetooth;
 
   const pairPhysicalHangerBtn = $('#pairPhysicalHanger');
-  if (pairPhysicalHangerBtn) pairPhysicalHangerBtn.onclick = () => {
+  if (pairPhysicalHangerBtn) pairPhysicalHangerBtn.onclick = async () => {
     const hangerId = selectedHangerBleId;
     if (!hangerId) return setHangerBleMessage('선택한 옷걸이 정보를 다시 읽는 중입니다. 잠시 후 다시 눌러 주세요.', true);
     hangerPairRequestedId = hangerId;
-    writeHangerBle('pair');
+    pairPhysicalHangerBtn.disabled = true;
+    pairPhysicalHangerBtn.textContent = '옷봉과 연결하는 중…';
+    const sent = await writeHangerBle('pair');
+    if (!sent) hangerPairRequestedId = '';
+    pairPhysicalHangerBtn.disabled = false;
+    pairPhysicalHangerBtn.textContent = '옷봉과 연결';
   };
 
   const forgetPhysicalHangerBtn = $('#forgetPhysicalHanger');
