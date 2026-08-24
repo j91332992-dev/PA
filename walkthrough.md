@@ -187,3 +187,9 @@
 - batch 요청이 실패하면 이전 batch snapshot을 그대로 다시 보내지 않는다. 수신 중인 최신 상태와 병합한 뒤 짧은 간격 후 새 batch를 만든다. 따라서 실패한 과거 `PRESENT`가 뒤늦은 `EMPTY`를 막지 않는다.
 - 서버 batch endpoint는 상태들을 메모리에서 모두 반영한 뒤 저장 작업을 한 번만 예약한다. `bootId + sequence` 판정과 기존 단일 상태 endpoint 호환성은 유지한다.
 - 검증: Gateway/C6 `pio run` 성공, `npm test` 41/41 성공. `gateway batches current statuses for multiple hangers in one request` 회귀 테스트가 batch 수신과 snapshot 반영을 검증한다.
+
+## FIND 명령 polling과 상태 전송 분리
+
+- Gateway의 FIND command polling은 300ms마다 새 TLS 연결을 만들어 status batch와 경쟁할 수 있었다. polling 간격을 600ms로 조정해 일반 Cloud 요청 점유를 줄였다.
+- NFC `PRESENT`/`EMPTY` EVENT가 Gateway에 대기 중이면, blocking command GET을 시작하지 않는다. 따라서 사용자가 LED 찾기를 눌러도 태그 제거 상태가 command polling 뒤에 밀리지 않는다.
+- 검증: Gateway `pio run` 성공, `npm test` 41/41 성공, `git diff --check` 성공. 이 변경은 Gateway 펌웨어 재플래시가 필요하다.

@@ -91,7 +91,10 @@ const char GOOGLE_ROOT_BUNDLE[] =
 
 String gateway;
 uint32_t beaconAt = 0, cloudAt = 0, gatewayHeartbeatAt = 0, wifiRetryAt = 0, sequence = 0;
-constexpr uint32_t COMMAND_POLL_INTERVAL_MS = 300;
+// A new TLS connection for every poll competes with status uploads.  600ms
+// keeps FIND response within roughly one second while leaving enough airtime
+// for physical NFC transitions and the one-second status batch.
+constexpr uint32_t COMMAND_POLL_INTERVAL_MS = 600;
 Preferences wifiPrefs;
 WebServer setupServer(80);
 DNSServer setupDns;
@@ -364,6 +367,14 @@ bool dequeueEvent(sw::Packet& p) {
   }
   portEXIT_CRITICAL(&mux);
   return ok;
+}
+
+bool hasPendingPriorityEvent() {
+  bool pending = false;
+  portENTER_CRITICAL(&mux);
+  pending = eventTail != eventHead;
+  portEXIT_CRITICAL(&mux);
+  return pending;
 }
 
 uint8_t dequeueStatusBatch(sw::Packet* packets, uint8_t maxPackets) {
@@ -1036,7 +1047,9 @@ void loop() {
   }
 
   // 2. Cloud FIND remains frequent, but comes after the physical state event.
-  if (WiFi.status() == WL_CONNECTED && t - cloudAt > COMMAND_POLL_INTERVAL_MS) {
+  // Never start a blocking command GET while an NFC transition is waiting.
+  // This preserves EMPTY/PRESENT ordering even when the user starts FIND.
+  if (WiFi.status() == WL_CONNECTED && !pendingStatusUpload && !hasPendingPriorityEvent() && t - cloudAt > COMMAND_POLL_INTERVAL_MS) {
     cloudAt = t;
     fetchCommands();
   }
