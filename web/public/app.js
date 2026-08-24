@@ -49,6 +49,8 @@ let hangerBleGattQueue = Promise.resolve();
 // later notification from another nearby C6 must never consume this approval.
 let hangerPairRequestedId = '';
 let selectedHangerBleId = '';
+let selectedHangerBleGatewayId = '';
+let hangerPairClaimTask = null;
 const claimedDeviceIds = new Set();
 const ROD_RECONNECT_WINDOW_MS = 30000;
 let rodReconnectStartedAt = Number(sessionStorage.getItem('wardrobeRodReconnectStartedAt') || 0);
@@ -2551,8 +2553,10 @@ function showHangerBleStatus(info) {
   const tagReader = info.nfcReady ? '정상 준비됨' : '준비 중 또는 결선 확인 필요';
   const garment = garmentNameForTag(info.tagUid);
   const tag = info.tagPresent && info.tagUid ? (garment ? `옷 감지됨 · ${garment}` : '새 옷 감지됨 · 옷 목록에서 이름을 등록하세요') : '걸린 옷 없음';
-  const gateway = info.gatewayId ? '정상 통신 중' : (info.discoveredGatewayId ? '옷봉 신호 확인됨' : '옷봉 신호 탐색 중');
-  const linked = info.gatewayId ? '내 옷봉에 등록됨' : '아직 등록되지 않음';
+  // gatewayId means that the C6 has a locally saved manual pairing. It is not
+  // a Cloud ownership claim and not proof that the S3 received its packet.
+  const gateway = info.gatewayId ? '옷봉 ID 저장됨 · 수신 확인 중' : (info.discoveredGatewayId ? '옷봉 신호 확인됨' : '옷봉 신호 탐색 중');
+  const linked = info.gatewayId ? 'Bluetooth 확인 후 서버 등록 대기' : '아직 등록되지 않음';
   const knownHanger = (model.hangers || []).find(item => item.hangerId === info.hangerId);
   detail.innerHTML = `<p><b>블루투스:</b> 이 기기와 연결됨</p><p><b>옷걸이:</b> ${esc(hangerDisplayName(knownHanger || { hangerId: info.hangerId }))}</p><p><b>내 옷봉 연결:</b> ${esc(linked)} · <b>무선 통신:</b> ${esc(gateway)}</p><p><b>옷 태그 읽기:</b> ${tagReader}</p><p><b>옷 상태:</b> ${esc(tag)}</p>`;
 }
@@ -2565,27 +2569,61 @@ async function handleHangerBleStatus(value) {
     const gatewayId = info.gatewayId || info.discoveredGatewayId;
     if (!info.hangerId) return;
     selectedHangerBleId = String(info.hangerId);
-    const pairing = await refreshBleOwnership('hangers', info.hangerId);
-    const nameEl = $('#hangerBleDeviceName');
-    if (nameEl) nameEl.textContent = `${pairing.displayName || neutralBleLabel('hangers', info.hangerId)} 연결됨`;
-    if (pairing.ownership === 'OTHER_ACCOUNT') {
-      setHangerBleMessage(pairingBlockedMessage('hangers'), true);
-      const pairBtn = $('#pairPhysicalHanger');
-      if (pairBtn) pairBtn.hidden = true;
-      return;
+    selectedHangerBleGatewayId = String(gatewayId || '');
+    try {
+      const pairing = await refreshBleOwnership('hangers', info.hangerId);
+      const nameEl = $('#hangerBleDeviceName');
+      if (nameEl) nameEl.textContent = `${pairing.displayName || neutralBleLabel('hangers', info.hangerId)} 연결됨`;
+      if (pairing.ownership === 'OTHER_ACCOUNT') {
+        setHangerBleMessage(pairingBlockedMessage('hangers'), true);
+        const pairBtn = $('#pairPhysicalHanger');
+        if (pairBtn) pairBtn.hidden = true;
+        return;
+      }
+    } catch (error) {
+      console.warn('[BLE_PAIRING_STATUS]', error?.message || error);
+      setHangerBleMessage('옷걸이 상태는 읽었지만 서버 등록 상태를 확인하지 못했습니다. 연결을 다시 시도합니다.', true);
     }
     // Merely selecting a nearby C6 in the browser must not register it. The
     // user has to press the visible “옷봉과 연결” action first. A paired C6
     // can report before its first Cloud status arrives, so keep retrying on
     // its paired/connected notifications until both explicit claims succeed.
     if (hangerPairRequestedId === info.hangerId && gatewayId && ['paired', 'connected'].includes(info.state)) {
-      const gatewayClaim = await claimDevice('gateways', gatewayId, { quietNotFound: true });
-      const hangerClaim = await claimDevice('hangers', info.hangerId, { quietNotFound: true });
-      if (gatewayClaim?.ok && hangerClaim?.ok) hangerPairRequestedId = '';
+      completeHangerPairing(info.hangerId, gatewayId);
     }
-  } catch (_) {
-    setHangerBleMessage('옷걸이 상태를 읽지 못했습니다.', true);
+  } catch (error) {
+    console.warn('[BLE_STATUS]', error?.message || error);
+    setHangerBleMessage('옷걸이 Bluetooth 상태 형식을 읽지 못했습니다. 다시 연결해 주세요.', true);
   }
+}
+
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function completeHangerPairing(hangerId, gatewayId) {
+  if (hangerPairClaimTask) return hangerPairClaimTask;
+  const targetHanger = String(hangerId || '');
+  const targetGateway = String(gatewayId || '');
+  if (!targetHanger || !targetGateway) {
+    setHangerBleMessage('옷봉 정보를 아직 받지 못했습니다. C6 상태를 다시 읽은 뒤 연결해 주세요.', true);
+    return;
+  }
+  hangerPairClaimTask = (async () => {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      if (hangerPairRequestedId !== targetHanger) return;
+      const gatewayClaim = await claimDevice('gateways', targetGateway, { quietNotFound: true });
+      const hangerClaim = await claimDevice('hangers', targetHanger, { quietNotFound: true });
+      if (gatewayClaim?.ok && hangerClaim?.ok) {
+        hangerPairRequestedId = '';
+        setHangerBleMessage('옷봉과 연결하고 내 옷장에 등록했습니다.');
+        await refresh();
+        return;
+      }
+      await wait(350);
+    }
+    if (hangerPairRequestedId === targetHanger) {
+      setHangerBleMessage('옷걸이의 Cloud 상태가 아직 도착하지 않았습니다. 옷봉 전원·채널을 확인한 뒤 다시 연결해 주세요.', true);
+    }
+  })().finally(() => { hangerPairClaimTask = null; });
+  return hangerPairClaimTask;
 }
 
 async function claimDevice(kind, deviceId, { quietNotFound = false } = {}) {
@@ -3270,6 +3308,7 @@ function installGatewayWifiSetup() {
     pairPhysicalHangerBtn.textContent = '옷봉과 연결하는 중…';
     const sent = await writeHangerBle('pair');
     if (!sent) hangerPairRequestedId = '';
+    else completeHangerPairing(hangerId, selectedHangerBleGatewayId);
     pairPhysicalHangerBtn.disabled = false;
     pairPhysicalHangerBtn.textContent = '옷봉과 연결';
   };

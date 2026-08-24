@@ -157,6 +157,12 @@
 - 연결 버튼은 pair write가 끝날 때까지 비활성화되고, 실패 시 사용자 승인 ID를 즉시 취소한다. 따라서 이전 요청이나 다른 C6의 알림이 뒤늦게 등록을 유발하지 않는다.
 - 이 변경은 공개 웹 코드만 해당한다. C6/S3 재플래시는 필요 없으며 `npm test` 40/40 및 `node --check web/public/app.js`를 통과했다.
 
+## C6 등록 확인 재시도와 ESP-NOW 표시 분리
+
+- C6가 BLE `paired` 알림을 보낸 시점과 S3가 그 첫 상태 패킷을 Cloud에 올리는 시점은 다를 수 있다. 웹은 이제 **옷봉과 연결** 승인 뒤 최대 약 3초 동안 gateway/hanger claim을 재확인한다. 따라서 BLE 알림 한 번이 누락되거나 Cloud 상태가 약간 늦어도 수동 등록이 끊기지 않는다.
+- C6에 저장된 Gateway ID는 과거에는 `정상 통신 중`으로 표시됐지만, 이는 실제 S3 수신 ACK가 아니다. 화면은 이제 `옷봉 ID 저장됨 · 수신 확인 중`으로 정확히 표시한다.
+- 실제 S3 직렬 검증에서 `HC-87A828`의 `[ESPNOW-RX]`와 해당 `[CLOUD_POST] ... http=200`을 확인했다. 반면 새 C6 `HC-85C438`가 `[PAIR] manual BLE pairing required`일 때는 `queued=false`이고 S3 수신이 없음을 확인했다.
+
 ## NFC 제거 경로 추적 및 수동 등록 보강 (로컬 검증, 미배포/미플래시)
 
 - 현재 C6 소스의 실제 NFC는 PN532 **SPI**다: D8=SCK, D9=MISO, D10=MOSI, D6=SS, LED=D1 active-high. 예전 I2C 배선 문서는 이 현재 보드 판정의 근거로 사용하지 않는다.
