@@ -483,7 +483,9 @@ bool request(const String& path, const char* method, const String& payload, Stri
     }
   }
 
-  if (!client.connect(host.c_str(), port)) {
+  // Bound both TLS connect and response waiting. A slow command poll must not
+  // hold a just-arrived NFC PRESENT/EMPTY event for several seconds.
+  if (!client.connect(host.c_str(), port, timeoutMs)) {
     char err[64]{};
     client.lastError(err, sizeof err);
     Serial.printf("[CLOUD] TLS connect failed: %s\n", err);
@@ -689,7 +691,9 @@ void fetchCommands() {
   String out;
   // The server returns this response before its asynchronous status save.  A
   // bounded timeout keeps command polling responsive without starving beacons.
-  if (!request("/api/gateway/commands", "GET", "", out, 3500)) {
+  // The next poll follows quickly. Prefer a bounded physical-state latency to
+  // waiting several seconds for one stale/slow command response.
+  if (!request("/api/gateway/commands", "GET", "", out, 800)) {
     Serial.println("[COMMAND-POLL] HTTP request failed");
     return;
   }
