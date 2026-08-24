@@ -189,8 +189,12 @@ test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected'
   assert.ok(admin.body.totals.garments >= 1);
   assert.equal(admin.body.system.backend.ready, true);
   assert.equal(typeof admin.body.system.imageProcessing.configured, 'boolean');
+  assert.ok(Array.isArray(admin.body.problems));
+  assert.equal(typeof admin.body.system.gateways.online, 'number');
+  assert.equal(typeof admin.body.system.hangers.nfcAttention, 'number');
   assert.ok(admin.body.users.every(row => !Object.prototype.hasOwnProperty.call(row, 'passwordHash')));
   assert.ok(admin.body.users.flatMap(row => row.gateways).flatMap(gateway => gateway.hangers).every(hanger => Object.hasOwn(hanger, 'nfcStatus') && Object.hasOwn(hanger, 'garmentName')));
+  assert.ok(admin.body.users.flatMap(row => row.gateways).every(gateway => Object.hasOwn(gateway, 'wifiStatus') && Object.hasOwn(gateway, 'cloudStatus')));
   const system = await api('/api/admin/system', { userAuth: true, adminSession: verification.body.adminSession });
   assert.equal(system.status, 200);
   assert.ok(Array.isArray(system.body.system.recentDeviceEvents));

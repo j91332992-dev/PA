@@ -1536,7 +1536,8 @@ let adminOverviewData = null,
   adminSelectedGatewayId = '',
   adminUserQuery = '',
   adminDeviceQuery = '',
-  adminDeviceMode = 'all';
+  adminDeviceMode = 'all',
+  adminShowEvents = false;
 
 const adminActive = () => sessionUser?.role === 'admin' && !!sessionUser.adminVerified;
 const adminDate = value => value ? new Date(value).toLocaleString() : '-';
@@ -1548,6 +1549,7 @@ function hideAdminShell() {
   adminView = 'dashboard';
   adminSelectedUserId = '';
   adminSelectedGatewayId = '';
+  adminShowEvents = false;
 }
 
 function ensureAdminUi() {
@@ -1593,17 +1595,35 @@ function adminSummaryCard(label, value, view, mode = '') {
   return `<button type="button" class="admin-summary-card" data-admin-summary="${esc(view)}" data-admin-mode="${esc(mode)}"><b>${esc(display)}</b><span>${esc(label)}</span></button>`;
 }
 
+function adminHealth(level, label) {
+  return `<span class="admin-health ${esc(level)}">${esc(label)}</span>`;
+}
+
+function adminHangerTree(hanger) {
+  const garment = hanger.garmentName || (hanger.tagDetected ? '미등록 태그 감지' : '걸린 옷 없음');
+  const level = hanger.state === 'ONLINE' && hanger.nfcStatus === '정상' ? 'normal' : hanger.state === 'ONLINE' ? 'warning' : 'problem';
+  return `<article class="admin-tree-hanger"><div><b>${esc(hanger.name || `${hanger.hangerNumber}번 옷걸이`)}</b>${adminHealth(level, hanger.state === 'ONLINE' ? hanger.nfcStatus === '정상' ? '정상' : '주의' : '장애')}</div><small>${esc(hanger.hangerId)} · ${esc(hanger.hangerNumber || '-')}번 · 채널 ${esc(hanger.channel ?? '알 수 없음')}</small><dl><dt>통신</dt><dd>${adminState(hanger.state)} · 마지막 ${esc(adminDate(hanger.lastSeen))}</dd><dt>NFC</dt><dd>${esc(hanger.nfcStatus || '알 수 없음')}</dd><dt>현재 상태</dt><dd>${esc(hanger.reportedState || '알 수 없음')}</dd><dt>현재 옷</dt><dd>${esc(garment)}</dd></dl></article>`;
+}
+
+function adminGatewayTree(gateway) {
+  const level = gateway.state === 'ONLINE' ? 'normal' : 'problem';
+  return `<article class="admin-tree-gateway" data-admin-gateway="${esc(gateway.gatewayId)}"><header><div><b>${esc(gateway.name || `${gateway.gatewayNumber}번 옷봉`)}</b><small>${esc(gateway.gatewayId)} · ${esc(gateway.gatewayNumber || '-')}번</small></div>${adminHealth(level, gateway.state === 'ONLINE' ? '정상' : '장애')}</header><dl class="admin-gateway-meta"><dt>통신</dt><dd>${adminState(gateway.state)} · 마지막 heartbeat ${esc(adminDate(gateway.lastSeen))}</dd><dt>Wi-Fi</dt><dd>${esc(gateway.wifiStatus === 'CONNECTED' ? `연결됨${gateway.ssid ? ` (${gateway.ssid})` : ''}` : '알 수 없음')} · RSSI ${esc(gateway.rssi ?? '알 수 없음')}</dd><dt>Cloud</dt><dd>${esc(gateway.cloudStatus === 'CONNECTED' ? '최근 Cloud heartbeat 수신' : '알 수 없음')}</dd><dt>연결 옷걸이</dt><dd>${Number(gateway.hangerCount || 0)}개</dd></dl><div class="admin-tree-hangers">${(gateway.hangers || []).map(adminHangerTree).join('') || '<p class="muted">연결된 옷걸이가 없습니다.</p>'}</div></article>`;
+}
+
 function adminUserCard(user) {
   return `<button type="button" class="admin-user-card" data-admin-user="${esc(user.id)}"><b>${esc(user.name)}</b><span>${esc(user.email)}</span><small>옷봉 ${Number(user.gatewayCount || 0)} · 옷걸이 ${Number(user.hangerCount || 0)} · 옷 ${Number(user.garmentCount || 0)}</small><small>최근 로그인 ${esc(adminDate(user.lastLoginAt))}</small></button>`;
 }
 
 function renderAdminDashboard(data) {
   const t = data.totals || {};
-  return `<section><div class="title"><div><h2>관리자 대시보드</h2><p>운영 현황을 요약합니다. 계정 비밀번호와 연결 비밀값은 표시하지 않습니다.</p></div><button type="button" id="adminRefresh">새로고침</button></div><div class="admin-summary-grid">${[
-    adminSummaryCard('전체 사용자', t.users, 'users'), adminSummaryCard('전체 옷봉', t.gateways, 'devices', 'gateway'),
-    adminSummaryCard('전체 옷걸이', t.hangers, 'devices', 'hanger'), adminSummaryCard('전체 옷', t.garments, 'users'),
-    adminSummaryCard('ONLINE 옷봉', t.onlineGateways, 'devices', 'gateway-online'), adminSummaryCard('OFFLINE 옷봉', t.offlineGateways, 'devices', 'gateway-offline'),
-    adminSummaryCard('ONLINE 옷걸이', t.onlineHangers, 'devices', 'hanger-online'), adminSummaryCard('OFFLINE 옷걸이', t.offlineHangers, 'devices', 'hanger-offline'),
+  const system = data.system || {}, problems = data.problems || [];
+  return `<section><div class="title"><div><h2>운영 대시보드</h2><p>문제 장비를 먼저 확인하고, 필요하면 사용자와 장비 계층으로 추적합니다.</p></div><button type="button" id="adminRefresh">새로고침</button></div><div class="admin-health-grid">${[
+    ['normal', 'Backend', system.backend?.ready ? '정상' : '장애'], ['normal', 'PostgreSQL', system.backend?.storage === 'postgres' ? '정상' : '알 수 없음'],
+    [system.imageProcessing?.configured ? 'normal' : 'warning', 'Image Worker', system.imageProcessing?.configured ? '설정됨' : '미설정'],
+    [t.offlineGateways ? 'problem' : 'normal', 'Offline Gateway', `${Number(t.offlineGateways || 0)}대`],
+    [t.offlineHangers ? 'problem' : 'normal', 'Offline Hanger', `${Number(t.offlineHangers || 0)}대`],
+  ].map(([level, label, value]) => `<article class="admin-health-card ${esc(level)}">${adminHealth(level, value)}<b>${esc(label)}</b></article>`).join('')}</div><section class="admin-problems"><div class="title"><div><h3>장애·주의 ${problems.length}건</h3><p>${problems.length ? '항목을 선택하면 대상 사용자 장비 구조를 바로 엽니다.' : '현재 감지된 주요 장애가 없습니다.'}</p></div></div>${problems.slice(0, 12).map(problem => `<button type="button" class="admin-problem" data-admin-problem-user="${esc(problem.userId || '')}" data-admin-problem-gateway="${esc(problem.gatewayId || '')}">${adminHealth(problem.level, problem.level === 'problem' ? '문제' : '주의')}<span><b>${esc(problem.title)}</b><small>${esc(problem.userName || '시스템')} · ${esc(problem.message)}</small></span></button>`).join('')}</section><div class="admin-summary-grid admin-small-summary">${[
+    adminSummaryCard('사용자', t.users, 'users'), adminSummaryCard('옷봉', t.gateways, 'devices', 'gateway'), adminSummaryCard('옷걸이', t.hangers, 'devices', 'hanger'), adminSummaryCard('옷', t.garments, 'users')
   ].join('')}</div></section>`;
 }
 
@@ -1616,14 +1636,14 @@ function renderAdminUsers(data) {
 function renderAdminUserDetail(data) {
   const user = (data.users || []).find(item => item.id === adminSelectedUserId);
   if (!user) return renderAdminUsers(data);
-  return `<section><div class="title"><div><button type="button" class="ghost" id="adminBackUsers">← 사용자 목록</button><h2>${esc(user.name)}</h2><p>${esc(user.email)} · 가입일 ${esc(adminDate(user.createdAt))} · 최근 로그인 ${esc(adminDate(user.lastLoginAt))}</p></div></div><div class="admin-count-line">옷봉 ${Number(user.gatewayCount || 0)}개 · 옷걸이 ${Number(user.hangerCount || 0)}개 · 옷 ${Number(user.garmentCount || 0)}개</div><div class="admin-list">${(user.gateways || []).map(gateway => `<button type="button" class="admin-gateway-card" data-admin-gateway="${esc(gateway.gatewayId)}"><b>${esc(gateway.name || `${gateway.gatewayNumber}번 옷봉`)}</b>${adminState(gateway.state)}<small>${esc(gateway.gatewayId)} · 최근 heartbeat ${esc(adminDate(gateway.lastSeen))} · 연결 옷걸이 ${Number(gateway.hangerCount || 0)}개</small></button>`).join('') || '<p class="muted">등록된 옷봉이 없습니다.</p>'}</div></section>`;
+  return `<section><div class="title"><div><button type="button" class="ghost" id="adminBackUsers">← 사용자 목록</button><h2>${esc(user.name)}</h2><p>${esc(user.email)} · 가입일 ${esc(adminDate(user.createdAt))} · 최근 로그인 ${esc(adminDate(user.lastLoginAt))}</p></div></div><div class="admin-count-line">옷봉 ${Number(user.gatewayCount || 0)}개 · 옷걸이 ${Number(user.hangerCount || 0)}개 · 옷 ${Number(user.garmentCount || 0)}개</div><div class="admin-tree">${(user.gateways || []).map(adminGatewayTree).join('') || '<p class="muted">등록된 옷봉이 없습니다.</p>'}</div></section>`;
 }
 
 function renderAdminGatewayDetail(data) {
   const user = (data.users || []).find(item => item.id === adminSelectedUserId);
   const gateway = user?.gateways?.find(item => item.gatewayId === adminSelectedGatewayId);
   if (!gateway) return renderAdminUserDetail(data);
-  return `<section><div class="title"><div><button type="button" class="ghost" id="adminBackUser">← ${esc(user.name)} 상세</button><h2>${esc(gateway.name || `${gateway.gatewayNumber}번 옷봉`)}</h2><p>${esc(gateway.gatewayId)} · ${adminState(gateway.state)} · 최근 heartbeat ${esc(adminDate(gateway.lastSeen))}</p></div></div><div class="admin-list">${(gateway.hangers || []).map(hanger => `<article class="admin-hanger-card"><div><b>${esc(hanger.name || `${hanger.hangerNumber}번 옷걸이`)}</b> ${adminState(hanger.state)}<small>${esc(hanger.hangerId)} · 현재 옷봉 ${esc(hanger.gatewayId || '-')}</small></div><dl><dt>NFC 상태</dt><dd>${esc(hanger.nfcStatus || '확인 중')}</dd><dt>감지 상태</dt><dd>${esc(hanger.reportedState || '-')}</dd><dt>현재 옷</dt><dd>${esc(hanger.garmentName || (hanger.tagDetected ? '미등록 태그 감지' : '걸린 옷 없음'))}</dd><dt>최근 이벤트</dt><dd>${esc(adminDate(hanger.lastSeen))}</dd></dl></article>`).join('') || '<p class="muted">연결된 옷걸이가 없습니다.</p>'}</div></section>`;
+  return `<section><div class="title"><div><button type="button" class="ghost" id="adminBackUser">← ${esc(user.name)} 상세</button><h2>${esc(gateway.name || `${gateway.gatewayNumber}번 옷봉`)}</h2><p>소유 사용자 ${esc(user.name)}</p></div></div><div class="admin-tree">${adminGatewayTree(gateway)}</div></section>`;
 }
 
 function renderAdminDevices(data) {
@@ -1638,15 +1658,13 @@ function renderAdminDevices(data) {
     if (mode.endsWith('offline') && item.state === 'ONLINE') return false;
     return true;
   });
-  return `<section><div class="title"><div><h2>장비 관리</h2><p>소유 사용자와 장비 연결 상태를 조회합니다.</p></div><button type="button" id="adminRefresh">새로고침</button></div><input id="adminDeviceSearch" class="admin-search" value="${esc(adminDeviceQuery)}" placeholder="사용자, 이메일, 장비 이름 또는 하드웨어 ID 검색"><div class="admin-device-tabs"><button data-admin-device-mode="all">전체</button><button data-admin-device-mode="gateway">옷봉</button><button data-admin-device-mode="hanger">옷걸이</button></div><div class="admin-list">${filtered.map(row => { const item=row.hanger||row.gateway; return `<article class="admin-device-card"><b>${row.kind==='gateway'?'옷봉':'옷걸이'} · ${esc(item.name || item.gatewayId || item.hangerId)}</b>${adminState(item.state)}<small>소유 사용자: ${esc(row.user.name)} (${esc(row.user.email)})</small><small>${esc(item.gatewayId || item.hangerId)} · 번호 ${Number(item.gatewayNumber || item.hangerNumber || 0) || '-'} · ${row.kind==='gateway'?`옷걸이 ${Number(item.hangerCount || 0)}개`:`현재 옷봉 ${esc(row.gateway.name || row.gateway.gatewayId)}`}</small></article>`; }).join('') || '<p class="muted">조건에 맞는 장비가 없습니다.</p>'}</div></section>`;
+  return `<section><div class="title"><div><h2>장비 관리</h2><p>사용자 또는 하드웨어 ID로 검색한 뒤 해당 사용자 장비 구조를 엽니다.</p></div><button type="button" id="adminRefresh">새로고침</button></div><input id="adminDeviceSearch" class="admin-search" value="${esc(adminDeviceQuery)}" placeholder="사용자, 이메일, 장비 이름 또는 하드웨어 ID 검색"><div class="admin-device-tabs"><button data-admin-device-mode="all">전체</button><button data-admin-device-mode="gateway">옷봉</button><button data-admin-device-mode="hanger">옷걸이</button></div><div class="admin-list">${filtered.map(row => { const item=row.hanger||row.gateway; return `<button type="button" class="admin-device-card" data-admin-user="${esc(row.user.id)}" data-admin-gateway="${esc(row.gateway.gatewayId)}"><b>${row.kind==='gateway'?'옷봉':'옷걸이'} · ${esc(item.name || item.gatewayId || item.hangerId)}</b>${adminState(item.state)}<small>소유 사용자: ${esc(row.user.name)} (${esc(row.user.email)})</small><small>${esc(item.gatewayId || item.hangerId)} · 번호 ${Number(item.gatewayNumber || item.hangerNumber || 0) || '-'} · ${row.kind==='gateway'?`옷걸이 ${Number(item.hangerCount || 0)}개`:`현재 옷봉 ${esc(row.gateway.name || row.gateway.gatewayId)}`}</small></button>`; }).join('') || '<p class="muted">조건에 맞는 장비가 없습니다.</p>'}</div></section>`;
 }
 
 function renderAdminSystem(data) {
   const system = data.system || {}, image = system.imageProcessing || {}, backend = system.backend || {};
-  return `<section><div class="title"><div><h2>시스템 상태</h2><p>운영 상태만 표시하며 비밀값·Wi-Fi 비밀번호·세션은 표시하지 않습니다.</p></div><button type="button" id="adminRefresh">새로고침</button></div><div class="admin-summary-grid">${[
-    adminSummaryCard('Backend', backend.ready ? '정상' : '대기', 'system'), adminSummaryCard('PostgreSQL', backend.storage || '-', 'system'),
-    adminSummaryCard('Image worker', image.configured ? '설정됨' : '미설정', 'system'), adminSummaryCard('사진 처리 중', image.processing, 'system'), adminSummaryCard('사진 처리 실패', image.failed, 'system')
-  ].join('')}</div><article class="panel"><h3>최근 장비 이벤트</h3><ol class="events">${(system.recentDeviceEvents || []).map(event => `<li>${esc(event.at ? new Date(event.at).toLocaleString() : '-')} · ${esc(event.type)} · ${esc(event.deviceId || '-')} ${esc(event.state || '')}</li>`).join('') || '<li>최근 장비 이벤트 없음</li>'}</ol></article></section>`;
+  const gateway = system.gateways || {}, hanger = system.hangers || {}, ws = system.websocket || {}, storage = system.storage || {};
+  return `<section><div class="title"><div><h2>시스템 상태</h2><p>상태 근거가 없는 항목은 정상으로 추측하지 않고 ‘알 수 없음’으로 표시합니다.</p></div><button type="button" id="adminRefresh">새로고침</button></div><div class="admin-system-grid"><article class="panel"><h3>SERVER</h3><p>Backend ${adminHealth(backend.ready ? 'normal' : 'problem', backend.ready ? '정상' : '장애')}</p><p>PostgreSQL ${adminHealth(backend.storage === 'postgres' ? 'normal' : 'warning', backend.storage === 'postgres' ? '정상' : '알 수 없음')}</p><p>WebSocket ${adminHealth(ws.status === 'CONNECTED' ? 'normal' : 'warning', ws.status === 'CONNECTED' ? '연결 있음' : '알 수 없음')}</p><p>Supabase Storage ${adminHealth(storage.status === 'CONFIGURED' ? 'normal' : 'warning', storage.status === 'CONFIGURED' ? '설정됨' : '알 수 없음')}</p></article><article class="panel"><h3>GATEWAY</h3><p>전체 ${Number(gateway.total || 0)} · ONLINE ${Number(gateway.online || 0)} · OFFLINE ${Number(gateway.offline || 0)}</p><p>최근 heartbeat 없는 Gateway는 OFFLINE으로 표시됩니다.</p></article><article class="panel"><h3>HANGER</h3><p>전체 ${Number(hanger.total || 0)} · ONLINE ${Number(hanger.online || 0)} · OFFLINE ${Number(hanger.offline || 0)}</p><p>PN532 정상 ${Number(hanger.nfcReady || 0)} · 점검 필요 ${Number(hanger.nfcAttention || 0)}</p></article><article class="panel"><h3>PHOTO</h3><p>Image Worker ${adminHealth(image.configured ? 'normal' : 'warning', image.configured ? '설정됨' : '미설정')}</p><p>처리 중 ${Number(image.processing || 0)} · 완료 ${Number(image.ready || 0)} · 실패 ${Number(image.failed || 0)}</p></article></div><section class="admin-events"><div class="title"><h3>최근 이벤트</h3><button type="button" id="adminToggleEvents">${adminShowEvents ? '접기' : '최근 이벤트 보기'}</button></div>${adminShowEvents ? `<ol class="events">${(system.recentDeviceEvents || []).map(event => `<li>${esc(event.at ? new Date(event.at).toLocaleString() : '-')} · ${esc(event.type)} · ${esc(event.deviceId || '-')} ${esc(event.state || '')}</li>`).join('') || '<li>최근 장비 이벤트 없음</li>'}</ol>` : ''}</section></section>`;
 }
 
 function renderAdminShellView() {
@@ -1657,6 +1675,7 @@ function renderAdminShellView() {
   content.innerHTML = view;
   $$('#adminApp [data-admin-view]').forEach(button => { button.classList.toggle('active', button.dataset.adminView === adminView); button.onclick = () => { adminView = button.dataset.adminView; renderAdminShellView(); }; });
   $$('#adminApp [data-admin-summary]').forEach(button => button.onclick = () => { adminView = button.dataset.adminSummary; adminDeviceMode = button.dataset.adminMode || 'all'; renderAdminShellView(); });
+  $$('#adminApp [data-admin-problem-user]').forEach(button => button.onclick = () => { const userId = button.dataset.adminProblemUser; if (!userId) { adminView = 'system'; renderAdminShellView(); return; } adminSelectedUserId = userId; adminSelectedGatewayId = button.dataset.adminProblemGateway || ''; adminView = adminSelectedGatewayId ? 'gateway-detail' : 'user-detail'; renderAdminShellView(); });
   $('#adminRefresh')?.addEventListener('click', refreshAdminData);
   $('#adminUserSearch')?.addEventListener('input', event => { adminUserQuery = event.target.value; renderAdminShellView(); });
   $$('#adminApp [data-admin-user]').forEach(button => button.onclick = () => { adminSelectedUserId = button.dataset.adminUser; adminView = 'user-detail'; renderAdminShellView(); });
@@ -1665,11 +1684,16 @@ function renderAdminShellView() {
   $('#adminBackUser')?.addEventListener('click', () => { adminView = 'user-detail'; renderAdminShellView(); });
   $('#adminDeviceSearch')?.addEventListener('input', event => { adminDeviceQuery = event.target.value; renderAdminShellView(); });
   $$('#adminApp [data-admin-device-mode]').forEach(button => button.onclick = () => { adminDeviceMode = button.dataset.adminDeviceMode; renderAdminShellView(); });
+  $('#adminToggleEvents')?.addEventListener('click', () => { adminShowEvents = !adminShowEvents; renderAdminShellView(); });
 }
 
 const adminStyle = document.createElement('style');
 adminStyle.textContent = '.admin-shell{min-height:100vh;background:#f7f7f2;color:var(--ink)}.admin-header{display:flex;justify-content:space-between;align-items:center;padding:28px max(28px,calc((100vw - 1240px)/2));background:#19352b;color:#fff}.admin-header h1{margin:0}.admin-header .ghost{color:#fff;border-color:#98b5a4}.admin-nav{display:flex;gap:8px;padding:12px max(28px,calc((100vw - 1240px)/2));background:#fff;border-bottom:1px solid #dae3dc;flex-wrap:wrap}.admin-nav button{background:transparent;color:var(--ink)}.admin-nav button.active{background:#dce9df}.admin-content{max-width:1240px;margin:0 auto;padding:28px}.admin-summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}.admin-summary-card{display:flex;flex-direction:column;text-align:left;gap:5px;background:#fff;color:var(--ink);border:1px solid #dce5de;box-shadow:0 5px 16px #19352b12}.admin-summary-card b{font-size:26px}.admin-list{display:grid;gap:10px;margin-top:16px}.admin-user-card,.admin-gateway-card,.admin-device-card{display:grid;gap:5px;text-align:left;background:#fff;color:var(--ink);border:1px solid #dce5de}.admin-user-card small,.admin-gateway-card small,.admin-device-card small,.admin-hanger-card small{color:#66766c}.admin-hanger-card{display:grid;grid-template-columns:minmax(200px,1fr) minmax(240px,1fr);gap:16px;padding:16px;background:#fff;border:1px solid #dce5de;border-radius:12px}.admin-hanger-card dl{display:grid;grid-template-columns:100px 1fr;gap:5px;margin:0}.admin-hanger-card dt{color:#66766c}.admin-hanger-card dd{margin:0}.admin-search{max-width:520px}.admin-device-tabs{display:flex;gap:8px;margin-top:10px}.admin-device-tabs button{background:#eef5ef;color:var(--ink)}.admin-online{color:#218451}.admin-offline{color:#b3463f}.admin-count-line{padding:12px 0;font-weight:600}@media(max-width:620px){.admin-header{padding:20px}.admin-content{padding:18px}.admin-hanger-card{grid-template-columns:1fr}}';
 document.head.append(adminStyle);
+
+const adminOperationalStyle = document.createElement('style');
+adminOperationalStyle.textContent = '.admin-health-grid,.admin-system-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}.admin-health-card{display:grid;gap:8px;padding:16px;border:1px solid #dce5de;border-radius:12px;background:#fff}.admin-health-card b{font-size:16px}.admin-health{display:inline-flex;width:max-content;border-radius:999px;padding:3px 9px;font-size:12px;font-weight:700}.admin-health.normal{background:#def3e5;color:#16643d}.admin-health.warning{background:#fff3cd;color:#855b00}.admin-health.problem{background:#fde5e2;color:#a62d26}.admin-problems{margin:22px 0;padding:18px;border:1px solid #e0e6df;border-radius:14px;background:#fff}.admin-problem{width:100%;display:flex;align-items:flex-start;gap:10px;margin-top:8px;text-align:left;background:#f8faf7;color:var(--ink);border:1px solid #e0e6df}.admin-problem small{display:block;margin-top:4px;color:#66766c}.admin-small-summary{margin-top:18px}.admin-tree{display:grid;gap:14px;margin-top:16px}.admin-tree-gateway{padding:16px;border:1px solid #d6e1d8;border-left:5px solid #4b8260;border-radius:12px;background:#fff}.admin-tree-gateway>header{display:flex;justify-content:space-between;gap:12px;align-items:start}.admin-tree-gateway header small{display:block;color:#66766c;margin-top:3px}.admin-gateway-meta{display:grid;grid-template-columns:130px 1fr;gap:6px 12px;margin:14px 0}.admin-gateway-meta dt,.admin-tree-hanger dt{color:#66766c}.admin-gateway-meta dd,.admin-tree-hanger dd{margin:0}.admin-tree-hangers{display:grid;gap:9px;margin-left:18px;padding-left:16px;border-left:2px solid #d6e1d8}.admin-tree-hanger{padding:12px;border:1px solid #e2e9e3;border-radius:10px;background:#fbfcfa}.admin-tree-hanger>div{display:flex;gap:8px;align-items:center}.admin-tree-hanger small{display:block;margin:5px 0;color:#66766c}.admin-tree-hanger dl{display:grid;grid-template-columns:92px 1fr;gap:4px 10px;margin:0}.admin-system-grid{margin-bottom:16px}.admin-system-grid .panel{margin:0}.admin-system-grid p{display:flex;justify-content:space-between;align-items:center;gap:8px}.admin-events{padding:16px;border:1px solid #dce5de;border-radius:12px;background:#fff}.admin-events .title{margin-bottom:0}@media(max-width:620px){.admin-gateway-meta,.admin-tree-hanger dl{grid-template-columns:1fr}.admin-tree-hangers{margin-left:4px;padding-left:9px}.admin-tree-gateway>header{display:grid}}';
+document.head.append(adminOperationalStyle);
 
 $('#authToggle').onclick = () => setAuthMode(currentAuthMode === 'login' ? 'signup' : 'login', false);
 
