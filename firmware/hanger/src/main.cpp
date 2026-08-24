@@ -38,6 +38,7 @@ BLECharacteristic* bleStatusCharacteristic = nullptr;
 bool bleActive = false;
 int8_t serialLedTestPhase = -1;
 uint32_t serialLedTestPhaseAt = 0;
+int8_t serialLedOverride = -1;
 
 constexpr char HANGER_BLE_SERVICE_UUID[] = "a4e66a20-0fb0-4dce-8be0-18cf7bc82001";
 constexpr char HANGER_BLE_CONFIG_UUID[] = "a4e66a21-0fb0-4dce-8be0-18cf7bc82001";
@@ -226,9 +227,28 @@ void startSerialLedTest() {
 
 void handleSerialDiagnostics() {
   if (!Serial.available()) return;
-  const String command = Serial.readStringUntil('\n');
-  if (!command.equalsIgnoreCase("LEDTEST")) return;
-  startSerialLedTest();
+  String command = Serial.readStringUntil('\n');
+  command.trim();
+  if (command.equalsIgnoreCase("LEDTEST")) {
+    serialLedOverride = -1;
+    startSerialLedTest();
+  } else if (command.equalsIgnoreCase("LEDON")) {
+    ledUntil = 0;
+    serialLedTestPhase = -1;
+    serialLedOverride = 1;
+    led(true);
+    Serial.printf("[LED-DIAG] D1/GPIO%u forced HIGH; send LEDOFF to force LOW\n", PIN_LED);
+  } else if (command.equalsIgnoreCase("LEDOFF")) {
+    ledUntil = 0;
+    serialLedTestPhase = -1;
+    serialLedOverride = 0;
+    led(false);
+    Serial.printf("[LED-DIAG] D1/GPIO%u forced LOW\n", PIN_LED);
+  } else if (command.equalsIgnoreCase("LEDRESET")) {
+    serialLedOverride = -1;
+    led(false);
+    Serial.println("[LED-DIAG] automatic LED control restored");
+  }
 }
 
 bool runSerialLedTest(uint32_t now) {
@@ -358,10 +378,12 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
       (!pairedGateway.length() || pairedGateway == String(p.gatewayId)) && sw::target(p, hanger.c_str())) {
     Serial.printf("[COMMAND] %lu cmd=%u\n", p.commandId, (unsigned)p.command);
     if (p.command == sw::Command::LED_OFF) {
+      serialLedOverride = -1;
       ledUntil = 0;
       ledBlinkStartedAt = 0;
       led(false);
     } else if (p.command == sw::Command::LED_BLINK) {
+      serialLedOverride = -1;
       // The LED must visibly turn on before this command is acknowledged.
       // Use a command-relative phase so a FIND never starts in an OFF slice.
       ledBlinkStartedAt = millis();
@@ -582,7 +604,9 @@ void setup() {
 void loop() {
   uint32_t t = millis();
   handleSerialDiagnostics();
-  if (!runSerialLedTest(t)) {
+  if (serialLedOverride >= 0) {
+    led(serialLedOverride == 1);
+  } else if (!runSerialLedTest(t)) {
     bool isBlinking = (t < ledUntil) && (((t - ledBlinkStartedAt) / 250) % 2 == 0);
     led(isBlinking);
   }

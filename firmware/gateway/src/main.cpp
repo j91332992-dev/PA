@@ -600,6 +600,10 @@ void gatewayHeartbeat() {
 }
 
 void ack(const sw::Packet& p) {
+  if (p.commandId == 0) {
+    Serial.printf("[FIND-TEST] ACK from %s\n", p.hangerId);
+    return;
+  }
   JsonDocument d;
   d["commandId"] = p.commandId;
   d["hangerId"] = p.hangerId;
@@ -608,6 +612,37 @@ void ack(const sw::Packet& p) {
   String body, out;
   serializeJson(d, body);
   request("/api/gateway/ack", "POST", body, out, 2500);
+}
+
+void runFindTest(const String& hangerId) {
+  String target = hangerId;
+  target.trim();
+  if (!target.startsWith("HC-") || target.length() < 9) {
+    Serial.println("[FIND-TEST] usage: FINDTEST HC-XXXXXX");
+    return;
+  }
+  sw::Packet p;
+  p.type = sw::Type::COMMAND;
+  strlcpy(p.gatewayId, gateway.c_str(), sizeof p.gatewayId);
+  p.sequence = ++sequence;
+  p.commandId = 0; // Reserved local diagnostic command: never sent to Cloud ACK.
+  p.command = sw::Command::LED_BLINK;
+  p.durationMs = 6000;
+  p.targetCount = 1;
+  p.targetIds[0] = sw::idCode(target.c_str());
+  for (uint8_t i = 0; i < 2; ++i) {
+    send(p);
+    if (i == 0) delay(10);
+  }
+  Serial.printf("[FIND-TEST] sent target=%s blink=6000ms\n", target.c_str());
+}
+
+void handleSerialDiagnostics() {
+  if (!Serial.available()) return;
+  String command = Serial.readStringUntil('\n');
+  command.trim();
+  if (!command.startsWith("FINDTEST")) return;
+  runFindTest(command.substring(String("FINDTEST").length()));
 }
 
 void fetchCommands() {
@@ -755,6 +790,7 @@ void setup() {
 }
 
 void loop() {
+  handleSerialDiagnostics();
   if (setupPortalActive) {
     setupDns.processNextRequest();
     setupServer.handleClient();
