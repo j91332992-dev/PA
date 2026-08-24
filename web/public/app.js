@@ -168,6 +168,15 @@ function applyLocalCommand(command) {
   scheduleRefresh(0);
 }
 
+function stopLocalFindForEmptyHanger(hangerId) {
+  for (const command of (model.commands || [])) {
+    if (command.command === 'LED_BLINK' && command.targets?.includes(hangerId) && ['QUEUED', 'SENT', 'PARTIAL', 'ACKED'].includes(command.status)) {
+      command.status = 'CANCELLED';
+      command.cancelReason = 'NFC_TAG_REMOVED';
+    }
+  }
+}
+
 // ----------------- Image SVG Fallback Placeholder -----------------
 function getGarmentSvgPlaceholder(category, color, name) {
   const cat = window.OutfitEngine?.categorizeGarment({ category, name }) || 'top';
@@ -1107,6 +1116,7 @@ function connect() {
     } else if (m.type === 'hanger.state') {
       const h = m.payload;
       if (!applyHangerEvent(h)) return;
+      if (h.state === 'EMPTY') stopLocalFindForEmptyHanger(h.hangerId);
       // WebSocket events do not arrive through refresh(), so keep the recent
       // event feed in sync with the same live state update.
       model.events = model.events || [];

@@ -556,6 +556,17 @@ test('Scenario L: Multi-Hanger Outfit FIND & STOP flow', async () => {
   h1.ledUntil = 0;
   h2.ledUntil = 0;
 
+  // The real-product rule is that every FIND target must currently have a
+  // registered tag in the wardrobe. Give the second hanger one before the
+  // multi-hanger request instead of allowing an EMPTY/unknown hanger to blink.
+  const h2Tag = '04B2B3B4B5B6B7';
+  const garmentRes = await api('/api/garments', {
+    method: 'POST', userAuth: true,
+    body: JSON.stringify({ name: '코디 테스트 하의', tagUid: h2Tag }),
+  });
+  assert.equal(garmentRes.status, 201);
+  await vgw.tagInsert('HC-000002', h2Tag);
+
   // Multi-target start
   const startRes = await api('/api/commands', {
     method: 'POST',

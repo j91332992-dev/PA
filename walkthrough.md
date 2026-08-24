@@ -124,3 +124,4 @@
 - C6의 태그 제거는 80ms no-tag 스캔 5회로 확인한다. 실제 제거는 1초 안에 처리하면서도, LED 점멸 중 태그를 잠시 떼었다가 바로 다시 붙일 때의 PN532 일시 미검출로 `옷장 밖`이 잘못 확정되는 일을 줄인다. 재부착은 첫 정상 UID 읽기에서 즉시 `PRESENT`로 복귀한다.
 - C6 no-tag scan은 40ms 고정 주기이며, 제거 확인에 영향을 주던 보드별 0~72ms 스캔 지터를 제거했다. 5회 clean no-tag 확인은 유지하되 실제 제거 확정은 약 200ms로 줄었다. COM22에 플래시 후 PN532 `0x32010607`과 실제 NTAG UID를 재확인했다.
 - Public Web은 FIND/LED OFF의 HTTP 응답에 포함된 명령을 즉시 로컬 모델에 반영하고 렌더한다. 이후 WebSocket과 snapshot이 실제 ACK/EMPTY 상태를 동기화하므로, 명령 후 `점멸 중` 박스가 추가 snapshot 왕복을 기다리지 않는다.
+- 태그/LED의 단일 제품 규칙: 태그가 없으면 `옷장 밖`과 FIND 비활성, `PRESENT + tagUid`일 때만 `옷장 안`과 FIND 활성이다. 서버는 빈 옷걸이에 대한 `LED_BLINK`를 HTTP 409로 거부하며, `LED_OFF`는 항상 허용한다. EMPTY WebSocket을 받은 앱도 취소 이벤트를 기다리지 않고 즉시 로컬 FIND 표시를 제거한다.
