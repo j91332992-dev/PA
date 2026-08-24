@@ -72,7 +72,9 @@ constexpr uint32_t BEACON_LOST_TIMEOUT_MS = 30000;
 constexpr uint32_t CHANNEL_RESCAN_TIMEOUT_MS = 90000;
 uint32_t lastBeaconWarningMs = 0;
 constexpr uint32_t PN532_REINIT_COOLDOWN_MS = 500;
-constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 200;
+// A passive NTAG answers immediately.  Keep no-tag polls short so removal
+// does not keep the app in IN_WARDROBE for several 200ms timeouts.
+constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 80;
 constexpr uint8_t REMOVE_CONFIRM_HITS = 3;
 constexpr uint8_t PRESENT_CONFIRM_HITS = PRESENT_CONFIRM_COUNT < 1 ? 1 : PRESENT_CONFIRM_COUNT;
 constexpr uint32_t FIND_REJECTED_EMPTY = 2;

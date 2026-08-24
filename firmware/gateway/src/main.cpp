@@ -878,15 +878,9 @@ void loop() {
     wifiRetryCount = 0;
   }
   
-  // 1. Cloud FIND is latency-sensitive. Poll before slower status uploads.
-  if (WiFi.status() == WL_CONNECTED && t - cloudAt > COMMAND_POLL_INTERVAL_MS) {
-    cloudAt = t;
-    fetchCommands();
-  }
-
-  // 2. Process only one pending ESP-NOW packet per loop.  Draining a burst of
-  // status heartbeats here performs several synchronous HTTPS uploads and
-  // makes the next FIND/STOP poll wait roughly 10 seconds.
+  // 1. A physical NFC transition is the source of truth. Process exactly one
+  // pending packet before command polling so PRESENT/EMPTY never waits behind
+  // a slow Cloud GET request.
   sw::Packet p;
   if (dequeue(p)) {
     if (duplicateStatus(p)) {
@@ -898,6 +892,12 @@ void loop() {
         if (WiFi.status() == WL_CONNECTED) upload(p);
       }
     }
+  }
+
+  // 2. Cloud FIND remains frequent, but comes after the physical state event.
+  if (WiFi.status() == WL_CONNECTED && t - cloudAt > COMMAND_POLL_INTERVAL_MS) {
+    cloudAt = t;
+    fetchCommands();
   }
 
   // A connected C3 must remain online even if no C6 tag packet arrived.
