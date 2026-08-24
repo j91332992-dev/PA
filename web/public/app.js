@@ -1024,7 +1024,7 @@ function render() {
     ['서버', 'ONLINE'],
     ['게이트웨이', online ? 'ONLINE' : 'OFFLINE'],
     ['실시간 연결', socket?.readyState === 1 ? 'CONNECTED' : 'DISCONNECTED'],
-    ['명령 대기', (model.commands || []).filter(c => !['ACKED', 'TIMEOUT'].includes(c.status)).length],
+    ['명령 대기', (model.commands || []).filter(c => ['QUEUED', 'SENT', 'PARTIAL'].includes(c.status)).length],
   ]
     .map(x => `<article class="panel"><small>${x[0]}</small><h3>${x[1]}</h3></article>`)
     .join(''));
