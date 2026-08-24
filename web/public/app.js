@@ -211,6 +211,8 @@ function formatEvent(e) {
         p.status === 'ACKED' ? '수신 확인 (ACKED)' : '부분 응답 (PARTIAL)'
       }</span></div><small class="muted">${atStr}</small>`;
     }
+    case 'command.cancelled':
+      return `<div><b>태그 제거로 LED 찾기 종료</b> · 대상: <b>${esc((p.targets || []).join(', '))}</b></div><small class="muted">${atStr}</small>`;
     case 'command.timeout':
       return `<div><b>명령 타임아웃</b> · 대상: <b>${esc((p.targets || []).join(', '))}</b> (15초 내 ACK 미수신)</div><small class="error">${atStr}</small>`;
     case 'garment.created':
@@ -901,7 +903,7 @@ function render() {
           isFinding
             ? `<button onclick="findGarment('${x.id}', '${x.currentHanger}')">다시 찾기</button>
                <button class="ghost" style="color:var(--red);border:1px solid #e78e88" onclick="stopGarment('${x.currentHanger}')">LED 끄기</button>`
-            : `<button ${x.currentHanger ? '' : 'disabled'} onclick="findGarment('${x.id}', '${x.currentHanger}')">LED 찾기</button>`
+            : `<button ${x.currentHanger ? '' : 'disabled'} onclick="findGarment('${x.id}', '${x.currentHanger}')">${x.currentHanger ? 'LED 찾기' : 'LED 찾기 · 옷장 밖'}</button>`
         }
         <button class="ghost" style="color:var(--red);border:1px solid #e78e88;padding:7px 11px;font-size:12px" onclick="deleteGarment('${x.id}', '${esc(
       x.name

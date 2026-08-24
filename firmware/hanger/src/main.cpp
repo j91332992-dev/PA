@@ -50,6 +50,9 @@ uint8_t currentLen = 0;
 uint8_t candidateUid[7] = {0};
 uint8_t candidateLen = 0;
 uint8_t candidateHits = 0;
+// PN532 can occasionally miss a poll even while an NTAG remains in the
+// antenna field.  Do not turn one such miss into an OUT event.
+uint8_t noTagHits = 0;
 uint32_t lastNfcInitAttemptMs = 0;
 uint32_t lastNfcHealthCheckMs = 0;
 uint32_t lastRawUidLogMs = 0;
@@ -69,8 +72,8 @@ constexpr uint32_t BEACON_LOST_TIMEOUT_MS = 30000;
 constexpr uint32_t CHANNEL_RESCAN_TIMEOUT_MS = 90000;
 uint32_t lastBeaconWarningMs = 0;
 constexpr uint32_t PN532_REINIT_COOLDOWN_MS = 500;
-constexpr uint32_t NO_RESPONSE_REMOVE_MS = 350;
 constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 200;
+constexpr uint8_t REMOVE_CONFIRM_HITS = 3;
 constexpr uint32_t PN532_HEALTH_CHECK_MS = 1000;
 
 sw::State state = sw::State::EMPTY;
@@ -477,6 +480,7 @@ void scanNfc() {
 
   if (res == 1) {
     // === TAG FOUND ===
+    noTagHits = 0;
     if (state == sw::State::PRESENT) {
       if (same(u, len, currentUid, currentLen)) {
         lastSeenMs = now; // Keep alive (Zero flapping)
@@ -519,22 +523,25 @@ void scanNfc() {
     // === CLEAN NO TAG IN FIELD ===
     candidateHits = 0;
     if (state == sw::State::PRESENT) {
-      if (now - lastSeenMs >= REMOVE_GRACE_MS) {
+      // Require consecutive absent scans as well as the grace period. This
+      // preserves PRESENT through a short PN532/RF miss, while a real removal
+      // still stops FIND in well under a second with the current scan timing.
+      if (noTagHits < 255) ++noTagHits;
+      if (noTagHits >= REMOVE_CONFIRM_HITS && now - lastSeenMs >= REMOVE_GRACE_MS) {
         memset(currentUid, 0, sizeof(currentUid));
         currentLen = 0;
         memset(candidateUid, 0, sizeof(candidateUid));
         candidateLen = 0;
         candidateHits = 0;
+        noTagHits = 0;
         transition(sw::State::EMPTY);
       }
     }
-  } else if (state == sw::State::PRESENT && now - lastSeenMs >= NO_RESPONSE_REMOVE_MS) {
-    memset(currentUid, 0, sizeof(currentUid));
-    currentLen = 0;
-    memset(candidateUid, 0, sizeof(candidateUid));
-    candidateLen = 0;
+  } else {
+    // A PN532 reinitialisation/read failure is not proof that the tag was
+    // removed. Keep the last confirmed garment until clean no-tag scans say
+    // otherwise, so the app cannot falsely move it outside the wardrobe.
     candidateHits = 0;
-    transition(sw::State::EMPTY);
   }
 }
 
