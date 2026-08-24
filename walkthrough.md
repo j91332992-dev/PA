@@ -179,3 +179,11 @@
 - C6 기본 heartbeat는 500ms로 낮춰 두 보드의 불필요한 HTTPS 경쟁을 줄였다. 실제 태그 제거의 `EMPTY` EVENT와 LED OFF는 heartbeat 주기와 독립적으로 즉시 전송된다.
 - 서버 기본 ESP-NOW 단절 판정은 2.5초로 조정했다. 이는 정상 HTTPS 전달 지연을 전원 단절로 오판하지 않기 위한 liveness 여유이며, PN532 태그 제거는 즉시 `EMPTY` 이벤트로 계속 처리된다.
 - 검증: Gateway/C6 `pio run` 성공, `npm test` 40/40 성공, `node --check backend/server-v3.js`와 `git diff --check` 성공. 이 변경을 실제로 보려면 최신 Gateway와 두 C6 펌웨어를 각각 플래시한 뒤, 두 태그를 동시에 인식·각각 제거하는 실기기 시험이 필요하다.
+
+## 다중 C6 최신 상태 배치 전송
+
+- Gateway는 최대 8개 C6의 일반 `STATUS`를 hardware ID별 최신값으로만 보관하고, 최대 1초에 한 번 `/api/gateway/status/batch`로 보낸다. C6가 6대여도 과거 heartbeat가 HTTPS 대기열을 채우지 않는다.
+- `PRESENT`/`EMPTY`/`SENSOR_ERROR` 전환 EVENT와 LED ACK는 일반 heartbeat 배치보다 먼저 처리한다. HTTPS 재시도 중 같은 C6의 더 새로운 EVENT가 도착하면, 이전 retry 후보를 새 packet으로 교체한다.
+- batch 요청이 실패하면 이전 batch snapshot을 그대로 다시 보내지 않는다. 수신 중인 최신 상태와 병합한 뒤 짧은 간격 후 새 batch를 만든다. 따라서 실패한 과거 `PRESENT`가 뒤늦은 `EMPTY`를 막지 않는다.
+- 서버 batch endpoint는 상태들을 메모리에서 모두 반영한 뒤 저장 작업을 한 번만 예약한다. `bootId + sequence` 판정과 기존 단일 상태 endpoint 호환성은 유지한다.
+- 검증: Gateway/C6 `pio run` 성공, `npm test` 41/41 성공. `gateway batches current statuses for multiple hangers in one request` 회귀 테스트가 batch 수신과 snapshot 반영을 검증한다.

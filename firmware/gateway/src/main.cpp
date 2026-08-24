@@ -148,8 +148,10 @@ bool pendingStatusUpload = false;
 sw::Packet pendingStatusPacket;
 uint8_t pendingStatusRetries = 0;
 uint32_t nextStatusUploadAttemptAt = 0;
+uint32_t nextStatusBatchUploadAttemptAt = 0;
 constexpr uint32_t STATUS_UPLOAD_RETRY_MS = 150;
 constexpr uint8_t STATUS_UPLOAD_BURST_RETRIES = 3;
+constexpr uint32_t STATUS_BATCH_INTERVAL_MS = 1000;
 
 String cloudBaseUrl() {
   String saved = wifiPrefs.getString("server", "");
@@ -313,52 +315,75 @@ void scanNearbyWifiForBle() {
   setBleStatus("scan_complete", networkCount ? "주변 2.4 GHz Wi-Fi 목록을 불러왔습니다." : "주변 Wi-Fi를 찾지 못했습니다. 옷봉 위치와 전원을 확인하세요.");
 }
 
+void retainLatestStatusLocked(const sw::Packet& p) {
+  LatestStatus* slot = nullptr;
+  for (auto& candidate : latestStatus) {
+    if (candidate.pending && strncmp(candidate.packet.hangerId, p.hangerId, sizeof p.hangerId) == 0) { slot = &candidate; break; }
+    if (!slot && !candidate.pending) slot = &candidate;
+  }
+  if (!slot) slot = &latestStatus[p.sequence % LATEST_STATUS_SLOTS];
+  // Old heartbeats must never replace a newer snapshot from the same C6.
+  if (!slot->pending || slot->packet.bootId != p.bootId || p.sequence > slot->packet.sequence) {
+    slot->packet = p;
+    slot->pending = true;
+  }
+}
+
 void enqueue(const sw::Packet& p) {
   portENTER_CRITICAL(&mux);
   const bool priority = p.type == sw::Type::EVENT || p.type == sw::Type::ACK;
   if (priority) {
-    uint8_t next = (eventHead + 1) % EVENT_Q;
-    if (next != eventTail) {
-      eventQueue[eventHead] = p;
-      eventHead = next;
+    // A retry for an old PRESENT must never delay a newer EMPTY from this C6.
+    const bool replacesRetry = p.type == sw::Type::EVENT && pendingStatusUpload &&
+      strncmp(pendingStatusPacket.hangerId, p.hangerId, sizeof p.hangerId) == 0 &&
+      (pendingStatusPacket.bootId != p.bootId || p.sequence > pendingStatusPacket.sequence);
+    if (replacesRetry) {
+      pendingStatusPacket = p;
+      pendingStatusRetries = 0;
+      nextStatusUploadAttemptAt = 0;
+    } else {
+      uint8_t next = (eventHead + 1) % EVENT_Q;
+      if (next != eventTail) {
+        eventQueue[eventHead] = p;
+        eventHead = next;
+      }
     }
   } else {
-    LatestStatus* slot = nullptr;
-    for (auto& candidate : latestStatus) {
-      if (candidate.pending && strncmp(candidate.packet.hangerId, p.hangerId, sizeof p.hangerId) == 0) { slot = &candidate; break; }
-      if (!slot && !candidate.pending) slot = &candidate;
-    }
-    if (!slot) slot = &latestStatus[p.sequence % LATEST_STATUS_SLOTS];
-    // Keep a newer status only. A delayed old heartbeat must not overwrite a
-    // newer PRESENT/EMPTY report while the Gateway is posting another C6.
-    if (!slot->pending || slot->packet.bootId != p.bootId || p.sequence > slot->packet.sequence) {
-      slot->packet = p;
-      slot->pending = true;
-    }
+    retainLatestStatusLocked(p);
   }
   portEXIT_CRITICAL(&mux);
 }
 
-bool dequeue(sw::Packet& p) {
+bool dequeueEvent(sw::Packet& p) {
   bool ok = false;
   portENTER_CRITICAL(&mux);
   if (eventTail != eventHead) {
     p = eventQueue[eventTail];
     eventTail = (eventTail + 1) % EVENT_Q;
     ok = true;
-  } else {
-    for (uint8_t offset = 0; offset < LATEST_STATUS_SLOTS; ++offset) {
-      const uint8_t index = (latestStatusCursor + offset) % LATEST_STATUS_SLOTS;
-      if (!latestStatus[index].pending) continue;
-      p = latestStatus[index].packet;
-      latestStatus[index].pending = false;
-      latestStatusCursor = (index + 1) % LATEST_STATUS_SLOTS;
-      ok = true;
-      break;
-    }
   }
   portEXIT_CRITICAL(&mux);
   return ok;
+}
+
+uint8_t dequeueStatusBatch(sw::Packet* packets, uint8_t maxPackets) {
+  uint8_t count = 0;
+  portENTER_CRITICAL(&mux);
+  for (uint8_t offset = 0; offset < LATEST_STATUS_SLOTS && count < maxPackets; ++offset) {
+    const uint8_t index = (latestStatusCursor + offset) % LATEST_STATUS_SLOTS;
+    if (!latestStatus[index].pending) continue;
+    packets[count++] = latestStatus[index].packet;
+    latestStatus[index].pending = false;
+    latestStatusCursor = (index + 1) % LATEST_STATUS_SLOTS;
+  }
+  portEXIT_CRITICAL(&mux);
+  return count;
+}
+
+void restoreLatestStatusBatch(const sw::Packet* packets, uint8_t count) {
+  portENTER_CRITICAL(&mux);
+  for (uint8_t i = 0; i < count; ++i) retainLatestStatusLocked(packets[i]);
+  portEXIT_CRITICAL(&mux);
 }
 
 bool duplicateStatus(const sw::Packet& p) {
@@ -641,6 +666,33 @@ bool upload(const sw::Packet& p) {
     Serial.printf("[CLOUD_POST] state=%s http=%d sequence=%lu elapsed=%lu\n", state.c_str(), httpCode, p.sequence, millis() - started);
     return false;
   }
+}
+
+bool uploadBatch(const sw::Packet* packets, uint8_t count) {
+  if (!count) return true;
+  JsonDocument d;
+  d["gatewayId"] = gateway;
+  d["channel"] = WiFi.channel();
+  d["gatewayFirmwareVersion"] = "1.0.0";
+  JsonArray statuses = d["statuses"].to<JsonArray>();
+  for (uint8_t i = 0; i < count; ++i) {
+    JsonObject item = statuses.add<JsonObject>();
+    const sw::Packet& p = packets[i];
+    item["hangerId"] = p.hangerId;
+    item["state"] = stateName(p.state);
+    item["tagUid"] = uidHex(p);
+    item["sequence"] = p.sequence;
+    item["bootId"] = p.bootId;
+    item["firmwareVersion"] = p.firmware;
+    item["errorFlags"] = p.errorFlags;
+  }
+  String body, out;
+  serializeJson(d, body);
+  int httpCode = 0;
+  const uint32_t started = millis();
+  const bool ok = request("/api/gateway/status/batch", "POST", body, out, 800, &httpCode);
+  Serial.printf("[CLOUD_BATCH] count=%u http=%d elapsed=%lu\n", count, httpCode, millis() - started);
+  return ok;
 }
 
 void gatewayHeartbeat() {
@@ -928,9 +980,9 @@ void loop() {
     wifiRetryCount = 0;
   }
   
-  // 1. A physical NFC transition is the source of truth. Process exactly one
-  // pending packet before command polling so PRESENT/EMPTY never waits behind
-  // a slow Cloud GET request.
+  // 1. A physical NFC transition is the source of truth. EVENT/ACK are always
+  // handled before batched heartbeat uploads, so tag removal never waits for
+  // status traffic from the other C6 boards.
   sw::Packet p;
   if (pendingStatusUpload && WiFi.status() == WL_CONNECTED && t >= nextStatusUploadAttemptAt) {
     if (upload(pendingStatusPacket)) {
@@ -941,7 +993,7 @@ void loop() {
       nextStatusUploadAttemptAt = t + (pendingStatusRetries >= STATUS_UPLOAD_BURST_RETRIES ? 1000 : STATUS_UPLOAD_RETRY_MS);
       if (pendingStatusRetries >= STATUS_UPLOAD_BURST_RETRIES) pendingStatusRetries = 0;
     }
-  } else if (!pendingStatusUpload && dequeue(p)) {
+  } else if (!pendingStatusUpload && dequeueEvent(p)) {
     if (duplicateStatus(p)) {
       Serial.printf("[ESPNOW] duplicate skipped Hanger=%s Seq=%lu\n", p.hangerId, p.sequence);
     } else {
@@ -956,6 +1008,30 @@ void loop() {
           Serial.printf("[CLOUD_QUEUE] state=%s sequence=%lu\n", stateName(p.state).c_str(), p.sequence);
         }
       }
+    }
+  } else if (!pendingStatusUpload && WiFi.status() == WL_CONNECTED && t >= nextStatusBatchUploadAttemptAt) {
+    sw::Packet batch[LATEST_STATUS_SLOTS];
+    const uint8_t received = dequeueStatusBatch(batch, LATEST_STATUS_SLOTS);
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < received; ++i) {
+      if (duplicateStatus(batch[i])) {
+        Serial.printf("[ESPNOW] duplicate skipped Hanger=%s Seq=%lu\n", batch[i].hangerId, batch[i].sequence);
+        continue;
+      }
+      batch[count++] = batch[i];
+    }
+    if (count && !uploadBatch(batch, count)) {
+      // Do not keep retrying this stale snapshot. New C6 heartbeats may have
+      // arrived while HTTPS was failing; merge only the latest values back and
+      // build a fresh batch on the next attempt.
+      restoreLatestStatusBatch(batch, count);
+      nextStatusBatchUploadAttemptAt = t + STATUS_UPLOAD_RETRY_MS;
+      Serial.printf("[CLOUD_BATCH_REFRESH] count=%u\n", count);
+    } else {
+      // Six C6 boards can send many ESP-NOW heartbeats per second. One Cloud
+      // batch per second is sufficient for liveness and keeps FIND polling
+      // responsive; physical NFC transitions above are never delayed by it.
+      nextStatusBatchUploadAttemptAt = t + STATUS_BATCH_INTERVAL_MS;
     }
   }
 
