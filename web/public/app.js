@@ -2232,6 +2232,32 @@ async function writeGatewayBle(action, extra = {}) {
   else await bleConfigCharacteristic.writeValue(payload);
 }
 
+async function handleGatewayBleStatus(value, fallbackName = '') {
+  try {
+    const text = new TextDecoder().decode(value);
+    const info = JSON.parse(text);
+    if (info.gatewayId) {
+      currentBleGatewayId = info.gatewayId;
+      const pairing = await refreshBleOwnership('gateways', currentBleGatewayId, fallbackName);
+      const deviceLabel = $('#bleDeviceName');
+      if (deviceLabel) deviceLabel.textContent = `${pairing.displayName || neutralBleLabel('gateways', currentBleGatewayId)} 연결됨`;
+      if (pairing.ownership === 'OTHER_ACCOUNT') {
+        const form = $('#bleWifiForm');
+        if (form) form.hidden = true;
+        setBleSetupMessage(pairingBlockedMessage('gateways'), true);
+      }
+    }
+    if (info.state === 'network' && info.ssid) {
+      if (!nearbyWifiNetworks.some(network => network.ssid === info.ssid)) {
+        nearbyWifiNetworks.push(info);
+        renderNearbyWifiChoices();
+      }
+      return;
+    }
+    setBleSetupMessage(info.message || '옷봉 상태를 받았습니다.', /error|failed|not_found/i.test(info.state || ''));
+  } catch (_) {}
+}
+
 async function connectHangerBluetooth() {
   if (!navigator.bluetooth || !window.isSecureContext) {
     setBleSetupMessage('이 기능은 블루투스가 켜진 Chrome에서 HTTPS 또는 localhost로 열어야 합니다.', true);
@@ -2254,38 +2280,17 @@ async function connectHangerBluetooth() {
     const status = await service.getCharacteristic(BLE_STATUS_UUID);
     await status.startNotifications();
 
-    status.addEventListener('characteristicvaluechanged', event => {
-      try {
-        const text = new TextDecoder().decode(event.target.value);
-        const info = JSON.parse(text);
-        if (info.gatewayId) {
-          currentBleGatewayId = info.gatewayId;
-          refreshBleOwnership('gateways', currentBleGatewayId, device.name || '').then(pairing => {
-            const deviceLabel = $('#bleDeviceName');
-            if (deviceLabel) deviceLabel.textContent = `${pairing.displayName || neutralBleLabel('gateways', currentBleGatewayId)} 연결됨`;
-            if (pairing.ownership === 'OTHER_ACCOUNT') {
-              const form = $('#bleWifiForm');
-              if (form) form.hidden = true;
-              setBleSetupMessage(pairingBlockedMessage('gateways'), true);
-            }
-          }).catch(() => {});
-        }
-        if (info.state === 'network' && info.ssid) {
-          if (!nearbyWifiNetworks.some(network => network.ssid === info.ssid)) {
-            nearbyWifiNetworks.push(info);
-            renderNearbyWifiChoices();
-          }
-          return;
-        }
-        setBleSetupMessage(info.message || '옷봉 상태를 받았습니다.', /error|failed|not_found/i.test(info.state || ''));
-      } catch (_) {}
-    });
+    status.addEventListener('characteristicvaluechanged', event => handleGatewayBleStatus(event.target.value, device.name || ''));
 
     const deviceLabel = $('#bleDeviceName');
     if (deviceLabel) deviceLabel.textContent = `${neutralBleLabel('gateways', currentBleGatewayId || device.name)} 연결됨`;
     const form = $('#bleWifiForm');
     if (form) form.hidden = false;
 
+    // Notifications can be missed while Chrome finishes subscribing. Read the
+    // current value first so provisioning always has the immutable gateway ID
+    // needed to claim its first Cloud heartbeat.
+    await handleGatewayBleStatus(await status.readValue(), device.name || '');
     await writeGatewayBle('status');
     await scanHangerWifi();
   } catch (error) {

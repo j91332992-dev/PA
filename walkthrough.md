@@ -92,3 +92,9 @@
 - 기존 `firmware/hanger/src/main.cpp`는 `ESP.getEfuseMac()`의 메모리 순서를 잘못 사용해 MAC 앞 3바이트(OUI)만 ID로 만들었다. 그래서 기존 COM21 보드(`A0:F2:62:86:A0:E8`)와 새 COM22 보드(`A0:F2:62:87:A8:28`)가 모두 `HC-62F2A0`으로 표시됐다.
 - 새 ID는 ESP32-C6 station MAC의 마지막 3바이트를 표준 순서로 사용한다. 새 보드는 `HC-87A828`으로 확인됐고, 생성된 ID는 `hanger` NVS에 저장되어 재부팅 후에도 유지된다.
 - 기존 등록 보드의 MAC은 호환성 매핑으로 `HC-62F2A0`을 유지한다. 기존 보드에는 이 변경 펌웨어를 아직 플래시하지 않았으며, 다른 보드는 서로 다른 MAC 기반 ID를 자동으로 생성한다.
+
+## 실물 BLE 등록 및 Wi-Fi 재접속 보완
+
+- Gateway BLE 광고 이름은 계정 소유자명을 저장하거나 표시하지 않고, 항상 `스마트 옷봉 · D4DB1C`처럼 하드웨어 고유 코드만 사용한다. COM19 Gateway에는 이 펌웨어를 플래시하고 이미지 해시 검증까지 완료했다.
+- 웹은 BLE 알림이 Chrome 구독 시점에 누락되어도 상태 특성을 직접 읽어 Gateway ID를 확보한다. 따라서 첫 Cloud heartbeat가 사용자 snapshot에 없더라도 해당 ID로 claim을 재시도한다.
+- Gateway 재접속 전 진행 중인 STA 연결을 취소해 `sta is connecting` 상태에서 `WiFi.begin()`을 중복 호출하지 않는다. 실제 Wi-Fi 인증 실패 여부는 직렬 상태 코드로 구분해 확인한다.

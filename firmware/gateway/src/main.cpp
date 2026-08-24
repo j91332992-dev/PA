@@ -372,6 +372,12 @@ String setupPage(const String& message = "") {
 
 bool connectWifi(const String& ssid, const String& password, uint32_t timeoutMs = 15000) {
   if (!ssid.length() || ssid == "YOUR_2_4_GHZ_WIFI") return false;
+  // A previous reconnect can still be in progress after a failed association.
+  // Starting WiFi.begin() on top of it leaves the S3 stuck in STA_CONNECTING.
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.disconnect(false, true);
+    delay(250);
+  }
   WiFi.mode(WIFI_STA);
   WiFi.persistent(false);
   WiFi.setAutoReconnect(true);
@@ -384,6 +390,7 @@ bool connectWifi(const String& ssid, const String& password, uint32_t timeoutMs 
     WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), dns1, dns2);
     return true;
   }
+  Serial.printf("[WIFI] Connection attempt ended with status=%d\n", WiFi.status());
   return false;
 }
 
