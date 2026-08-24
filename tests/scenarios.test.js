@@ -13,6 +13,7 @@ if (!process.env.DATA_PATH) process.env.DATA_PATH = path.join(tmpDir, 'wardrobe-
 if (!process.env.DEVICE_TOKEN) process.env.DEVICE_TOKEN = 'test-device';
 if (!process.env.JWT_SECRET) process.env.JWT_SECRET = 'test-secret';
 if (!process.env.ADMIN_EMAIL) process.env.ADMIN_EMAIL = 'owner-scenarios@example.com';
+if (!process.env.ADMIN_SECONDARY_PASSWORD) process.env.ADMIN_SECONDARY_PASSWORD = 'secondary-test-password';
 // The virtual hardware scenarios deliberately exercise simulator-only IDs.
 if (!process.env.SIMULATION_ENABLED) process.env.SIMULATION_ENABLED = 'true';
 
@@ -71,6 +72,7 @@ async function api(path, options = {}) {
     headers: {
       'Content-Type': 'application/json',
       ...(options.userAuth ? { 'Authorization': `Bearer ${userToken}` } : {}),
+      ...(options.adminSession ? { 'X-Admin-Session': options.adminSession } : {}),
       ...(options.deviceAuth ? { 'Authorization': `Bearer ${deviceToken}` } : {}),
       ...options.headers,
     },
@@ -168,13 +170,29 @@ test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected'
   assert.equal(moved.gatewayId, 'GW-A0B002');
   assert.equal(moved.hangerNumber, 2);
   assert.equal(moved.alias, '이동한 옷걸이');
-  const admin = await api('/api/admin/overview', { userAuth: true });
+  const beforeVerification = await api('/api/admin/overview', { userAuth: true });
+  assert.equal(beforeVerification.status, 403);
+  const statusBeforeVerification = await api('/api/admin/status', { userAuth: true });
+  assert.equal(statusBeforeVerification.status, 200);
+  assert.equal(statusBeforeVerification.body.verified, false);
+  const wrongVerification = await api('/api/admin/verify', { method: 'POST', userAuth: true, body: JSON.stringify({ password: 'wrong-password' }) });
+  assert.equal(wrongVerification.status, 403);
+  const verification = await api('/api/admin/verify', { method: 'POST', userAuth: true, body: JSON.stringify({ password: 'secondary-test-password' }) });
+  assert.equal(verification.status, 200);
+  assert.ok(verification.body.adminSession);
+  const statusAfterVerification = await api('/api/admin/status', { userAuth: true, adminSession: verification.body.adminSession });
+  assert.equal(statusAfterVerification.status, 200);
+  assert.equal(statusAfterVerification.body.verified, true);
+  const admin = await api('/api/admin/overview', { userAuth: true, adminSession: verification.body.adminSession });
   assert.equal(admin.status, 200);
   assert.ok(admin.body.totals.hangers >= 3);
+  assert.ok(admin.body.totals.garments >= 1);
 
   const signup = await api('/api/auth/signup', { method: 'POST', body: JSON.stringify({ email: 'ordinary-user@example.com', password: 'ordinary-password', name: '일반사용자' }) });
   const ordinary = await fetch(`${baseUrl}/api/admin/overview`, { headers: { Authorization: `Bearer ${signup.body.token}` } });
   assert.equal(ordinary.status, 403);
+  const ordinaryStatus = await fetch(`${baseUrl}/api/admin/status`, { headers: { Authorization: `Bearer ${signup.body.token}` } });
+  assert.equal(ordinaryStatus.status, 403);
 });
 
 test('Race A: WebSocket PRESENT seq=10 wins over delayed snapshot EMPTY seq=9', () => {

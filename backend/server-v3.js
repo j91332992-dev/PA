@@ -10,11 +10,12 @@ loadEnv(path.join(ROOT,'.env'));
 const PORT=Number(process.env.PORT||8787),DATA=path.resolve(ROOT,process.env.DATA_PATH||'data/wardrobe.json'),PUBLIC=path.join(ROOT,'web','public');
 const SECRET=process.env.JWT_SECRET||'development-secret',DEVICE=process.env.DEVICE_TOKEN||'development-device-token';
 const OFFLINE=Number(process.env.OFFLINE_TIMEOUT_MS||30000),CMD_TIMEOUT=Number(process.env.COMMAND_TIMEOUT_MS||15000),SIM=process.env.SIMULATION_ENABLED==='true';
-// Set ADMIN_EMAIL in Render (or .env locally) to the real email address of
-// the hpo2002 administrator. It is intentionally server-only: the browser
-// receives its own role but never decides authorization by itself.
+// Set ADMIN_EMAIL in Render (or .env locally) to the sole administrator.
+// Both the role and the second-factor proof are verified only by this server.
 const ADMIN_EMAIL=String(process.env.ADMIN_EMAIL||'').trim().toLowerCase();
-const ADMIN_USERNAME=String(process.env.ADMIN_USERNAME||'hpo2002').trim().toLocaleLowerCase('ko-KR');
+const ADMIN_SECONDARY_PASSWORD=String(process.env.ADMIN_SECONDARY_PASSWORD||'');
+const ADMIN_SESSION_TTL_MS=Math.max(60_000,Number(process.env.ADMIN_SESSION_TTL_MS||900_000));
+const adminSessions=new Map();
 const now=()=>new Date().toISOString(),id=p=>`${p}_${crypto.randomUUID()}`,uid=x=>String(x||'').replace(/[^0-9a-f]/gi,'').toUpperCase();
 const initial=()=>({schemaVersion:4,users:[],wardrobes:[],gateways:[],hangers:[],garments:[],events:[],commands:[]});
 let db=initial();const storage=createStorage({file:DATA,initial});function save(){return storage.save(db)}
@@ -40,9 +41,10 @@ function assignHanger(hanger,wardrobeId,gatewayId,{moved=false}={}){
   if(moved||hanger.gatewayId!==gatewayId||!Number.isInteger(Number(hanger.hangerNumber))||Number(hanger.hangerNumber)<1)hanger.hangerNumber=nextHangerNumber(gatewayId);
   hanger.wardrobeId=wardrobeId;hanger.gatewayId=gatewayId;return syncHangerName(hanger);
 }
-function isConfiguredAdmin(user){return (!!ADMIN_EMAIL&&String(user.email||'').toLowerCase()===ADMIN_EMAIL)||String(user.name||'').trim().toLocaleLowerCase('ko-KR')===ADMIN_USERNAME}
+function isConfiguredAdmin(user){return !!ADMIN_EMAIL&&String(user.email||'').trim().toLowerCase()===ADMIN_EMAIL}
 function userPublic(user){return {id:user.id,email:user.email,name:user.name,role:user.role||'user',createdAt:user.createdAt,lastLoginAt:user.lastLoginAt||null}}
 function migrate(){
+  let changed=false;
   db.wardrobes=Array.isArray(db.wardrobes)?db.wardrobes:[];
   for(const u of db.users)if(!wardrobeFor(u))makeWardrobe(u);
   const byUser=new Map(db.users.map(u=>[u.id,wardrobeFor(u)?.id]));
@@ -60,8 +62,7 @@ function migrate(){
   for(const h of db.hangers)if(!h.wardrobeId&&!simulated(h))h.wardrobeId=db.gateways.find(g=>g.gatewayId===h.gatewayId)?.wardrobeId||legacyOwner;
   // Migrate visible names without changing immutable hardware IDs. Numbers
   // are assigned only when absent, so deletion never compacts/reuses them.
-  for(const user of db.users){if(!['admin','user'].includes(user.role))user.role='user';if(isConfiguredAdmin(user))user.role='admin';}
-  if(!db.users.some(user=>user.role==='admin')&&db.users.length===1)db.users[0].role='admin';
+  for(const user of db.users){const role=isConfiguredAdmin(user)?'admin':'user';if(user.role!==role){user.role=role;changed=true;}}
   for(const w of db.wardrobes){
     const gateways=db.gateways.filter(g=>g.wardrobeId===w.id&&!simulated(g)).sort((a,b)=>String(a.createdAt||a.gatewayId).localeCompare(String(b.createdAt||b.gatewayId)));
     gateways.forEach((g,index)=>{
@@ -79,7 +80,7 @@ function migrate(){
     }
   }
   for(const c of db.commands)if(!c.wardrobeId){const h=db.hangers.find(h=>c.targets?.includes(h.hangerId));c.wardrobeId=h?.wardrobeId||byUser.get(c.requestedBy)||null;}
-  const changed = db.schemaVersion !== 4;
+  changed = changed || db.schemaVersion !== 4;
   db.schemaVersion = 4;
   return changed;
 }
@@ -100,7 +101,24 @@ const ready = storage.load().then(loaded => {
 function token(user){const p=Buffer.from(JSON.stringify({sub:user.id,exp:Date.now()+604800000})).toString('base64url');return `${p}.${crypto.createHmac('sha256',SECRET).update(p).digest('base64url')}`}
 function getUser(req){const [p,s]=String(req.headers.authorization||'').replace(/^Bearer /,'').split('.');if(!p||!s||!safe(s,crypto.createHmac('sha256',SECRET).update(p).digest('base64url')))return null;try{const x=JSON.parse(Buffer.from(p,'base64url'));return x.exp>Date.now()?db.users.find(u=>u.id===x.sub):null}catch{return null}}
 function needUser(req){const u=getUser(req);if(!u)throw error(401,'로그인이 필요합니다.');return u}
-function requireAdmin(req){const u=needUser(req);if(u.role!=='admin')throw error(403,'관리자 권한이 필요합니다.');return u}
+function adminSessionKey(value){return crypto.createHash('sha256').update(String(value||'')).digest('hex')}
+function adminVerified(req,user){
+  const key=adminSessionKey(req.headers['x-admin-session']);
+  const session=adminSessions.get(key);
+  if(!session)return false;
+  if(session.expiresAt<=Date.now()){adminSessions.delete(key);return false;}
+  return session.userId===user.id;
+}
+function issueAdminSession(user){
+  const proof=crypto.randomBytes(32).toString('base64url');
+  const expiresAt=Date.now()+ADMIN_SESSION_TTL_MS;
+  adminSessions.set(adminSessionKey(proof),{userId:user.id,expiresAt});
+  return {proof,expiresAt};
+}
+function revokeAdminSessions(userId){
+  for(const [key,session] of adminSessions)if(session.userId===userId)adminSessions.delete(key);
+}
+function requireAdmin(req){const u=needUser(req);if(u.role!=='admin'||!adminVerified(req,u))throw error(403,'관리자 2차 인증이 필요합니다.');return u}
 function needDevice(req){if(!safe(req.headers.authorization||'',`Bearer ${DEVICE}`))throw error(401,'옷봉 인증에 실패했습니다.')}
 const sockets=new Set();
 function emit(type,payload,severity='info',wardrobeId=payload?.wardrobeId){
@@ -155,7 +173,7 @@ function heartbeat(x){const gatewayId=String(x.gatewayId||'').toUpperCase();if(!
 function command(targets,user,duration=0,kind='LED_BLINK'){const w=wardrobeFor(user);targets=[...new Set((targets||[]).map(x=>String(x).toUpperCase()))];if(!targets.length||targets.length>16)throw error(400,'대상은 1~16개여야 합니다.');for(const t of targets)if(!db.hangers.some(h=>h.hangerId===t&&h.wardrobeId===w.id))throw error(404,`내 옷장에 없는 옷걸이: ${t}`);const c={id:id('cmd'),numericId:crypto.randomInt(1,2147483647),command:String(kind).toUpperCase()==='LED_OFF'?'LED_OFF':'LED_BLINK',targets,durationMs:Math.max(0,Math.min(120000,Number(duration)||0)),status:'QUEUED',requestedBy:user.id,wardrobeId:w.id,createdAt:now(),expiresAt:new Date(Date.now()+CMD_TIMEOUT).toISOString(),acknowledgements:{}};db.commands.unshift(c);emit('command.queued',c,'info',w.id);return c}
 function visible(list,wid){return list.filter(x=>x.wardrobeId===wid&&(SIM||!simulated(x)))}
 function snapshot(user){const w=wardrobeFor(user);return{wardrobe:w,gateways:visible(db.gateways,w.id),hangers:visible(db.hangers,w.id),garments:visible(db.garments,w.id),events:visible(db.events,w.id).slice(0,100),commands:visible(db.commands,w.id).slice(0,100),serverTime:now()}}
-function json(res,status,data){res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','access-control-allow-origin':process.env.PUBLIC_ORIGIN||'*','access-control-allow-headers':'authorization,content-type,x-gateway-id','access-control-allow-methods':'GET,POST,PATCH,DELETE,OPTIONS'});res.end(status===204?'':JSON.stringify(data))}
+function json(res,status,data){res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store','access-control-allow-origin':process.env.PUBLIC_ORIGIN||'*','access-control-allow-headers':'authorization,content-type,x-gateway-id,x-admin-session','access-control-allow-methods':'GET,POST,PATCH,DELETE,OPTIONS'});res.end(status===204?'':JSON.stringify(data))}
 function body(req){return new Promise((ok,no)=>{let s='';req.on('data',x=>{s+=x;if(s.length>1e6)req.destroy()});req.on('end',()=>{try{ok(s?JSON.parse(s):{})}catch{no(error(400,'JSON 형식 오류'))}});req.on('error',no)})}
 const match=(url,re)=>new URL(url,'http://x').pathname.match(re);
 function staticFile(req,res){const p=decodeURIComponent(new URL(req.url,'http://x').pathname),c=path.resolve(PUBLIC,p==='/'?'index.html':p.slice(1)),f=c.startsWith(PUBLIC+path.sep)&&fs.existsSync(c)&&fs.statSync(c).isFile()?c:path.join(PUBLIC,'index.html'),type={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.svg':'image/svg+xml'}[path.extname(f)]||'application/octet-stream';res.writeHead(200,{'content-type':type});fs.createReadStream(f).pipe(res)}
@@ -173,8 +191,11 @@ const server=http.createServer(async(req,res)=>{try{
   if(await garmentImageService.handle(req,res,{needUser}))return;
   if(p==='/api/auth/status'){const u=getUser(req);return json(res,200,{setupRequired:!db.users.length,user:u&&userPublic(u)})}
 if(p==='/api/auth/signup'&&req.method==='POST'){const x=await body(req),email=String(x.email||'').trim().toLowerCase(),name=String(x.name||'').trim().slice(0,40),nameKey=name.toLocaleLowerCase('ko-KR');if(!/^\S+@\S+\.\S+$/.test(email)||String(x.password||'').length<10||!name)throw error(400,'이름, 이메일과 10자 이상 비밀번호가 필요합니다.');if(db.users.some(u=>u.email===email))throw error(409,'이미 등록된 이메일입니다.');if(db.users.some(u=>String(u.name||'').trim().toLocaleLowerCase('ko-KR')===nameKey))throw error(409,'이미 사용 중인 사용자명입니다.');const u={id:id('usr'),email,name,passwordHash:hash(x.password),role:isConfiguredAdmin({email})?'admin':'user',createdAt:now(),lastLoginAt:now()};db.users.push(u);makeWardrobe(u);await save();return json(res,201,{token:token(u),user:userPublic(u)})}
-if(p==='/api/auth/login'&&req.method==='POST'){const x=await body(req),u=db.users.find(v=>v.email===String(x.email||'').toLowerCase());if(!u||!safe(hash(x.password,u.passwordHash.split(':')[0]),u.passwordHash))throw error(401,'이메일 또는 비밀번호가 맞지 않습니다.');u.lastLoginAt=now();if(isConfiguredAdmin(u))u.role='admin';await save();return json(res,200,{token:token(u),user:userPublic(u)})}
-if(p==='/api/admin/overview'){requireAdmin(req);const online=x=>Date.now()-Date.parse(x.lastSeen||0)<OFFLINE;const users=db.users.map(u=>{const w=wardrobeFor(u),gateways=w?visible(db.gateways,w.id):[];return{...userPublic(u),gatewayCount:gateways.length,gateways:gateways.map(g=>({gatewayId:g.gatewayId,gatewayNumber:g.gatewayNumber||null,name:g.name,state:online(g)?'ONLINE':'OFFLINE',hangers:db.hangers.filter(h=>h.wardrobeId===w.id&&h.gatewayId===g.gatewayId&&!simulated(h)).map(h=>({hangerId:h.hangerId,hangerNumber:h.hangerNumber||null,name:h.alias,state:online(h)?'ONLINE':'OFFLINE'}))}))}});return json(res,200,{totals:{users:users.length,gateways:db.gateways.filter(g=>!simulated(g)).length,hangers:db.hangers.filter(h=>!simulated(h)).length,onlineGateways:db.gateways.filter(g=>!simulated(g)&&online(g)).length,onlineHangers:db.hangers.filter(h=>!simulated(h)&&online(h)).length},users})}
+if(p==='/api/auth/login'&&req.method==='POST'){const x=await body(req),u=db.users.find(v=>v.email===String(x.email||'').toLowerCase());if(!u||!safe(hash(x.password,u.passwordHash.split(':')[0]),u.passwordHash))throw error(401,'이메일 또는 비밀번호가 맞지 않습니다.');u.lastLoginAt=now();u.role=isConfiguredAdmin(u)?'admin':'user';revokeAdminSessions(u.id);await save();return json(res,200,{token:token(u),user:userPublic(u)})}
+if(p==='/api/admin/status'&&req.method==='GET'){const u=needUser(req);if(u.role!=='admin')throw error(403,'관리자 권한이 필요합니다.');return json(res,200,{admin:true,verified:adminVerified(req,u),expiresAt:null})}
+if(p==='/api/admin/verify'&&req.method==='POST'){const u=needUser(req);if(u.role!=='admin')throw error(403,'관리자 권한이 필요합니다.');if(!ADMIN_SECONDARY_PASSWORD)throw error(503,'관리자 2차 인증이 아직 설정되지 않았습니다.');const x=await body(req);if(!safe(String(x.password||''),ADMIN_SECONDARY_PASSWORD))throw error(403,'관리자 인증에 실패했습니다.');const session=issueAdminSession(u);return json(res,200,{ok:true,adminSession:session.proof,expiresAt:new Date(session.expiresAt).toISOString()})}
+if(p==='/api/admin/logout'&&req.method==='POST'){const u=needUser(req);if(u.role!=='admin')throw error(403,'관리자 권한이 필요합니다.');const key=adminSessionKey(req.headers['x-admin-session']);const session=adminSessions.get(key);if(session?.userId===u.id)adminSessions.delete(key);return json(res,200,{ok:true})}
+if(p==='/api/admin/overview'){requireAdmin(req);const online=x=>Date.now()-Date.parse(x.lastSeen||0)<OFFLINE;const gateways=db.gateways.filter(g=>!simulated(g)),hangers=db.hangers.filter(h=>!simulated(h));const users=db.users.map(u=>{const w=wardrobeFor(u),ownedGateways=w?visible(db.gateways,w.id):[],ownedHangers=w?visible(db.hangers,w.id):[],garments=w?visible(db.garments,w.id):[];return{...userPublic(u),gatewayCount:ownedGateways.length,hangerCount:ownedHangers.length,garmentCount:garments.length,gateways:ownedGateways.map(g=>({gatewayId:g.gatewayId,gatewayNumber:g.gatewayNumber||null,name:g.name,customName:g.customName||'',state:online(g)?'ONLINE':'OFFLINE',hangers:ownedHangers.filter(h=>h.gatewayId===g.gatewayId).map(h=>({hangerId:h.hangerId,hangerNumber:h.hangerNumber||null,name:h.alias,customName:h.customName||'',gatewayId:h.gatewayId,state:online(h)?'ONLINE':'OFFLINE'}))}))}});const onlineGateways=gateways.filter(online).length,onlineHangers=hangers.filter(online).length;return json(res,200,{totals:{users:users.length,gateways:gateways.length,hangers:hangers.length,garments:db.garments.length,onlineGateways,offlineGateways:gateways.length-onlineGateways,onlineHangers,offlineHangers:hangers.length-onlineHangers},users})}
 if(p==='/api/snapshot'){const u=needUser(req);return json(res,200,snapshot(u))}
 if(p==='/api/garments'&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),x=await body(req),tagUid=uid(x.tagUid);if(!String(x.name||'').trim()||tagUid.length<8)throw error(400,'옷 이름과 NFC UID가 필요합니다.');if(db.garments.some(g=>g.wardrobeId===w.id&&g.tagUid===tagUid))throw error(409,'이 NFC 태그는 이미 내 옷장에 등록되어 있습니다.');const g={id:id('garment'),name:String(x.name).slice(0,80),tagUid,category:String(x.category||''),color:String(x.color||''),season:String(x.season||''),brand:String(x.brand||''),memo:String(x.memo||''),imageUrl:String(x.imageUrl||''),originalImagePath:'',processedImagePath:'',imageProcessingStatus:'ready',classification:{},classificationConfidence:{},processingError:'',currentState:'OUT',currentHanger:null,createdBy:u.id,wardrobeId:w.id,createdAt:now()};db.garments.push(g);reconcile();emit('garment.created',g,'info',w.id);await save();return json(res,201,g)}
 const gd=match(req.url,/^\/api\/garments\/([^/]+)$/);if(gd&&req.method==='DELETE'){const u=needUser(req),w=wardrobeFor(u),i=db.garments.findIndex(g=>g.id===gd[1]&&g.wardrobeId===w.id);if(i<0)throw error(404,'내 옷장에서 옷을 찾을 수 없습니다.');const g=db.garments.splice(i,1)[0];reconcile();emit('garment.deleted',{id:g.id,tagUid:g.tagUid},'info',w.id);await save();return json(res,200,{ok:true,deletedId:g.id})}

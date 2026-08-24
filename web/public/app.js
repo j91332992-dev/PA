@@ -1,5 +1,6 @@
 'use strict';
 let token = localStorage.getItem('wardrobeToken'),
+  adminSession = sessionStorage.getItem('wardrobeAdminSession') || '',
   model = { garments: [], hangers: [], gateways: [], events: [], commands: [] },
   simState = { hangers: [], enabled: true },
   simUiState = {},
@@ -105,6 +106,7 @@ async function api(path, options = {}) {
     headers: {
       'content-type': 'application/json',
       ...(token ? { authorization: 'Bearer ' + token } : {}),
+      ...(adminSession ? { 'x-admin-session': adminSession } : {}),
       ...options.headers,
     },
   });
@@ -1148,14 +1150,23 @@ function switchView(viewName) {
 
 async function enter() {
   try {
-    // Fetch first, but do not leave a successfully authenticated person on
-    // the login form because one optional dashboard card failed to render.
+    sessionUser = (await api('/api/auth/status')).user || null;
+    if (!sessionUser) throw Error('로그인 정보를 확인할 수 없습니다.');
+    if (sessionUser.role === 'admin') {
+      const adminStatus = await api('/api/admin/status');
+      sessionUser.adminVerified = !!adminStatus.verified;
+      if (!sessionUser.adminVerified) {
+        showAdminSecondFactor();
+        return;
+      }
+    }
+    hideAdminSecondFactor();
     model = mergeSnapshot(await api('/api/snapshot'));
     $('#auth').hidden = true;
     $('#auth').style.display = 'none';
     $('#app').hidden = false;
     $('#app').style.display = 'block';
-    try { sessionUser = (await api('/api/auth/status')).user || null; ensureAdminUi(); } catch { sessionUser = null; }
+    ensureAdminUi();
     switchView('dashboard');
     window.scrollTo({ top: 0, behavior: 'smooth' });
     try {
@@ -1169,6 +1180,7 @@ async function enter() {
   } catch (err) {
     console.error('Enter error:', err);
     localStorage.removeItem('wardrobeToken');
+    clearAdminSession();
     token = null;
     showAuth();
     const authError = $('#authError');
@@ -1457,10 +1469,56 @@ if (authFormElement) {
   if (authSubmitElement) authSubmitElement.type = 'submit';
 }
 
+function clearAdminSession() {
+  adminSession = '';
+  sessionStorage.removeItem('wardrobeAdminSession');
+  if (sessionUser) sessionUser.adminVerified = false;
+}
+
+function hideAdminSecondFactor() {
+  $('#adminSecondFactor')?.remove();
+  const form = $('#authForm');
+  if (form) form.style.display = '';
+}
+
+function showAdminSecondFactor() {
+  const form = $('#authForm');
+  if (form) form.style.display = 'none';
+  let gate = $('#adminSecondFactor');
+  if (!gate) {
+    gate = document.createElement('form');
+    gate.id = 'adminSecondFactor';
+    gate.className = 'panel';
+    gate.innerHTML = '<p class="eyebrow">ADMIN SECURITY</p><h1>관리자 인증</h1><p class="muted">관리자 전용 2차 비밀번호를 입력하세요.</p><input id="adminSecondaryPassword" type="password" autocomplete="current-password" placeholder="2차 비밀번호" required><button type="submit">확인</button><p id="adminSecondaryError" class="error"></p><button type="button" id="adminSecondaryCancel" class="ghost">로그아웃</button>';
+    $('#auth')?.append(gate);
+  }
+  gate.onsubmit = async event => {
+    event.preventDefault();
+    const password = $('#adminSecondaryPassword')?.value || '';
+    const message = $('#adminSecondaryError');
+    if (message) message.textContent = '';
+    try {
+      const verified = await api('/api/admin/verify', { method: 'POST', body: JSON.stringify({ password }) });
+      adminSession = verified.adminSession;
+      sessionStorage.setItem('wardrobeAdminSession', adminSession);
+      if (sessionUser) sessionUser.adminVerified = true;
+      await enter();
+    } catch (error) {
+      if (message) message.textContent = error.message || '관리자 인증에 실패했습니다.';
+    }
+  };
+  $('#adminSecondaryCancel').onclick = () => $('#logout').click();
+  $('#auth').hidden = false;
+  $('#auth').style.display = 'grid';
+  $('#app').hidden = true;
+  $('#app').style.display = 'none';
+  setTimeout(() => $('#adminSecondaryPassword')?.focus(), 0);
+}
+
 function ensureAdminUi() {
   const existing = $('#admin');
   const existingNav = $('nav button[data-view="admin"]');
-  if (sessionUser?.role !== 'admin') { existing?.remove(); existingNav?.remove(); return; }
+  if (sessionUser?.role !== 'admin' || !sessionUser.adminVerified) { existing?.remove(); existingNav?.remove(); return; }
   if (!existingNav) {
     const button = document.createElement('button');
     button.type = 'button'; button.dataset.view = 'admin'; button.textContent = '관리자';
@@ -1478,11 +1536,11 @@ function ensureAdminUi() {
 
 async function renderAdminOverview() {
   const target = $('#adminOverview');
-  if (!target || sessionUser?.role !== 'admin') return;
+  if (!target || sessionUser?.role !== 'admin' || !sessionUser.adminVerified) return;
   try {
     const data = await api('/api/admin/overview');
     const t = data.totals || {};
-    target.innerHTML = `<div class="summary">${[['전체 사용자',t.users],['전체 옷봉',t.gateways],['전체 옷걸이',t.hangers],['온라인 옷봉',t.onlineGateways],['온라인 옷걸이',t.onlineHangers]].map(([label,value]) => `<article><b>${Number(value||0)}</b><span>${esc(label)}</span></article>`).join('')}</div>${(data.users || []).map(user => `<article class="panel" style="margin-top:14px"><h3>${esc(user.name)} <small class="muted">${esc(user.email)}</small></h3><p class="muted">가입일 ${user.createdAt ? new Date(user.createdAt).toLocaleString() : '-'} · 최근 로그인 ${user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : '-'}</p><p>보유 옷봉 ${Number(user.gatewayCount||0)}개</p>${(user.gateways || []).map(g => `<div style="border-top:1px solid #e3e9e4;padding:10px 0"><b>${esc(g.name || `${g.gatewayNumber}번 옷봉`)}</b> <small class="muted">${esc(g.gatewayId)} · ${esc(g.state)}</small><ul>${(g.hangers || []).map(h => `<li>${esc(h.name || `${h.hangerNumber}번 옷걸이`)} <small class="muted">${esc(h.hangerId)} · ${esc(h.state)}</small></li>`).join('') || '<li class="muted">연결된 옷걸이 없음</li>'}</ul></div>`).join('') || '<p class="muted">등록된 옷봉 없음</p>'}</article>`).join('')}`;
+    target.innerHTML = `<div class="summary">${[['전체 사용자',t.users],['전체 옷봉',t.gateways],['전체 옷걸이',t.hangers],['전체 옷',t.garments],['온라인 옷봉',t.onlineGateways],['오프라인 옷봉',t.offlineGateways],['온라인 옷걸이',t.onlineHangers],['오프라인 옷걸이',t.offlineHangers]].map(([label,value]) => `<article><b>${Number(value||0)}</b><span>${esc(label)}</span></article>`).join('')}</div>${(data.users || []).map(user => `<article class="panel" style="margin-top:14px"><h3>${esc(user.name)} <small class="muted">${esc(user.email)}</small></h3><p class="muted">가입일 ${user.createdAt ? new Date(user.createdAt).toLocaleString() : '-'} · 최근 로그인 ${user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : '-'}</p><p>보유 옷봉 ${Number(user.gatewayCount||0)}개 · 옷걸이 ${Number(user.hangerCount||0)}개 · 옷 ${Number(user.garmentCount||0)}개</p>${(user.gateways || []).map(g => `<div style="border-top:1px solid #e3e9e4;padding:10px 0"><b>${esc(g.name || `${g.gatewayNumber}번 옷봉`)}</b> <small class="muted">${esc(g.gatewayId)} · ${esc(g.state)}</small><ul>${(g.hangers || []).map(h => `<li>${esc(h.name || `${h.hangerNumber}번 옷걸이`)} <small class="muted">${esc(h.hangerId)} · ${esc(h.state)} · 현재 옷봉 ${esc(h.gatewayId || '-')}</small></li>`).join('') || '<li class="muted">연결된 옷걸이 없음</li>'}</ul></div>`).join('') || '<p class="muted">등록된 옷봉 없음</p>'}</article>`).join('')}`;
   } catch (error) { target.innerHTML = `<p class="error">관리자 현황을 불러오지 못했습니다: ${esc(error.message)}</p>`; }
 }
 
@@ -1862,7 +1920,10 @@ $('#logout').onclick = () => {
   model = { garments: [], hangers: [], gateways: [], events: [], commands: [] };
   refreshGeneration++;
   localStorage.removeItem('wardrobeToken');
+  clearAdminSession();
+  hideAdminSecondFactor();
   token = null;
+  sessionUser = null;
   showAuth();
 };
 
