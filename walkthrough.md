@@ -193,3 +193,70 @@
 - Gateway의 FIND command polling은 300ms마다 새 TLS 연결을 만들어 status batch와 경쟁할 수 있었다. polling 간격을 600ms로 조정해 일반 Cloud 요청 점유를 줄였다.
 - NFC `PRESENT`/`EMPTY` EVENT가 Gateway에 대기 중이면, blocking command GET을 시작하지 않는다. 따라서 사용자가 LED 찾기를 눌러도 태그 제거 상태가 command polling 뒤에 밀리지 않는다.
 - 검증: Gateway `pio run` 성공, `npm test` 41/41 성공, `git diff --check` 성공. 이 변경은 Gateway 펌웨어 재플래시가 필요하다.
+
+## 2026-08-25 실기기 인수인계: A828 FIND와 상태 플래핑 추적
+
+### Git / 배포 기준
+
+- 작업 브랜치는 **`feat/real-hardware-nfc-ble-photo-ai`** 이다. `main`은 merge, reset, force-push 하지 않았다.
+- 현재 원격 브랜치 최신 커밋은 `63400f8 [Chore] 옷봉 진단 명령 들여쓰기 정리`이다. 기능 변경은 직전 `9c3714c [Fix] 옷봉 재시작 후 LED 명령 수신 보완`에 있다.
+- `9c3714c`는 S3가 재부팅해 command sequence가 1부터 다시 시작해도 C6가 새 FIND/LED_OFF를 오래된 명령으로 폐기하지 않도록 한다. COMMAND packet에 S3의 random `gatewayBootId`를 포함하고, C6는 같은 Gateway boot session 안에서만 sequence를 비교한다.
+- 이 기능 변경은 S3와 C6 양쪽 펌웨어가 한 세트다. `63400f8`은 진단 명령 들여쓰기만 정리한 커밋이므로, `9c3714c`가 올라간 뒤에는 그 차이만으로 재플래시할 필요가 없다.
+- 기존 미추적 Supabase 복구/이관 파일은 사용자 파일로 보존했다. 현 시점에도 커밋하지 않는다:
+  - `scripts/copy-supabase-project.js`
+  - `scripts/run-new-supabase-recovery-verify.ps1`
+  - `scripts/run-supabase-project-copy.ps1`
+  - `scripts/run-target-supabase-pooler-test.ps1`
+  - `scripts/test-target-supabase-pooler.js`
+  - `scripts/verify-new-supabase-recovery.js`
+  - `supabase/migrations/20260824_new_project_bootstrap.sql`
+
+### 마지막 실제 보드 상태
+
+- S3 Gateway: `GW-7495A0`, COM24, MAC `1C:DB:D4:74:95:A0`, Wi-Fi `Gaon303_2.5G`, channel 4, IP `192.168.0.6`.
+- C6 Hanger: `HC-87A828`, COM22, MAC `A0:F2:62:87:A8:28`.
+- C6의 실제 PN532 배선은 SPI `D8=SCK`, `D9=MISO`, `D10=MOSI`, `D6=SS`; LED는 D1 active-high이다.
+- 실제 NTAG UID `0452A3026F2490`을 C6가 약 520ms 간격으로 계속 읽었다.
+- C6 → S3 ESP-NOW `STATUS/PRESENT` 수신도 동일 간격으로 계속 확인됐다.
+- S3 → Render `/api/gateway/status/batch`는 실제로 HTTP 200, 보통 약 700ms(한 번 1317ms)를 기록했다. Gateway heartbeat 역시 OK였다.
+- Public `/api/health`는 HTTP 200, PostgreSQL ready, `gatewayOnline:true`를 반환했다.
+
+### 실제 FIND 검증 결과
+
+- 앱 FIND 후 C6에서 다음 실제 로그를 확인했다. 즉 Cloud → S3 → C6 명령 전달과 C6 ACK는 성공했다.
+  ```text
+  [COMMAND-RX] ... target=yes ... link=enabled
+  [COMMAND] 1149077108 cmd=1
+  [ACK-TX] 1149077108 error=0
+  ```
+- 이전 실패의 직접 원인은 C6가 `[COMMAND-IGNORE] stale seq=...`로 S3 재부팅 뒤 새 명령을 버린 것이었다. `9c3714c` 플래시 뒤 그 stale 로그는 사라졌다.
+- Gateway의 동일 명령 4회 ESP-NOW burst는 전송 보강이다. C6는 같은 command ID에 대해 LED 점멸을 다시 시작하지 않고 ACK만 다시 보낸다.
+
+### 남은 문제: 태그가 붙어 있는데 앱이 잠시 `옷장 밖`으로 전환
+
+- 마지막 30초 동시 캡처에서 C6는 단 한 번도 `NFC_EMPTY` 또는 `state=EMPTY`를 보내지 않았고, S3도 `State=1(PRESENT)`만 연속 수신했다.
+- 따라서 이 현상은 PN532 태그 제거, C6 LED 처리, C6↔S3 ESP-NOW 단절이 원인이 아니다. 남은 조사 범위는 Render의 liveness 처리와 브라우저 state merge뿐이다.
+- 가장 유력한 운영 원인은 Render Environment에 과거 `HANGER_OFFLINE_TIMEOUT_MS=750` 같은 작은 override가 남아 있는 경우다. 실제 batch 한 번이 1317ms였으므로, 750ms면 서버가 정상 C6를 `OFFLINE → OUT`으로 바꾼 뒤 다음 PRESENT batch에서 다시 `IN`으로 되돌릴 수 있다.
+- 소스 기본값은 `HANGER_OFFLINE_TIMEOUT_MS=2500`이다. Render Environment에서 이 변수가 존재하면 **2500 이상**으로 바꾸거나 삭제해 기본값을 쓰도록 확인한다. 이 값은 NFC 태그 제거 처리와 별개다. 태그 제거는 C6의 즉시 EMPTY EVENT로 처리된다.
+- Render 로그에서 다음을 같은 시간대에 대조한다:
+  - `[STATUS_RX] hanger=HC-87A828 state=PRESENT sequence=...`
+  - `[DB_STATE] hanger=HC-87A828 state=PRESENT ...`
+  - `hanger.offline` 이벤트
+  - `[COMMAND] ACK ...`
+- 앱 브라우저 console은 `[APP_STATE] source=API|WS ... state=... updatedAt=... sequence=...`를 남긴다. 서버가 PRESENT를 유지하는데 화면만 OUT이면 이 로그로 stale snapshot/WS merge를 확인한다.
+
+### 다음 작업자가 할 안전한 순서
+
+1. `git status --short`, `git branch --show-current`로 브랜치와 미추적 Supabase 파일을 확인한다. 절대 reset/revert/main merge 하지 않는다.
+2. Render Environment의 `HANGER_OFFLINE_TIMEOUT_MS` 유무와 값을 확인한다. 비밀값은 출력/커밋하지 않는다.
+3. COM22(C6)와 COM24(S3)의 다른 serial monitor를 닫은 뒤 두 보드 로그를 수집한다. 이전 작업에서 중단된 PowerShell serial reader가 포트를 잡을 수 있으므로, 실제 포트 점유 프로세스만 종료한다.
+4. 태그를 계속 붙인 상태에서 FIND를 한 번 눌러 C6 `NFC_FOUND`, S3 `ESPNOW-RX State=1`, `CLOUD_BATCH http=200`, Render `STATUS_RX/DB_STATE`, 앱 `[APP_STATE]`를 시간순으로 비교한다.
+5. 태그를 실제 제거하는 별도 시험에서는 C6 `NFC_EMPTY`, LED OFF, S3 `State=EMPTY`, Render DB 상태, 앱 OUT 순서를 확인한다. 태그가 붙은 시험과 섞지 않는다.
+6. 실제 원인이 확정되기 전에는 NFC threshold, 배선, 사진 AI, 관련 없는 UI를 변경하지 않는다.
+
+### 마지막 정적 검증
+
+- Gateway `pio run`: PASS
+- Hanger `pio run`: PASS
+- `npm test`: 41/41 PASS
+- `git diff --check`: PASS
