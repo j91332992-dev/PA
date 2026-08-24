@@ -471,6 +471,32 @@ test('Scenario H: WebSocket real-time event streaming and state sync', async () 
   ws.terminate();
 });
 
+test('Ownership guard: unclaimed C6 telemetry never becomes a user WebSocket event', async () => {
+  const hangerId = 'HC-FEED01';
+  const received = [];
+  const ws = new WebSocket(wsUrl, `wardrobe-token.${userToken}`);
+  ws.on('message', data => {
+    try { received.push(JSON.parse(data.toString())); } catch (_) {}
+  });
+  await new Promise((resolve, reject) => {
+    ws.once('open', resolve);
+    ws.once('error', reject);
+  });
+  await new Promise(resolve => setTimeout(resolve, 25));
+
+  const posted = await api('/api/gateway/status', {
+    method: 'POST', deviceAuth: true,
+    body: JSON.stringify({ gatewayId: 'GW-TEST01', hangerId, state: 'PRESENT', tagUid: '04FEED000001', sequence: 1, bootId: 'boot-feed', channel: 4 }),
+  });
+  assert.equal(posted.status, 200);
+  await new Promise(resolve => setTimeout(resolve, 80));
+
+  assert.equal(received.some(event => event.type === 'hanger.state' && event.payload?.hangerId === hangerId), false);
+  const snapshot = await api('/api/snapshot', { userAuth: true });
+  assert.equal(snapshot.body.hangers.some(hanger => hanger.hangerId === hangerId), false);
+  ws.terminate();
+});
+
 test('Scenario I: Garment Delete -> reconcile turns Hanger to UNKNOWN_TAG', async () => {
   // 1. Create a garment
   const tagUid = '04ABCDEF012345';

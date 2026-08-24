@@ -152,7 +152,11 @@ function emit(type,payload,severity='info',wardrobeId=payload?.wardrobeId){
   db.events.unshift(e);
   db.events=db.events.slice(0,1000);
   const msg=JSON.stringify({type,payload,at:e.at});
-  for(const ws of sockets)if(ws.readyState===1&&(!e.wardrobeId||ws.wardrobeId===e.wardrobeId))ws.send(msg);
+  // Discovery telemetry has no owner.  It is deliberately retained for
+  // diagnostics, but it must never be broadcast to a user's WebSocket: a
+  // browser used to render those packets as a newly registered hanger.
+  if(!e.wardrobeId)return;
+  for(const ws of sockets)if(ws.readyState===1&&ws.wardrobeId===e.wardrobeId)ws.send(msg);
 }
 function reconcile(){
   const seen=new Map();for(const h of db.hangers)if(h.reportedState==='PRESENT'&&h.tagUid){const k=`${h.wardrobeId}:${h.tagUid}`,a=seen.get(k)||[];a.push(h);seen.set(k,a)}

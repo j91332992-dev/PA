@@ -143,6 +143,14 @@
 - 사용자가 BLE에서 **옷봉과 연결**을 누른 경우에만 Gateway ID를 NVS에 `manualPairingApproved`와 함께 저장한다. 이후 전원 재인가에서는 그 명시적으로 승인한 Gateway에만 자동 재연결한다.
 - 이전 펌웨어의 자동 beacon 연결 기록은 승인 플래그가 없으므로 플래시 후 제거된다. COM23 HC-85C438에서 `[PAIR] manual BLE pairing required` 부팅 로그로 확인했다.
 
+## 등록 해제 뒤 옷걸이 재등장 방지
+
+- 원인: 등록 해제된 C6의 ESP-NOW 상태 패킷은 DB에서 소유자가 없는 discovery telemetry인데, WebSocket이 소유자 없는 이벤트를 모든 브라우저에 broadcast했다. 앱은 이 패킷을 등록된 옷걸이처럼 렌더링할 수 있었다.
+- 서버는 이제 wardrobeId가 없는 discovery telemetry를 진단 이벤트로만 보관하고 사용자 WebSocket에는 전송하지 않는다. 따라서 Gateway 근처, ESP-NOW 수신, 태그 감지 자체로는 어떤 계정의 옷걸이도 다시 생기지 않는다.
+- 앱은 소유자 없는 hanger.state를 방어적으로 무시한다. 등록 제거 API가 성공하면 현재 화면 모델에서도 즉시 제거해 지연된 packet/snapshot이 카드를 되살리지 못한다.
+- BLE 등록 요청은 단일 전역 플래그가 아니라 사용자가 chooser에서 선택한 C6 hardware ID에 묶인다. **옷걸이 찾기 → 해당 C6 선택 → 옷봉과 연결**을 누른 그 C6만 claim할 수 있으며, 다른 근처 C6의 알림은 승인으로 취급하지 않는다.
+- 검증: `npm test` 40/40 통과. `Ownership guard` 회귀 테스트에서 소유자 없는 C6 상태가 WebSocket에 전달되지 않고 사용자 snapshot에도 나타나지 않음을 확인했다. JavaScript 문법 검사와 `git diff --check`도 통과했다.
+
 ## NFC 제거 경로 추적 및 수동 등록 보강 (로컬 검증, 미배포/미플래시)
 
 - 현재 C6 소스의 실제 NFC는 PN532 **SPI**다: D8=SCK, D9=MISO, D10=MOSI, D6=SS, LED=D1 active-high. 예전 I2C 배선 문서는 이 현재 보드 판정의 근거로 사용하지 않는다.

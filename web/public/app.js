@@ -41,7 +41,10 @@ const HANGER_BLE_STATUS_UUID = 'a4e66a22-0fb0-4dce-8be0-18cf7bc82001';
 let bleConfigCharacteristic = null;
 let nearbyWifiNetworks = [];
 let hangerBleConfigCharacteristic = null;
-let hangerPairRequested = false;
+// Pairing approval is tied to one explicitly selected Bluetooth device.  A
+// later notification from another nearby C6 must never consume this approval.
+let hangerPairRequestedId = '';
+let selectedHangerBleId = '';
 const claimedDeviceIds = new Set();
 const ROD_RECONNECT_WINDOW_MS = 30000;
 let rodReconnectStartedAt = Number(sessionStorage.getItem('wardrobeRodReconnectStartedAt') || 0);
@@ -1060,7 +1063,9 @@ function traceHangerState(source, hanger) {
 
 function applyHangerEvent(hanger) {
   const id = hangerFreshness.hangerIdOf(hanger);
-  if (!id) return false;
+  // Only the server-side claim endpoint grants ownership.  Ignore discovery
+  // telemetry defensively even if an old server instance sends it to us.
+  if (!id || !hanger?.wardrobeId || hanger.wardrobeId !== model?.wardrobe?.id) return false;
   const current = (model.hangers || []).find(item => hangerFreshness.hangerIdOf(item) === id);
   if (current && !hangerFreshness.isFresher(hanger, current)) return false;
   hangerFreshness.remember(hanger);
@@ -2555,6 +2560,7 @@ async function handleHangerBleStatus(value) {
     showHangerBleStatus(info);
     const gatewayId = info.gatewayId || info.discoveredGatewayId;
     if (!info.hangerId) return;
+    selectedHangerBleId = String(info.hangerId);
     const pairing = await refreshBleOwnership('hangers', info.hangerId);
     const nameEl = $('#hangerBleDeviceName');
     if (nameEl) nameEl.textContent = `${pairing.displayName || neutralBleLabel('hangers', info.hangerId)} 연결됨`;
@@ -2568,10 +2574,10 @@ async function handleHangerBleStatus(value) {
     // user has to press the visible “옷봉과 연결” action first. A paired C6
     // can report before its first Cloud status arrives, so keep retrying on
     // its paired/connected notifications until both explicit claims succeed.
-    if (hangerPairRequested && gatewayId && ['paired', 'connected'].includes(info.state)) {
+    if (hangerPairRequestedId === info.hangerId && gatewayId && ['paired', 'connected'].includes(info.state)) {
       const gatewayClaim = await claimDevice('gateways', gatewayId, { quietNotFound: true });
       const hangerClaim = await claimDevice('hangers', info.hangerId, { quietNotFound: true });
-      if (gatewayClaim?.ok && hangerClaim?.ok) hangerPairRequested = false;
+      if (gatewayClaim?.ok && hangerClaim?.ok) hangerPairRequestedId = '';
     }
   } catch (_) {
     setHangerBleMessage('옷걸이 상태를 읽지 못했습니다.', true);
@@ -2631,6 +2637,10 @@ async function connectPhysicalHangerBluetooth() {
       filters: [{ services: [HANGER_BLE_SERVICE_UUID] }],
       optionalServices: [HANGER_BLE_SERVICE_UUID],
     });
+    // Selecting a device alone never means "pair".  Clear any unfinished
+    // approval from a prior chooser session before reading this C6's status.
+    hangerPairRequestedId = '';
+    selectedHangerBleId = '';
     const gatt = await device.gatt.connect();
     const service = await gatt.getPrimaryService(HANGER_BLE_SERVICE_UUID);
     hangerBleConfigCharacteristic = await service.getCharacteristic(HANGER_BLE_CONFIG_UUID);
@@ -2660,6 +2670,7 @@ async function forgetPhysicalHanger() {
   if (!hangerBleConfigCharacteristic) return setHangerBleMessage('먼저 옷걸이를 블루투스로 연결하세요.', true);
   if (!window.confirm('이 옷걸이의 옷봉 연결을 제거할까요? 제거 후에는 태그 상태가 웹에 전송되지 않습니다.')) return;
   await writeHangerBle('forget');
+  hangerPairRequestedId = '';
   setTimeout(refresh, 1500);
 }
 
@@ -2784,6 +2795,10 @@ function openHangerSettings(hangerId) {
       if (!window.confirm('이 옷걸이를 내 옷장에서 등록 제거할까요? 실제 전원은 꺼지지 않으며, 나중에 다시 연결할 수 있습니다.')) return;
       try {
         await api(`/api/hangers/${encodeURIComponent(hangerId)}`, { method: 'DELETE' });
+        // DELETE is authoritative. Remove the local record before the next
+        // snapshot so an old delayed WebSocket/snapshot cannot redraw it.
+        model.hangers = (model.hangers || []).filter(item => item.hangerId !== hangerId);
+        hangerFreshness.forget?.(hangerId);
         toast('옷걸이 등록을 제거했습니다.');
         dialog.close();
         refresh();
@@ -3215,7 +3230,9 @@ function installGatewayWifiSetup() {
 
   const pairPhysicalHangerBtn = $('#pairPhysicalHanger');
   if (pairPhysicalHangerBtn) pairPhysicalHangerBtn.onclick = () => {
-    hangerPairRequested = true;
+    const hangerId = selectedHangerBleId;
+    if (!hangerId) return setHangerBleMessage('선택한 옷걸이 정보를 다시 읽는 중입니다. 잠시 후 다시 눌러 주세요.', true);
+    hangerPairRequestedId = hangerId;
     writeHangerBle('pair');
   };
 
