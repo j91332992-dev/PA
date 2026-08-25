@@ -2473,6 +2473,10 @@ async function handleGatewayBleStatus(value, fallbackName = '') {
       }
       return;
     }
+    if (info.state === 'scan_complete' && !nearbyWifiNetworks.length) {
+      setBleSetupMessage('옷봉이 2.4 GHz Wi-Fi를 0개 감지했습니다. 공유기의 2.4 GHz 방송을 켜거나 아래에 SSID를 직접 입력하세요. 5 GHz 전용 Wi-Fi는 옷봉에서 사용할 수 없습니다.', true);
+      return;
+    }
     setBleSetupMessage(info.message || '옷봉 상태를 받았습니다.', /error|failed|not_found/i.test(info.state || ''));
   } catch (_) {}
 }
@@ -2606,10 +2610,12 @@ async function saveHangerWifi(event) {
   event.preventDefault();
   if (!bleConfigCharacteristic) return setBleSetupMessage('먼저 옷봉을 블루투스로 연결하세요.', true);
   const form = new FormData(event.currentTarget);
-  const ssid = String(form.get('ssid') || '').trim();
+  const selectedSsid = String(form.get('ssid') || '').trim();
+  const manualSsid = String($('#manualWifiSsid')?.value || '').trim();
+  const ssid = manualSsid || selectedSsid;
   const password = String(form.get('password') || '');
   const server = String(form.get('server') || '').trim();
-  if (!ssid || !server.startsWith('http')) return setBleSetupMessage('목록에서 2.4 GHz Wi-Fi를 선택하고 서버 주소를 확인하세요.', true);
+  if (!ssid || !server.startsWith('http')) return setBleSetupMessage('목록에서 2.4 GHz Wi-Fi를 선택하거나 SSID를 직접 입력하고 서버 주소를 확인하세요.', true);
 
   const connectStep = $('#bleStepConnect');
   if (connectStep) connectStep.hidden = true;
@@ -3274,11 +3280,15 @@ function installGatewayWifiSetup() {
       <button type="button" id="claimReleasedGateway" class="primary" hidden style="margin:8px 0;width:100%">이 옷봉을 내 계정에 등록</button>
       <form id="bleWifiForm" method="post" action="/" hidden style="margin-top:16px">
         <label>옷봉이 찾은 주변 2.4 GHz Wi-Fi
-          <select name="ssid" id="nearbyWifiChoices" required>
+          <select name="ssid" id="nearbyWifiChoices">
             <option value="">옷봉을 연결하면 목록이 표시됩니다</option>
           </select>
         </label>
         <button type="button" id="scanHangerWifi" class="ghost" style="margin-bottom:8px;color:var(--ink);border:1px solid #cbd4cd">주변 Wi-Fi 다시 검색</button>
+        <label>Wi-Fi 이름 직접 입력 (목록에 없을 때)
+          <input id="manualWifiSsid" type="text" maxlength="32" autocomplete="off" placeholder="예: gaon303_2.5g">
+        </label>
+        <p class="muted" style="margin:-4px 0 10px;font-size:12px">옷봉은 2.4 GHz Wi-Fi만 사용할 수 있습니다. 숨김 SSID이거나 검색 목록에 없을 때만 직접 입력하세요.</p>
         <label>선택한 Wi-Fi 비밀번호
           <input name="password" type="password" placeholder="비밀번호 입력">
         </label>
@@ -3313,6 +3323,14 @@ function installGatewayWifiSetup() {
   const serverInput = dialog.querySelector('input[name="server"]');
   if (serverInput) serverInput.value = window.location.origin;
   document.body.append(dialog);
+  const wifiSelect = $('#nearbyWifiChoices');
+  const manualWifiSsid = $('#manualWifiSsid');
+  wifiSelect?.addEventListener('change', () => {
+    if (wifiSelect.value && manualWifiSsid) manualWifiSsid.value = '';
+  });
+  manualWifiSsid?.addEventListener('input', () => {
+    if (manualWifiSsid.value.trim() && wifiSelect) wifiSelect.value = '';
+  });
 
   const showGatewayWifiHelp = () => {
     resetProvisionProgressUI();

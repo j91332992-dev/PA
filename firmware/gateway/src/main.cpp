@@ -294,14 +294,15 @@ void scanNearbyWifiForBle() {
   WiFi.scanDelete();
   delay(300);
 
-  // A full active scan (channel 0) lets the ESP32 radio cover every 2.4 GHz
-  // channel in one pass. The old 13-channel × 2-pass sweep took over 25
-  // seconds and could miss a weak router while BLE was waiting.
+  // A single full active scan (channel 0) lets the ESP32 radio cover every
+  // 2.4 GHz channel without holding the BLE setup screen for 20+ seconds.
+  // One 220 ms dwell per channel is enough for normal beacon intervals; users
+  // can press "다시 검색" again when a router is waking up.
   String seen = "|";
   uint8_t networkCount = 0;
-  constexpr uint8_t SCAN_PASSES = 2;
+  constexpr uint8_t SCAN_PASSES = 1;
   for (uint8_t pass = 0; pass < SCAN_PASSES; ++pass) {
-    const int count = WiFi.scanNetworks(false, true, false, 280, 0);
+    const int count = WiFi.scanNetworks(false, true, false, 220, 0);
     Serial.printf("[BLE] Wi-Fi full active scan pass=%u result=%d\n", pass + 1, count);
     if (count >= 0) for (int i = 0; i < count; ++i) {
       const String ssid = WiFi.SSID(i);
