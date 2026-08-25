@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["hnd1"],
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 10,
+      "includeFiles": "web/public/**"
+    }
+  },
+  "rewrites": [
+    { "source": "/", "destination": "/api/index.js" },
+    { "source": "/api/:path*", "destination": "/api/index.js" },
+    { "source": "/:path*", "destination": "/api/index.js" }
+  ]
+}

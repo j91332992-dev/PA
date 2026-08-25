@@ -5,12 +5,16 @@ data/*.json
 data/*.bak
 data/*.tmp
 .pio/
+.pio-core/
+**/.pio-core/
 dist/
 *.pdf
 tools/background-removal-demo/.venv/
 tools/background-removal-demo/.models/
 tools/background-removal-demo/__pycache__/
 data/garment-images/
+data/*.log
 
 __pycache__/
 *.py[cod]
+.vercel-package/

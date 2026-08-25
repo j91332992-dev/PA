@@ -35,13 +35,29 @@ const hangerFreshness = window.HangerFreshness.createTracker();
 const BLE_SERVICE_UUID = 'a4e66a10-0fb0-4dce-8be0-18cf7bc82001'; // 옷봉
 const BLE_CONFIG_UUID = 'a4e66a11-0fb0-4dce-8be0-18cf7bc82001';
 const BLE_STATUS_UUID = 'a4e66a12-0fb0-4dce-8be0-18cf7bc82001';
+const LOCAL_STATUS_UUID = 'a4e66a13-0fb0-4dce-8be0-18cf7bc82001';
+const LOCAL_COMMAND_UUID = 'a4e66a14-0fb0-4dce-8be0-18cf7bc82001';
 const HANGER_BLE_SERVICE_UUID = 'a4e66a20-0fb0-4dce-8be0-18cf7bc82001';
 const HANGER_BLE_CONFIG_UUID = 'a4e66a21-0fb0-4dce-8be0-18cf7bc82001';
 const HANGER_BLE_STATUS_UUID = 'a4e66a22-0fb0-4dce-8be0-18cf7bc82001';
 let bleConfigCharacteristic = null;
+let localGatewayCommandCharacteristic = null;
+let localGatewayDevice = null;
 let nearbyWifiNetworks = [];
 let hangerBleConfigCharacteristic = null;
+let currentBleHangerId = '';
 const claimedDeviceIds = new Set();
+const LOCAL_LED_STORAGE_KEY = 'wardrobeLocalLedStates';
+const LAST_GATEWAY_BLE_DEVICE_KEY = 'wardrobeGatewayBleDeviceId';
+const LAST_GATEWAY_BLE_PAIRING_KEY = 'wardrobeGatewayBlePairing';
+const LOCAL_LED_SAFETY_MS = 300000;
+const localLedStates = new Map();
+try {
+  const savedLedStates = JSON.parse(sessionStorage.getItem(LOCAL_LED_STORAGE_KEY) || '{}');
+  for (const [hangerId, value] of Object.entries(savedLedStates)) {
+    if (value && Number(value.expiresAt) > Date.now()) localLedStates.set(hangerId, value);
+  }
+} catch (_) {}
 const ROD_RECONNECT_WINDOW_MS = 30000;
 let rodReconnectStartedAt = Number(sessionStorage.getItem('wardrobeRodReconnectStartedAt') || 0);
 
@@ -115,18 +131,33 @@ function getKoreanState(state) {
 }
 
 async function api(path, options = {}) {
-  const r = await fetch(path, {
-    ...options,
-    headers: {
-      'content-type': 'application/json',
-      ...(token ? { authorization: 'Bearer ' + token } : {}),
-      ...(adminSession ? { 'x-admin-session': adminSession } : {}),
-      ...options.headers,
-    },
-  });
-  const x = await r.json().catch(() => ({}));
-  if (!r.ok) throw Error(x.error || `HTTP ${r.status}`);
-  return x;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await fetch(path, {
+      ...options,
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: 'Bearer ' + token } : {}),
+        ...(adminSession ? { 'x-admin-session': adminSession } : {}),
+        ...options.headers,
+      },
+    });
+    const x = await r.json().catch(() => ({}));
+    if (r.ok) return x;
+    // This response is emitted before the API route executes, so retrying it
+    // cannot duplicate a registration or a hardware command.
+    if (r.status === 503 && /데이터 연결을 다시 시도|스토리지 초기화/i.test(x.error || '') && attempt < 2) {
+      await new Promise(resolve => setTimeout(resolve, 700 * (attempt + 1)));
+      continue;
+    }
+    const failure = Error(x.error || `HTTP ${r.status}`);
+    // Keep the HTTP status so device-ownership conflicts can be rendered as
+    // a precise Korean message instead of falling through to a generic BLE
+    // error. This is especially important when another account just released
+    // the same gateway and the claim request races with a stale UI refresh.
+    failure.status = r.status;
+    failure.code = x.code || '';
+    throw failure;
+  }
 }
 
 function toast(s) {
@@ -138,6 +169,12 @@ function toast(s) {
 // ----------------- Persistent FIND / LED Active State -----------------
 function isHangerLedActive(hangerId) {
   if (!hangerId) return false;
+  const localState = localLedStates.get(hangerId);
+  if (localState) {
+    if (Number(localState.expiresAt) > Date.now()) return localState.active === true;
+    localLedStates.delete(hangerId);
+    persistLocalLedStates();
+  }
   const simH = (simState.hangers || []).find(h => h.hangerId === hangerId);
   if (simH && Date.now() < (simH.ledUntil || 0)) return true;
 
@@ -154,6 +191,33 @@ function isHangerLedActive(hangerId) {
     return Date.now() - createdAtMs < duration;
   }
   return false;
+}
+
+function persistLocalLedStates() {
+  const saved = {};
+  for (const [hangerId, value] of localLedStates) {
+    if (Number(value.expiresAt) > Date.now()) saved[hangerId] = value;
+  }
+  sessionStorage.setItem(LOCAL_LED_STORAGE_KEY, JSON.stringify(saved));
+}
+
+function setLocalLedState(targets, active, durationMs = 0) {
+  const expiresAt = Date.now() + (durationMs > 0 ? durationMs : LOCAL_LED_SAFETY_MS);
+  for (const hangerId of targets || []) localLedStates.set(hangerId, { active: !!active, expiresAt });
+  persistLocalLedStates();
+}
+
+function clearFindingForEmptyHanger(hangerId) {
+  if (!hangerId) return;
+  setLocalLedState([hangerId], false);
+  // NFC removal is the physical source of truth. Reflect it in the current
+  // screen immediately instead of waiting for a later commands snapshot.
+  model.commands = (model.commands || []).map(command => {
+    if (command.command !== 'LED_OFF' && ['QUEUED', 'SENT', 'ACKED'].includes(command.status) && command.targets?.includes(hangerId)) {
+      return { ...command, status: 'CANCELLED', cancelledReason: 'NFC_TAG_REMOVED' };
+    }
+    return command;
+  });
 }
 
 // ----------------- Image SVG Fallback Placeholder -----------------
@@ -788,12 +852,8 @@ window.findGarment = async (id, hangerId) => {
     return;
   }
   try {
-    await api('/api/commands', {
-      method: 'POST',
-      body: JSON.stringify({ targets: [hangerId], command: 'LED_BLINK', durationMs: 0 }),
-    });
-    toast(`[찾기 시작] ${hangerId} 옷걸이에 LED 지속 점멸 명령을 전송했습니다.`);
-    refresh();
+    await sendPrimaryLocalCommand('local_find', [hangerId]);
+    toast(`[근처 옷봉] ${hangerId} LED 점멸을 바로 시작했습니다.`);
   } catch (x) {
     toast(`[찾기 오류] ${x.message}`);
   }
@@ -802,12 +862,8 @@ window.findGarment = async (id, hangerId) => {
 window.stopGarment = async hangerId => {
   if (!hangerId) return;
   try {
-    await api('/api/commands', {
-      method: 'POST',
-      body: JSON.stringify({ targets: [hangerId], command: 'LED_OFF' }),
-    });
-    toast(`[LED 끄기] ${hangerId} 옷걸이의 LED를 소등했습니다.`);
-    refresh();
+    await sendPrimaryLocalCommand('local_off', [hangerId]);
+    toast(`[근처 옷봉] ${hangerId} LED를 바로 껐습니다.`);
   } catch (x) {
     toast(`[소등 오류] ${x.message}`);
   }
@@ -816,12 +872,8 @@ window.stopGarment = async hangerId => {
 window.findOutfit = async (targets, title) => {
   if (!targets || !targets.length) return;
   try {
-    await api('/api/commands', {
-      method: 'POST',
-      body: JSON.stringify({ targets, command: 'LED_BLINK', durationMs: 0 }),
-    });
-    toast(`[코디 찾기] ${targets.join(', ')} 옷걸이에 동시 LED 점멸 명령을 전송했습니다.`);
-    refresh();
+    await sendPrimaryLocalCommand('local_find', targets);
+    toast(`[근처 옷봉] ${targets.length}개 LED 점멸을 바로 시작했습니다.`);
   } catch (x) {
     toast(`[코디 찾기 오류] ${x.message}`);
   }
@@ -830,12 +882,8 @@ window.findOutfit = async (targets, title) => {
 window.stopOutfit = async targets => {
   if (!targets || !targets.length) return;
   try {
-    await api('/api/commands', {
-      method: 'POST',
-      body: JSON.stringify({ targets, command: 'LED_OFF' }),
-    });
-    toast(`[코디 LED 끄기] ${targets.join(', ')} 옷걸이의 LED를 소등했습니다.`);
-    refresh();
+    await sendPrimaryLocalCommand('local_off', targets);
+    toast('[근처 옷봉] LED를 바로 껐습니다.');
   } catch (x) {
     toast(`[소등 오류] ${x.message}`);
   }
@@ -1012,22 +1060,17 @@ function render() {
 function mergeSnapshot(snapshot) {
   const incomingHangers = Array.isArray(snapshot?.hangers) ? snapshot.hangers : [];
   const currentById = new Map((model.hangers || []).map(h => [hangerFreshness.hangerIdOf(h), h]));
-  const mergedIds = new Set();
   const hangers = incomingHangers.map(incoming => {
     const id = hangerFreshness.hangerIdOf(incoming);
     const current = currentById.get(id);
-    mergedIds.add(id);
     if (current && !hangerFreshness.isFresher(incoming, current)) return current;
     hangerFreshness.remember(incoming);
     return incoming;
   });
 
-  // A snapshot may have been captured before a live event added a hanger.
-  // Keep that live record until a newer event/snapshot supersedes it.
-  for (const current of model.hangers || []) {
-    const id = hangerFreshness.hangerIdOf(current);
-    if (id && !mergedIds.has(id)) hangers.push(current);
-  }
+  // A snapshot is authoritative for account ownership. Keeping a missing
+  // local record here made a released hanger remain visible while the same
+  // hardware also appeared in discoveredHangers.
   return { ...snapshot, hangers };
 }
 
@@ -1095,6 +1138,7 @@ function connect() {
     } else if (m.type === 'hanger.state') {
       const h = m.payload;
       if (!applyHangerEvent(h)) return;
+      if (h.state === 'EMPTY') clearFindingForEmptyHanger(h.hangerId);
       // WebSocket events do not arrive through refresh(), so keep the recent
       // event feed in sync with the same live state update.
       model.events = model.events || [];
@@ -1169,9 +1213,11 @@ function switchView(viewName) {
   }
 }
 
-async function enter() {
+async function enter(knownUser = null) {
   try {
-    sessionUser = (await api('/api/auth/status')).user || null;
+    // Login already returns the safe user record. Reuse it so the dashboard
+    // does not wait for an extra authentication request before loading.
+    sessionUser = knownUser || (await api('/api/auth/status')).user || null;
     if (!sessionUser) throw Error('로그인 정보를 확인할 수 없습니다.');
     if (sessionUser.role === 'admin') {
       const adminStatus = await api('/api/admin/status');
@@ -1206,6 +1252,9 @@ async function enter() {
       $('#dashboard').innerHTML = `<article class="panel"><h2>대시보드를 불러오는 중 문제가 발생했습니다.</h2><p class="error">${esc(renderError.message || '화면을 표시할 수 없습니다.')}</p><button type="button" onclick="location.reload()">다시 불러오기</button></article>`;
     }
     connect();
+    // Reuse the gateway permission granted during first device registration.
+    // This reconnects silently after a refresh; no Bluetooth chooser appears.
+    connectHangerBluetooth({ scanWifi: false, allowChooser: false, silent: true }).catch(() => {});
     loadWeather($('#weatherCitySelect')?.value || 'seoul');
   } catch (err) {
     console.error('Enter error:', err);
@@ -1237,6 +1286,12 @@ function updateDetectedTags() {
   const select = $('#detectedTagSelect');
   if (!select) return;
 
+  // render() runs for live NFC state updates. Replacing the <select> while a
+  // mobile user has its native picker open makes the list flicker and drops
+  // the tap. Populate it when the registration dialog opens, then freeze that
+  // interaction until the dialog is closed or submitted.
+  if ($('#garmentDialog')?.open) return;
+
   const currentVal = select.value;
   const unknownHangers = (model.hangers || []).filter(h => h.state === 'UNKNOWN_TAG' && h.tagUid);
 
@@ -1258,7 +1313,8 @@ function updateDetectedTags() {
     `<option value="">-- 미등록 옷 태그 선택 (${unknownHangers.length}개 감지됨) --</option>`,
     ...unknownHangers.map(h => {
       const timeStr = formatTimeAgo(h.lastSeen);
-      return `<option value="${esc(h.tagUid)}">${esc(h.tagUid)} · ${esc(h.alias || h.hangerId)} · ${timeStr}</option>`;
+      const hangerLabel = Number(h.hangerNumber) > 0 ? `${Number(h.hangerNumber)}번 옷걸이` : (h.alias || h.hangerId);
+      return `<option value="${esc(h.tagUid)}">${esc(h.tagUid)} · ${esc(hangerLabel)} · 최근 ${timeStr}</option>`;
     }),
   ].join('');
 
@@ -1496,6 +1552,11 @@ const authFormElement = $('#authForm');
 if (authFormElement) {
   authFormElement.method = 'post';
   authFormElement.action = '/';
+  const loginIdInput = $('#authEmail');
+  if (loginIdInput) {
+    loginIdInput.type = 'text';
+    loginIdInput.placeholder = '이메일 또는 가입 아이디';
+  }
   const authSubmitElement = $('#authSubmit');
   if (authSubmitElement) authSubmitElement.type = 'submit';
 }
@@ -1753,6 +1814,9 @@ $('#authForm').onsubmit = async e => {
   try {
     const mode = e.target.dataset.mode || currentAuthMode || 'login';
     const x = Object.fromEntries(new FormData(e.target));
+    // Mobile autofill and copied IDs commonly contain invisible spaces.
+    // Normalising here prevents a correct account from being rejected.
+    x.email = String(x.email || '').trim();
     const r = await api('/api/auth/' + mode, { method: 'POST', body: JSON.stringify(x) });
     token = r.token;
     localStorage.setItem('wardrobeToken', token);
@@ -1767,7 +1831,7 @@ $('#authForm').onsubmit = async e => {
     // as the login finishes, and an unconditional reload hid that failure on
     // the login page. Enter now and show an actionable error if snapshot
     // loading genuinely fails.
-    await enter();
+    await enter(r.user || null);
     submitBtn.disabled = false;
   } catch (x) {
     submitBtn.disabled = false;
@@ -2015,11 +2079,8 @@ $('#multiFind').onclick = async () => {
     return;
   }
   try {
-    await api('/api/commands', {
-      method: 'POST',
-      body: JSON.stringify({ targets: [...selected], command: 'LED_BLINK', durationMs: 0 }),
-    });
-    toast(`${selected.size}개 옷걸이에 LED 점멸 명령을 전송했습니다.`);
+    await sendPrimaryLocalCommand('local_find', [...selected]);
+    toast(`[근처 옷봉] ${selected.size}개 옷걸이의 LED 점멸을 바로 시작했습니다.`);
     selected.clear();
     render();
   } catch (x) {
@@ -2104,6 +2165,13 @@ setInterval(() => {
   }
 }, 1000);
 
+// Mobile networks or a Quick Tunnel can delay a WebSocket frame. While the
+// dashboard is visible, a compact snapshot fallback keeps a physical NFC
+// transition from waiting for reconnects or a manual refresh.
+setInterval(() => {
+  if (token && document.visibilityState === 'visible') refresh();
+}, 5000);
+
 $$('nav button').forEach(b => (b.onclick = () => switchView(b.dataset.view)));
 
 $('#logout').onclick = () => {
@@ -2112,7 +2180,13 @@ $('#logout').onclick = () => {
     simTimer = null;
   }
   socket?.close();
+  // A released rod must be available to the next account immediately. Keeping
+  // the previous account's GATT connection alive caused the next phone/account
+  // to receive only a vague "Connection attempt failed" message.
+  disconnectLocalGatewayBluetooth();
   hangerFreshness.clear();
+  localLedStates.clear();
+  sessionStorage.removeItem(LOCAL_LED_STORAGE_KEY);
   model = { garments: [], hangers: [], gateways: [], events: [], commands: [] };
   refreshGeneration++;
   localStorage.removeItem('wardrobeToken');
@@ -2134,12 +2208,12 @@ function setBleSetupMessage(message, error = false) {
 
 function bleErrorMessage(error, action) {
   const detail = String(error?.message || '알 수 없는 블루투스 오류');
-  if (/GATT operation failed|Unknown reason|NetworkError/i.test(detail)) {
-    return `${action} 중 옷봉과의 블루투스 연결이 끊겼습니다. 옷봉 전원을 켠 채 PC 가까이에 두고, 옷봉 찾기부터 다시 해주세요.`;
+  if (/Connection attempt failed|Connection Error|GATT operation failed|Unknown reason|NetworkError|InvalidStateError/i.test(detail)) {
+    return `${action}에 실패했습니다. 이전 휴대폰·브라우저의 블루투스 연결이 아직 정리 중이거나 옷봉이 재시작 중일 수 있습니다. 기존 화면을 닫고 옷봉 전원을 3초 껐다 켠 뒤 5초 후 다시 시도해 주세요.`;
   }
   if (/NotFoundError|cancel/i.test(detail)) return '블루투스 기기 선택이 취소되었습니다. 옷봉 찾기를 다시 눌러 주세요.';
-  if (/NotSupported|secure context/i.test(detail)) return '이 기능은 Bluetooth가 켜진 PC Chrome에서 http://localhost:8787 로 열어야 합니다.';
-  return `${action} 실패: ${detail}`;
+  if (/NotSupported|secure context/i.test(detail)) return '이 기능은 블루투스가 켜진 Chrome에서 HTTPS 주소로 열어야 합니다.';
+  return `${action}에 실패했습니다. 옷봉 전원·거리·블루투스 상태를 확인한 뒤 다시 시도해 주세요.`;
 }
 
 function escapeWifiLabel(value) {
@@ -2151,6 +2225,71 @@ let currentGatewayOwnership = 'UNKNOWN';
 let currentHangerOwnership = 'UNKNOWN';
 let provisionPollInterval = null;
 let rebootCountdownInterval = null;
+let localGatewayBleLastSeenAt = 0;
+
+function rememberedGatewayIdForDevice(device) {
+  try {
+    const remembered = JSON.parse(localStorage.getItem(LAST_GATEWAY_BLE_PAIRING_KEY) || '{}');
+    return remembered.deviceId === device?.id ? String(remembered.gatewayId || '').toUpperCase() : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function rememberGatewayDevice(device, gatewayId) {
+  if (!device?.id || !gatewayId) return;
+  localStorage.setItem(LAST_GATEWAY_BLE_PAIRING_KEY, JSON.stringify({ deviceId: device.id, gatewayId: String(gatewayId).toUpperCase() }));
+}
+
+function disconnectLocalGatewayBluetooth() {
+  const device = localGatewayDevice;
+  if (device) device.ongattserverdisconnected = null;
+  try {
+    if (device?.gatt?.connected) device.gatt.disconnect();
+  } catch (_) {}
+  bleConfigCharacteristic = null;
+  localGatewayCommandCharacteristic = null;
+  localGatewayDevice = null;
+  localGatewayBleLastSeenAt = 0;
+  currentBleGatewayId = '';
+  currentGatewayOwnership = 'UNKNOWN';
+}
+
+function waitForBle(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function connectGatewayGatt(device) {
+  if (!device?.gatt) throw new Error('옷봉의 블루투스 GATT 서비스를 찾지 못했습니다.');
+  // Chrome can retain a just-closed GATT object for a short time after a
+  // logout/account switch. Explicitly close it before the next account uses
+  // the same physical S3, then retry once after the controller settles.
+  try {
+    if (device.gatt.connected) device.gatt.disconnect();
+  } catch (_) {}
+  await waitForBle(180);
+  try {
+    return await device.gatt.connect();
+  } catch (firstError) {
+    try { device.gatt.disconnect(); } catch (_) {}
+    await waitForBle(450);
+    return device.gatt.connect();
+  }
+}
+
+function forgetRememberedGatewayDevice(gatewayId = '') {
+  const target = String(gatewayId || '').toUpperCase();
+  try {
+    const remembered = JSON.parse(localStorage.getItem(LAST_GATEWAY_BLE_PAIRING_KEY) || '{}');
+    if (!target || String(remembered.gatewayId || '').toUpperCase() === target) {
+      localStorage.removeItem(LAST_GATEWAY_BLE_PAIRING_KEY);
+      localStorage.removeItem(LAST_GATEWAY_BLE_DEVICE_KEY);
+    }
+  } catch (_) {
+    localStorage.removeItem(LAST_GATEWAY_BLE_PAIRING_KEY);
+    localStorage.removeItem(LAST_GATEWAY_BLE_DEVICE_KEY);
+  }
+}
 
 function neutralBleLabel(kind, hardwareId) {
   const shortCode = String(hardwareId || '').toUpperCase().match(/([0-9A-F]{6})$/)?.[1] || '고유 코드';
@@ -2165,9 +2304,10 @@ async function refreshBleOwnership(kind, hardwareId, fallbackName = '') {
   return result;
 }
 
-function pairingBlockedMessage(kind) {
+function pairingBlockedMessage(kind, pairing = null) {
   const device = kind === 'gateways' ? '옷봉' : '옷걸이';
-  return `이 ${device}은 다른 계정에 등록되어 있습니다. 기존 계정에서 등록 해제 후 다시 연결해 주세요.`;
+  const owner = pairing?.ownerLabel ? ` 소유자: ${pairing.ownerLabel}.` : '';
+  return `이 ${device}은 다른 계정에 등록되어 있습니다.${owner} 기존 계정에서 등록 해제 후 다시 연결해 주세요.`;
 }
 
 function timeAgo(dateString) {
@@ -2236,25 +2376,94 @@ async function scanHangerWifi() {
 }
 
 async function writeGatewayBle(action, extra = {}) {
-  if (!bleConfigCharacteristic) return;
+  if (!bleConfigCharacteristic) throw new Error('옷봉 블루투스 연결이 필요합니다.');
   const payload = new TextEncoder().encode(JSON.stringify({ action, ...extra }));
   if (typeof bleConfigCharacteristic.writeValueWithResponse === 'function') await bleConfigCharacteristic.writeValueWithResponse(payload);
   else await bleConfigCharacteristic.writeValue(payload);
+}
+
+async function factoryResetGatewayBeforeRemoval(gatewayId) {
+  // Deletion is intentionally a nearby-device operation: cloud ownership must
+  // not be released until the S3 has cleared its Wi-Fi and unpaired all C6s.
+  const connected = await connectHangerBluetooth({ scanWifi: false, forceChooser: true });
+  if (!connected || currentBleGatewayId !== gatewayId) {
+    disconnectLocalGatewayBluetooth();
+    throw new Error('등록 해제할 동일한 옷봉을 블루투스 선택창에서 선택해 주세요.');
+  }
+  await writeGatewayBle('factory_reset');
+  await new Promise(resolve => setTimeout(resolve, 500));
+  await api(`/api/gateways/${encodeURIComponent(gatewayId)}`, { method: 'DELETE' });
+  forgetRememberedGatewayDevice(gatewayId);
+  disconnectLocalGatewayBluetooth();
+}
+
+async function writeLocalGatewayCommand(action, targets, durationMs = 0) {
+  if (!localGatewayCommandCharacteristic) return false;
+  const payload = new TextEncoder().encode(JSON.stringify({ action, targets, durationMs }));
+  if (typeof localGatewayCommandCharacteristic.writeValueWithResponse === 'function') await localGatewayCommandCharacteristic.writeValueWithResponse(payload);
+  else await localGatewayCommandCharacteristic.writeValue(payload);
+  setLocalLedState(targets, action !== 'local_off', durationMs);
+  const command = { id: `local-${Date.now()}`, command: action === 'local_off' ? 'LED_OFF' : 'LED_BLINK', targets, durationMs, status: action === 'local_off' ? 'CANCELLED' : 'ACKED', createdAt: new Date().toISOString(), local: true };
+  model.commands = [command, ...(model.commands || []).filter(c => !targets.some(target => c.targets?.includes(target)))];
+  render();
+  return true;
+}
+
+async function sendPrimaryLocalCommand(action, targets, durationMs = 0) {
+  if (!localGatewayCommandCharacteristic) {
+    const connected = await connectHangerBluetooth({ scanWifi: false });
+    if (!connected || !localGatewayCommandCharacteristic) {
+      throw new Error('근처 옷봉 BLE 연결이 필요합니다. 옷봉을 선택한 뒤 다시 눌러 주세요.');
+    }
+  }
+  try {
+    await writeLocalGatewayCommand(action, targets, durationMs);
+  } catch (error) {
+    localGatewayCommandCharacteristic = null;
+    throw new Error(`옷봉 BLE 연결이 끊어졌습니다. 다시 눌러 옷봉을 연결해 주세요. (${error.message || 'GATT 오류'})`);
+  }
+}
+
+function handleLocalGatewayStatus(value) {
+  try {
+    const info = JSON.parse(new TextDecoder().decode(value));
+    localGatewayBleLastSeenAt = Date.now();
+    if (info.type !== 'hanger_state' || !info.hangerId) return;
+    const hanger = (model.hangers || []).find(h => h.hangerId === info.hangerId);
+    if (!hanger) return;
+    const tagUid = info.tagUid || null;
+    const known = tagUid && (model.garments || []).find(g => g.tagUid === tagUid);
+    const state = info.state === 'PRESENT' && !known ? 'UNKNOWN_TAG' : info.state;
+    Object.assign(hanger, { state, reportedState: info.state, tagUid, lastSeen: new Date().toISOString(), errorFlags: Number(info.errorFlags || 0) });
+    for (const garment of model.garments || []) {
+      if (garment.currentHanger === hanger.hangerId && (!tagUid || garment.tagUid !== tagUid)) Object.assign(garment, { currentState: 'OUT', currentHanger: null });
+      if (known && garment.id === known.id) Object.assign(garment, { currentState: 'IN_WARDROBE', currentHanger: hanger.hangerId, lastSeen: hanger.lastSeen });
+    }
+    if (info.state === 'EMPTY') clearFindingForEmptyHanger(hanger.hangerId);
+    render();
+  } catch (_) {}
 }
 
 async function handleGatewayBleStatus(value, fallbackName = '') {
   try {
     const text = new TextDecoder().decode(value);
     const info = JSON.parse(text);
+    localGatewayBleLastSeenAt = Date.now();
     if (info.gatewayId) {
       currentBleGatewayId = info.gatewayId;
+      rememberGatewayDevice(localGatewayDevice, currentBleGatewayId);
       const pairing = await refreshBleOwnership('gateways', currentBleGatewayId, fallbackName);
       const deviceLabel = $('#bleDeviceName');
       if (deviceLabel) deviceLabel.textContent = `${pairing.displayName || neutralBleLabel('gateways', currentBleGatewayId)} 연결됨`;
       if (pairing.ownership === 'OTHER_ACCOUNT') {
         const form = $('#bleWifiForm');
         if (form) form.hidden = true;
-        setBleSetupMessage(pairingBlockedMessage('gateways'), true);
+        setBleSetupMessage(pairingBlockedMessage('gateways', pairing), true);
+      } else if (pairing.ownership === 'UNCLAIMED') {
+        const form = $('#bleWifiForm');
+        if (form) form.hidden = false;
+        setBleSetupMessage('새 장비입니다. 2.4 GHz Wi-Fi를 처음부터 설정한 뒤 내 계정에 등록하세요.');
+        $('#claimReleasedGateway')?.setAttribute('hidden', '');
       }
     }
     if (info.state === 'network' && info.ssid) {
@@ -2268,43 +2477,93 @@ async function handleGatewayBleStatus(value, fallbackName = '') {
   } catch (_) {}
 }
 
-async function connectHangerBluetooth() {
+async function connectHangerBluetooth(options = {}) {
+  const shouldScanWifi = options?.scanWifi !== false;
+  const allowChooser = options?.allowChooser !== false;
+  const silent = options?.silent === true;
+  const forceChooser = options?.forceChooser === true;
   if (!navigator.bluetooth || !window.isSecureContext) {
-    setBleSetupMessage('이 기능은 블루투스가 켜진 Chrome에서 HTTPS 또는 localhost로 열어야 합니다.', true);
-    return;
+    if (!silent) setBleSetupMessage('이 기능은 블루투스가 켜진 Chrome에서 HTTPS 또는 localhost로 열어야 합니다.', true);
+    return false;
   }
+  if (localGatewayCommandCharacteristic && localGatewayDevice?.gatt?.connected) return true;
   const button = $('#connectHangerBle');
   if (button) {
     button.disabled = true;
     button.textContent = '옷봉 찾는 중… 잠시만 기다려 주세요';
   }
   try {
-    setBleSetupMessage('브라우저 블루투스 선택창에서 “스마트 옷봉 · 고유 코드”를 선택하세요.');
-    const device = await navigator.bluetooth.requestDevice({
-      filters: [{ services: [BLE_SERVICE_UUID] }],
-      optionalServices: [BLE_SERVICE_UUID],
-    });
-    const gatt = await device.gatt.connect();
+    let device = forceChooser ? null : localGatewayDevice;
+    if (!device && !forceChooser && typeof navigator.bluetooth.getDevices === 'function') {
+      const granted = await navigator.bluetooth.getDevices();
+      const savedId = localStorage.getItem(LAST_GATEWAY_BLE_DEVICE_KEY) || '';
+      device = savedId ? granted.find(item => item.id === savedId) || null : null;
+    }
+    if (!device && !allowChooser) return false;
+    if (!device) {
+      if (!silent) setBleSetupMessage('브라우저 블루투스 선택창에서 “스마트 옷봉 · 고유 코드”를 선택하세요.');
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [BLE_SERVICE_UUID] }],
+        optionalServices: [BLE_SERVICE_UUID],
+      });
+    } else if (!silent) {
+      setBleSetupMessage('처음 등록할 때 허용한 옷봉에 자동으로 다시 연결하고 있습니다.');
+    }
+    const rememberedGatewayId = rememberedGatewayIdForDevice(device);
+    if (rememberedGatewayId) {
+      const pairing = await refreshBleOwnership('gateways', rememberedGatewayId);
+      if (pairing.ownership === 'OTHER_ACCOUNT') {
+        setBleSetupMessage(pairingBlockedMessage('gateways', pairing), true);
+        return false;
+      }
+    }
+    localGatewayDevice = device;
+    device.ongattserverdisconnected = () => {
+      bleConfigCharacteristic = null;
+      localGatewayCommandCharacteristic = null;
+      localGatewayBleLastSeenAt = 0;
+      if (localGatewayDevice === device) localGatewayDevice = null;
+      render();
+    };
+    const gatt = await connectGatewayGatt(device);
     const service = await gatt.getPrimaryService(BLE_SERVICE_UUID);
     bleConfigCharacteristic = await service.getCharacteristic(BLE_CONFIG_UUID);
     const status = await service.getCharacteristic(BLE_STATUS_UUID);
+    const localStatus = await service.getCharacteristic(LOCAL_STATUS_UUID);
+    localGatewayCommandCharacteristic = await service.getCharacteristic(LOCAL_COMMAND_UUID);
+    localGatewayBleLastSeenAt = Date.now();
     await status.startNotifications();
+    await localStatus.startNotifications();
 
     status.addEventListener('characteristicvaluechanged', event => handleGatewayBleStatus(event.target.value, device.name || ''));
+    localStatus.addEventListener('characteristicvaluechanged', event => handleLocalGatewayStatus(event.target.value));
 
     const deviceLabel = $('#bleDeviceName');
     if (deviceLabel) deviceLabel.textContent = `${neutralBleLabel('gateways', currentBleGatewayId || device.name)} 연결됨`;
     const form = $('#bleWifiForm');
     if (form) form.hidden = false;
+    localStorage.setItem(LAST_GATEWAY_BLE_DEVICE_KEY, device.id);
 
     // Notifications can be missed while Chrome finishes subscribing. Read the
     // current value first so provisioning always has the immutable gateway ID
     // needed to claim its first Cloud heartbeat.
     await handleGatewayBleStatus(await status.readValue(), device.name || '');
+    if (currentGatewayOwnership === 'OTHER_ACCOUNT') return false;
+    // A Bluetooth connection is only a physical proximity check.  It never
+    // reclaims a released device; registration happens solely in the explicit
+    // first-time Wi-Fi setup flow.
     await writeGatewayBle('status');
-    await scanHangerWifi();
+    render();
+    if (shouldScanWifi) await scanHangerWifi();
+    if (!silent) toast('근처 옷봉과 연결되었습니다. 옷 상태와 LED 찾기는 이제 로컬 BLE로 즉시 처리됩니다.');
+    return true;
   } catch (error) {
-    setBleSetupMessage(bleErrorMessage(error, '옷봉 연결'), true);
+    try { if (localGatewayDevice?.gatt?.connected) localGatewayDevice.gatt.disconnect(); } catch (_) {}
+    localGatewayCommandCharacteristic = null;
+    bleConfigCharacteristic = null;
+    localGatewayDevice = null;
+    if (!silent) setBleSetupMessage(bleErrorMessage(error, '옷봉 연결'), true);
+    return false;
   } finally {
     if (button) {
       button.disabled = false;
@@ -2331,6 +2590,7 @@ function setStageItem(stageId, state, detailText) {
 function resetProvisionProgressUI() {
   clearInterval(provisionPollInterval);
   clearInterval(rebootCountdownInterval);
+  $('#claimReleasedGateway')?.setAttribute('hidden', '');
   const connectStep = $('#bleStepConnect');
   if (connectStep) connectStep.hidden = false;
   const progressStep = $('#bleStepProgress');
@@ -2408,7 +2668,7 @@ function startConnectionPolling(targetSsid) {
       // A gateway is invisible in a user's snapshot until its first Cloud
       // heartbeat is claimed. Retry the known hardware ID after reboot instead
       // of waiting for a snapshot that cannot contain an unclaimed device.
-      const claim = currentBleGatewayId ? await claimDevice('gateways', currentBleGatewayId, { quietNotFound: true }) : null;
+      const claim = currentBleGatewayId ? await claimDevice('gateways', currentBleGatewayId, { quietNotFound: true, confirmOwnership: true }) : null;
       if (claim?.reason === 'OTHER_ACCOUNT') {
         clearInterval(provisionPollInterval);
         setStageItem('stage_claim', 'failed', pairingBlockedMessage('gateways'));
@@ -2494,7 +2754,12 @@ function physicalGatewayStatus() {
   const now = Date.now();
   const physical = (model.gateways || []).filter(g => !String(g.gatewayId || '').startsWith('GW-SIM'));
   const latest = physical.sort((a, b) => Date.parse(b.lastSeen || 0) - Date.parse(a.lastSeen || 0))[0];
-  return { gateway: latest, online: !!latest && now - Date.parse(latest.lastSeen || 0) < 30000 };
+  // A Web Bluetooth GATT connection is authoritative for nearby control.
+  // Status notifications are intermittent by design, so their age must not
+  // make an otherwise connected rod appear offline.
+  const bleOnline = !!(localGatewayCommandCharacteristic && localGatewayDevice?.gatt?.connected);
+  const cloudOnline = !!latest && now - Date.parse(latest.lastSeen || 0) < 30000;
+  return { gateway: latest, online: bleOnline || cloudOnline, bleOnline, cloudOnline };
 }
 
 function setHangerBleMessage(message, error = false) {
@@ -2520,6 +2785,7 @@ function showHangerBleStatus(info) {
 async function handleHangerBleStatus(value) {
   try {
     const info = JSON.parse(new TextDecoder().decode(value));
+    if (info.hangerId) currentBleHangerId = info.hangerId;
     setHangerBleMessage(info.message || '옷걸이 상태를 받았습니다.', /error|failed/i.test(info.state || ''));
     showHangerBleStatus(info);
     const gatewayId = info.gatewayId || info.discoveredGatewayId;
@@ -2533,25 +2799,26 @@ async function handleHangerBleStatus(value) {
       if (pairBtn) pairBtn.hidden = true;
       return;
     }
-    if (gatewayId) await claimDevice('gateways', gatewayId, { quietNotFound: true });
-    if (gatewayId) await claimDevice('hangers', info.hangerId, { quietNotFound: true });
+    // BLE verifies the physical device only; account registration is a separate tap.
   } catch (_) {
     setHangerBleMessage('옷걸이 상태를 읽지 못했습니다.', true);
   }
 }
 
-async function claimDevice(kind, deviceId, { quietNotFound = false } = {}) {
+async function claimDevice(kind, deviceId, { quietNotFound = false, confirmOwnership = false } = {}) {
   if (!deviceId) return;
   const key = `${kind}:${deviceId}`;
   if (claimedDeviceIds.has(key)) return { ok: false, reason: 'PENDING' };
   claimedDeviceIds.add(key);
   try {
-    const item = await api(`/api/${kind}/${encodeURIComponent(deviceId)}/claim`, { method: 'POST' });
+    if (!confirmOwnership) return { ok: false, reason: 'CONFIRM_REQUIRED' };
+    const intent = await api(`/api/${kind}/${encodeURIComponent(deviceId)}/claim-intent`, { method: 'POST' });
+    const item = await api(`/api/${kind}/${encodeURIComponent(deviceId)}/claim`, { method: 'POST', body: JSON.stringify({ claimToken: intent.claimToken }) });
     refresh();
     return { ok: true, item };
   } catch (error) {
     if (error.status === 409) {
-      const message = pairingBlockedMessage(kind);
+      const message = error.message || pairingBlockedMessage(kind);
       if (kind === 'gateways') setBleSetupMessage(message, true);
       else setHangerBleMessage(message, true);
       return { ok: false, reason: 'OTHER_ACCOUNT' };
@@ -2602,14 +2869,16 @@ async function connectPhysicalHangerBluetooth() {
     const knownHanger = (model.hangers || []).find(hanger => device.name?.includes(hanger.hangerId));
     const nameEl = $('#hangerBleDeviceName');
     if (nameEl) nameEl.textContent = `${knownHanger ? hangerDisplayName(knownHanger) : neutralBleLabel('hangers', device.name || '')} 연결됨`;
-    handleHangerBleStatus(await status.readValue());
+    await handleHangerBleStatus(await status.readValue());
     const pairBtn = $('#pairPhysicalHanger');
     if (pairBtn) pairBtn.hidden = false;
     const forgetBtn = $('#forgetPhysicalHanger');
     if (forgetBtn) forgetBtn.hidden = false;
     await writeHangerBle('status');
+    return currentBleHangerId;
   } catch (error) {
     setHangerBleMessage(bleErrorMessage(error, '옷걸이 연결'), true);
+    return '';
   } finally {
     if (button) {
       button.disabled = false;
@@ -2672,13 +2941,18 @@ function openGatewaySettings(gatewayId) {
   const btnRemove = $('#btnGwRemove');
   if (btnRemove) {
     btnRemove.onclick = async () => {
-      if (!window.confirm('이 옷봉을 내 계정에서 제거하시겠습니까? 실제 전원은 꺼지지 않으며, 나중에 다시 연결할 수 있습니다.')) return;
+      if (!window.confirm('이 옷봉과 연결된 옷걸이를 내 계정에서 완전히 삭제할까요? 즉시 계정 연결이 해제되며, 다시 사용하려면 처음 등록부터 해야 합니다.')) return;
       try {
+        btnRemove.disabled = true;
+        btnRemove.textContent = '삭제 중…';
         await api(`/api/gateways/${encodeURIComponent(gatewayId)}`, { method: 'DELETE' });
-        toast('옷봉 등록을 제거했습니다.');
+        forgetRememberedGatewayDevice(gatewayId);
+        disconnectLocalGatewayBluetooth();
+        toast('옷봉과 연결된 옷걸이를 내 계정에서 삭제했습니다.');
         dialog.close();
         refresh();
       } catch (e) { alert(e.message); }
+      finally { btnRemove.disabled = false; btnRemove.textContent = '🗑️ 이 옷봉을 내 계정에서 등록 해제'; }
     };
   }
 
@@ -2743,13 +3017,19 @@ function openHangerSettings(hangerId) {
   const btnRemove = $('#btnHangerRemove');
   if (btnRemove) {
     btnRemove.onclick = async () => {
-      if (!window.confirm('이 옷걸이를 내 옷장에서 등록 제거할까요? 실제 전원은 꺼지지 않으며, 나중에 다시 연결할 수 있습니다.')) return;
+      if (!window.confirm('이 옷걸이를 내 계정에서 완전히 삭제할까요? 즉시 계정 연결이 해제되며, 다시 사용하려면 처음 등록부터 해야 합니다.')) return;
       try {
+        btnRemove.disabled = true;
+        btnRemove.textContent = '삭제 중…';
         await api(`/api/hangers/${encodeURIComponent(hangerId)}`, { method: 'DELETE' });
-        toast('옷걸이 등록을 제거했습니다.');
+        model.hangers = (model.hangers || []).filter(item => item.hangerId !== hangerId);
+        model.commands = (model.commands || []).filter(command => !command.targets?.includes(hangerId));
+        setLocalLedState([hangerId], false);
+        toast('옷걸이를 내 계정에서 삭제했습니다.');
         dialog.close();
         refresh();
       } catch (e) { alert(e.message); }
+      finally { btnRemove.disabled = false; btnRemove.textContent = '🗑️ 이 옷걸이를 내 옷장에서 등록 해제'; }
     };
   }
 
@@ -2790,6 +3070,8 @@ function renderDeviceManagement() {
 
   const gateways = (model.gateways || []).filter(g => !String(g.gatewayId || '').startsWith('GW-SIM'));
   const hangers = (model.hangers || []).filter(h => !String(h.hangerId || '').startsWith('HC-000'));
+  const ownedHangerIds = new Set(hangers.map(h => h.hangerId));
+  const discovered = (model.discoveredHangers || []).filter(h => !String(h.hangerId || '').startsWith('HC-000') && !ownedHangerIds.has(h.hangerId));
   const isOnline = item => Date.now() - Date.parse(item.lastSeen || 0) < 30000;
 
   // 1. Gateway Section HTML
@@ -2802,12 +3084,18 @@ function renderDeviceManagement() {
       </div>`;
   } else {
     const cards = gateways.map(g => {
-      const online = isOnline(g);
+      // The wardrobe's immediate control path is BLE. A healthy nearby BLE
+      // link must not be shown as offline merely because cloud heartbeats are
+      // intentionally no longer the primary control transport.
+      const gatewayStatus = physicalGatewayStatus();
+      const isThisBleGateway = gatewayStatus.bleOnline && (!currentBleGatewayId || currentBleGatewayId === g.gatewayId);
+      const online = isThisBleGateway || isOnline(g);
       const statusBadge = online
         ? '<span class="pill status-pill-online">● 온라인</span>'
         : '<span class="pill status-pill-offline">● 오프라인</span>';
-      const wifiStatus = online ? (g.ssid ? `● 연결됨 (${esc(g.ssid)})` : '● 연결됨') : '● 연결 끊김';
-      const cloudStatus = online ? '● 연결됨' : '● 연결 끊김';
+      const cloudOnline = isOnline(g);
+      const wifiStatus = cloudOnline ? (g.ssid ? `● 연결됨 (${esc(g.ssid)})` : '● 연결됨') : '● 클라우드 확인 대기';
+      const cloudStatus = cloudOnline ? '● 연결됨' : '● 마지막 heartbeat 대기';
       return `
         <div class="device-box">
           <div class="device-box-header">
@@ -2818,7 +3106,8 @@ function renderDeviceManagement() {
             ${statusBadge}
           </div>
           <div class="device-info-grid">
-            <span class="label">장비 상태</span><span class="val">${online ? '온라인 (정상)' : '오프라인 (확인 필요)'}</span>
+            <span class="label">장비 상태</span><span class="val">${isThisBleGateway ? '온라인 (근처 BLE 연결됨)' : online ? '온라인 (클라우드 통신 중)' : '오프라인 (확인 필요)'}</span>
+            <span class="label">근처 BLE</span><span class="val">${isThisBleGateway ? '<b style="color:var(--green)">● 연결됨 · 즉시 제어 가능</b>' : '○ 연결 안 됨'}</span>
             <span class="label">Wi-Fi</span><span class="val"><b>${wifiStatus}</b></span>
             <span class="label">Wi-Fi 신호</span><span class="val">${formatRssi(g.rssi, online)}</span>
             <span class="label">IP 주소</span><span class="val">${esc(g.ip || (online ? '연결됨' : '-'))}</span>
@@ -2827,6 +3116,7 @@ function renderDeviceManagement() {
             <span class="label">연결 옷걸이</span><span class="val">${linkedHangerCount(g.gatewayId)}개</span>
           </div>
           <div class="actions">
+            <button type="button" class="primary" data-gateway-action="local" data-id="${esc(g.gatewayId)}">근처 연결</button>
             <button type="button" data-gateway-action="settings" data-id="${esc(g.gatewayId)}">설정</button>
             <button type="button" class="ghost" style="color:var(--ink);border:1px solid #cbd4cd" data-gateway-action="diagnose" data-id="${esc(g.gatewayId)}">진단</button>
           </div>
@@ -2875,6 +3165,8 @@ function renderDeviceManagement() {
     hangerContent = `<div class="device-card-grid">${cards}</div>`;
   }
 
+  const discoveredContent = discovered.length ? `<div class="device-card-grid">${discovered.map(h => `<div class="device-box"><div class="device-box-header"><div><div class="device-box-title">새로 감지된 옷걸이</div><div class="device-box-id">${esc(h.hangerId)}</div></div><span class="pill status-pill-online">● 감지됨</span></div><div class="device-info-grid"><span class="label">감지 상태</span><span class="val">${esc(getKoreanState(h.state))}</span><span class="label">태그 UID</span><span class="val">${esc(h.tagUid || '태그 없음')}</span><span class="label">마지막 신호</span><span class="val">${timeAgo(h.lastSeen)}</span></div><div class="actions"><button type="button" class="primary" data-discovered-hanger="${esc(h.hangerId)}">이 옷걸이 등록</button></div></div>`).join('')}</div>` : '<p class="muted" style="margin:0">전원을 켠 새 옷걸이가 감지되면 이곳에 나타납니다.</p>';
+
   // 3. Render Combined HTML
   panel.innerHTML = `
     <div class="title" style="margin-bottom:12px">
@@ -2889,6 +3181,9 @@ function renderDeviceManagement() {
         ${gateways.length > 0 ? '<button type="button" class="ghost" id="btnAddAnotherGateway" style="padding:5px 10px;font-size:12px;color:var(--green);border:1px solid #347454">+ 옷봉 추가 연결</button>' : ''}
       </div>
       ${gatewayContent}
+    </div>
+    <div style="margin-top:24px">
+      <div style="margin-bottom:8px"><h4>감지된 새 옷걸이</h4><p class="muted" style="margin:4px 0 8px">전원을 켠 뒤 원하는 장비의 등록 버튼을 누르세요. 등록된 순서대로 1번, 2번… 번호가 부여됩니다.</p>${discoveredContent}</div>
     </div>
     <div style="margin-top:24px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
@@ -2912,6 +3207,9 @@ function renderDeviceManagement() {
   panel.querySelectorAll('[data-gateway-action="diagnose"]').forEach(btn => {
     btn.onclick = () => openGatewayDiagnostics(btn.dataset.id);
   });
+  panel.querySelectorAll('[data-gateway-action="local"]').forEach(btn => {
+    btn.onclick = () => connectHangerBluetooth({ scanWifi: false });
+  });
 
   panel.querySelectorAll('[data-hanger-action="settings"]').forEach(btn => {
     btn.onclick = () => openHangerSettings(btn.dataset.id);
@@ -2920,6 +3218,29 @@ function renderDeviceManagement() {
   panel.querySelectorAll('[data-hanger-action="diagnose"]').forEach(btn => {
     btn.onclick = () => openHangerDiagnostics(btn.dataset.id);
   });
+  panel.querySelectorAll('[data-discovered-hanger]').forEach(btn => {
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        const connected = await connectHangerBluetooth({ scanWifi: false });
+        if (!connected) {
+          toast('옷걸이 등록을 완료하려면 먼저 스마트 옷봉을 블루투스로 선택해 주세요.');
+          return;
+        }
+        const result = await claimDevice('hangers', btn.dataset.discoveredHanger, { confirmOwnership: true });
+        if (result?.ok) toast(`${result.item.alias || `${result.item.hangerNumber}번 옷걸이`} 등록 완료`);
+      } finally { btn.disabled = false; }
+    };
+  });
+}
+
+async function factoryResetHangerBeforeRemoval(hangerId) {
+  currentBleHangerId = '';
+  const connectedId = await connectPhysicalHangerBluetooth();
+  if (connectedId !== hangerId) throw new Error('등록 해제할 동일한 옷걸이를 블루투스 선택창에서 선택해 주세요.');
+  await writeHangerBle('forget');
+  await new Promise(resolve => setTimeout(resolve, 300));
+  await api(`/api/hangers/${encodeURIComponent(hangerId)}`, { method: 'DELETE' });
 }
 
 function installGatewayWifiSetup() {
@@ -2950,6 +3271,7 @@ function installGatewayWifiSetup() {
       <button type="button" id="connectHangerBle" class="primary" style="margin:12px 0;width:100%">옷봉 찾기 (블루투스)</button>
       <p id="bleDeviceName" class="muted"></p>
       <p id="bleSetupMessage" class="muted">블루투스 연결을 시작하세요.</p>
+      <button type="button" id="claimReleasedGateway" class="primary" hidden style="margin:8px 0;width:100%">이 옷봉을 내 계정에 등록</button>
       <form id="bleWifiForm" method="post" action="/" hidden style="margin-top:16px">
         <label>옷봉이 찾은 주변 2.4 GHz Wi-Fi
           <select name="ssid" id="nearbyWifiChoices" required>
@@ -3012,6 +3334,25 @@ function installGatewayWifiSetup() {
 
   const connectHangerBleBtn = $('#connectHangerBle');
   if (connectHangerBleBtn) connectHangerBleBtn.onclick = connectHangerBluetooth;
+
+  const claimReleasedGatewayBtn = $('#claimReleasedGateway');
+  if (claimReleasedGatewayBtn) {
+    claimReleasedGatewayBtn.onclick = async () => {
+      if (!currentBleGatewayId) return setBleSetupMessage('먼저 옷봉을 블루투스로 연결해 주세요.', true);
+      claimReleasedGatewayBtn.disabled = true;
+      try {
+        const result = await claimDevice('gateways', currentBleGatewayId, { confirmOwnership: true });
+        if (!result?.ok) return;
+        currentGatewayOwnership = 'OWNED';
+        claimReleasedGatewayBtn.hidden = true;
+        setBleSetupMessage('내 계정에 옷봉을 등록했습니다. 기존 Wi-Fi 설정을 그대로 사용합니다.');
+        toast('옷봉 등록 완료');
+        await refresh();
+      } finally {
+        claimReleasedGatewayBtn.disabled = false;
+      }
+    };
+  }
 
   const scanHangerWifiBtn = $('#scanHangerWifi');
   if (scanHangerWifiBtn) scanHangerWifiBtn.onclick = scanHangerWifi;

@@ -42,6 +42,14 @@ async function request(pathname, options = {}) {
   return { status: response.status, body: await response.json() };
 }
 
+async function claimDevice(kind, deviceId, token) {
+  const intent = await request(`/api/${kind}/${deviceId}/claim-intent`, { method: 'POST', token });
+  assert.equal(intent.status, 200);
+  return request(`/api/${kind}/${deviceId}/claim`, {
+    method: 'POST', token, body: { claimToken: intent.body.claimToken }
+  });
+}
+
 test.before(async () => {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -74,8 +82,10 @@ test('legacy admin-owned physical hardware is released, and a verified admin can
 
   const verify = await request('/api/admin/verify', { method: 'POST', token: login.body.token, body: { password: 'admin-secondary' } });
   assert.equal(verify.status, 200);
-  const claim = await request('/api/gateways/GW-ADMIN01/claim', { method: 'POST', token: login.body.token });
+  const claim = await claimDevice('gateways', 'GW-ADMIN01', login.body.token);
   assert.equal(claim.status, 200);
+  const hangerClaim = await claimDevice('hangers', 'HC-ADMIN01', login.body.token);
+  assert.equal(hangerClaim.status, 200);
   const release = await request('/api/admin/gateways/GW-ADMIN01/release', { method: 'POST', token: login.body.token, adminSession: verify.body.adminSession });
   assert.equal(release.status, 200);
   assert.deepEqual(release.body.releasedHangers, ['HC-ADMIN01']);

@@ -90,28 +90,38 @@ const char GOOGLE_ROOT_BUNDLE[] =
 
 String gateway;
 uint32_t beaconAt = 0, cloudAt = 0, gatewayHeartbeatAt = 0, wifiRetryAt = 0, sequence = 0;
-constexpr uint32_t COMMAND_POLL_INTERVAL_MS = 750;
+// Bound each idle Cloud poll so it cannot delay a physical NFC state edge.
+constexpr uint32_t COMMAND_POLL_INTERVAL_MS = 350;
 Preferences wifiPrefs;
 WebServer setupServer(80);
 DNSServer setupDns;
 bool setupPortalActive = false;
 uint32_t rebootAt = 0;
 BLECharacteristic* bleStatusCharacteristic = nullptr;
+BLECharacteristic* localStatusCharacteristic = nullptr;
 bool bleProvisioningActive = false;
 bool bleWifiScanRequested = false;
+uint32_t bleAdvertiseRestartAt = 0;
 String provisionState = "ready";
 String provisionMessage = "블루투스로 옷봉을 연결하세요.";
 
 constexpr char BLE_SERVICE_UUID[] = "a4e66a10-0fb0-4dce-8be0-18cf7bc82001";
 constexpr char BLE_CONFIG_UUID[] = "a4e66a11-0fb0-4dce-8be0-18cf7bc82001";
 constexpr char BLE_STATUS_UUID[] = "a4e66a12-0fb0-4dce-8be0-18cf7bc82001";
+// Local-first service: the phone talks to one S3, never to every C6.
+constexpr char LOCAL_STATUS_UUID[] = "a4e66a13-0fb0-4dce-8be0-18cf7bc82001";
+constexpr char LOCAL_COMMAND_UUID[] = "a4e66a14-0fb0-4dce-8be0-18cf7bc82001";
+String stateName(sw::State s);
+String uidHex(const sw::Packet& p);
+void sendLocalCommand(const String& command, const JsonArrayConst& targets, uint16_t durationMs);
 
 class GatewayBleServerCallbacks : public BLEServerCallbacks {
   void onDisconnect(BLEServer*) override {
-    // Keep the device discoverable for the next browser connection. Without
-    // this, reconnecting after a saved Wi-Fi setup can look like a long scan.
-    BLEDevice::startAdvertising();
-    Serial.println("[BLE] Advertising restarted");
+    // The controller may still be releasing the old GATT handle when this
+    // callback fires. Restarting immediately can leave the S3 invisible to a
+    // second phone/account; defer it to the main loop after the stack settles.
+    bleAdvertiseRestartAt = millis() + 250;
+    Serial.println("[BLE] Client disconnected; advertising restart queued");
   }
 };
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
@@ -128,6 +138,14 @@ String cloudBaseUrl() {
     // is enabled, keeping that value would make a perfectly healthy gateway
     // look offline forever.  Keep valid HTTPS settings, but self-heal the
     // obsolete insecure value using the configured production URL.
+    // The temporary Cloudflare tunnel used during development disappears when
+    // the PC is off. Move existing rods to the permanent OTKOK production
+    // endpoint automatically after this firmware update.
+    if (saved.indexOf(".trycloudflare.com") >= 0 || saved.indexOf("onrender.com") >= 0) {
+      wifiPrefs.putString("server", CLOUD_BASE_URL);
+      Serial.println("[CLOUD] Replaced legacy temporary server URL with OTKOK production");
+      return String(CLOUD_BASE_URL);
+    }
     if (saved.startsWith("https://") || ALLOW_INSECURE_HTTP) return saved;
     wifiPrefs.putString("server", CLOUD_BASE_URL);
     Serial.println("[CLOUD] Replaced legacy HTTP server URL with secure default");
@@ -167,51 +185,77 @@ void setBleStatus(const char* state, const char* message) {
   bleStatusCharacteristic->notify();
 }
 
-class BleConfigCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* characteristic) override {
-    const String raw = characteristic->getValue();
-    JsonDocument request;
-    if (deserializeJson(request, raw)) {
-      setBleStatus("error", "Wi-Fi 설정 형식이 올바르지 않습니다.");
-      return;
-    }
-    const String action = request["action"] | "";
-    if (action == "status") {
-      setBleStatus(provisionState.c_str(), provisionMessage.c_str());
-      return;
-    }
-    if (action == "scan") {
-      bleWifiScanRequested = true;
-      setBleStatus("scanning", "옷봉이 주변 2.4 GHz Wi-Fi를 찾는 중입니다.");
-      return;
-    }
-    if (action == "forget") {
-      wifiPrefs.remove("ssid");
-      wifiPrefs.remove("pass");
-      wifiPrefs.remove("server");
-      wifiPrefs.putBool("disabled", true);
-      setBleStatus("forgotten", "저장된 옷봉 Wi-Fi 연결을 제거했습니다.");
-      rebootAt = millis() + 2500;
-      return;
-    }
-    const String ssid = request["ssid"] | "";
-    const String password = request["password"] | "";
-    const String server = request["server"] | "";
-    if (!ssid.length() || !server.startsWith("http")) {
-      setBleStatus("error", "2.4 GHz Wi-Fi 이름과 서버 주소를 확인하세요.");
-      return;
-    }
-    wifiPrefs.putString("ssid", ssid);
-    wifiPrefs.putString("pass", password);
-    wifiPrefs.putString("server", server);
-    wifiPrefs.remove("displayName");
-    wifiPrefs.putBool("disabled", false);
-    setBleStatus("saved", "저장되었습니다. 옷봉을 다시 연결합니다.");
-    // Let the GATT write response and the final status notification reach the
-    // browser before rebooting.  A short delay made successful saves appear as
-    // generic browser-side GATT failures.
-    rebootAt = millis() + 10000;
+bool send(sw::Packet& p);
+
+// Keep the JSON-heavy provisioning work outside the BLE virtual callback.
+// Recent ESP32-S3 GCC builds can otherwise hit an internal compiler error
+// while optimizing the callback body.
+void processBleWrite(BLECharacteristic* characteristic) {
+  const String raw = characteristic->getValue();
+  JsonDocument request;
+  if (deserializeJson(request, raw)) {
+    setBleStatus("error", "Wi-Fi 설정 형식이 올바르지 않습니다.");
+    return;
   }
+  const String action = request["action"] | "";
+  if (action == "status") {
+    setBleStatus(provisionState.c_str(), provisionMessage.c_str());
+    return;
+  }
+  if (action == "local_find" || action == "local_off") {
+    sendLocalCommand(action, request["targets"].as<JsonArrayConst>(), request["durationMs"] | 0);
+    return;
+  }
+  if (action == "scan") {
+    bleWifiScanRequested = true;
+    setBleStatus("scanning", "옷봉이 주변 2.4 GHz Wi-Fi를 찾는 중입니다.");
+    return;
+  }
+  if (action == "forget") {
+    wifiPrefs.remove("ssid");
+    wifiPrefs.remove("pass");
+    wifiPrefs.remove("server");
+    wifiPrefs.putBool("disabled", true);
+    setBleStatus("forgotten", "저장된 옷봉 Wi-Fi 연결을 제거했습니다.");
+    rebootAt = millis() + 2500;
+    return;
+  }
+  if (action == "factory_reset") {
+    // Release all C6 hangers first while this S3 is still on their ESP-NOW
+    // channel.  Afterwards it clears the Wi-Fi/cloud setup and cannot silently
+    // reconnect to the previous account.
+    sw::Packet packet;
+    packet.type = sw::Type::COMMAND;
+    strlcpy(packet.gatewayId, gateway.c_str(), sizeof packet.gatewayId);
+    packet.sequence = ++sequence;
+    packet.commandId = ++sequence;
+    packet.command = sw::Command::UNPAIR;
+    packet.targetCount = 0; // paired C6 units interpret this as "release all".
+    for (uint8_t i = 0; i < 8; ++i) { send(packet); delay(20); }
+    wifiPrefs.clear();
+    wifiPrefs.putBool("disabled", true);
+    setBleStatus("factory_reset", "옷봉과 연결된 옷걸이, Wi-Fi 및 계정 연결을 초기화했습니다.");
+    rebootAt = millis() + 3000;
+    return;
+  }
+  const String ssid = request["ssid"] | "";
+  const String password = request["password"] | "";
+  const String server = request["server"] | "";
+  if (!ssid.length() || !server.startsWith("http")) {
+    setBleStatus("error", "2.4 GHz Wi-Fi 이름과 서버 주소를 확인하세요.");
+    return;
+  }
+  wifiPrefs.putString("ssid", ssid);
+  wifiPrefs.putString("pass", password);
+  wifiPrefs.putString("server", server);
+  wifiPrefs.remove("displayName");
+  wifiPrefs.putBool("disabled", false);
+  setBleStatus("saved", "저장되었습니다. 옷봉을 다시 연결합니다.");
+  rebootAt = millis() + 10000;
+}
+
+class BleConfigCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* characteristic) override { processBleWrite(characteristic); }
 };
 
 void startBleProvisioning() {
@@ -225,6 +269,9 @@ void startBleProvisioning() {
   config->setCallbacks(new BleConfigCallbacks());
   bleStatusCharacteristic = service->createCharacteristic(
       BLE_STATUS_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+  localStatusCharacteristic = service->createCharacteristic(
+      LOCAL_STATUS_UUID, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+  service->createCharacteristic(LOCAL_COMMAND_UUID, BLECharacteristic::PROPERTY_WRITE)->setCallbacks(new BleConfigCallbacks());
   service->start();
   BLEAdvertising* advertising = BLEDevice::getAdvertising();
   advertising->addServiceUUID(BLE_SERVICE_UUID);
@@ -247,37 +294,34 @@ void scanNearbyWifiForBle() {
   WiFi.scanDelete();
   delay(300);
 
-  // Listen for AP beacons on every 2.4 GHz channel repeatedly. Results are
-  // sent only for SSIDs the radio actually receives; no saved or guessed
-  // network is injected.
+  // A full active scan (channel 0) lets the ESP32 radio cover every 2.4 GHz
+  // channel in one pass. The old 13-channel × 2-pass sweep took over 25
+  // seconds and could miss a weak router while BLE was waiting.
   String seen = "|";
   uint8_t networkCount = 0;
   constexpr uint8_t SCAN_PASSES = 2;
   for (uint8_t pass = 0; pass < SCAN_PASSES; ++pass) {
-    for (uint8_t channel = 1; channel <= 13; ++channel) {
-      const int count = WiFi.scanNetworks(false, true, true, 850, channel);
-      Serial.printf("[BLE] Wi-Fi scan pass=%u channel=%u result=%d\n", pass + 1, channel, count);
-      if (count < 0) continue;
-      for (int i = 0; i < count; ++i) {
-        const String ssid = WiFi.SSID(i);
-        const String marker = "|" + ssid + "|";
-        if (!ssid.length() || seen.indexOf(marker) >= 0) continue;
-        seen += marker;
-        JsonDocument item;
-        item["state"] = "network";
-        item["ssid"] = ssid;
-        item["rssi"] = WiFi.RSSI(i);
-        item["channel"] = WiFi.channel(i);
-        String message;
-        serializeJson(item, message);
-        bleStatusCharacteristic->setValue(message.c_str());
-        bleStatusCharacteristic->notify();
-        networkCount++;
-        delay(80);
-      }
-      WiFi.scanDelete();
+    const int count = WiFi.scanNetworks(false, true, false, 280, 0);
+    Serial.printf("[BLE] Wi-Fi full active scan pass=%u result=%d\n", pass + 1, count);
+    if (count >= 0) for (int i = 0; i < count; ++i) {
+      const String ssid = WiFi.SSID(i);
+      const String marker = "|" + ssid + "|";
+      if (!ssid.length() || seen.indexOf(marker) >= 0) continue;
+      seen += marker;
+      JsonDocument item;
+      item["state"] = "network";
+      item["ssid"] = ssid;
+      item["rssi"] = WiFi.RSSI(i);
+      item["channel"] = WiFi.channel(i);
+      String message;
+      serializeJson(item, message);
+      bleStatusCharacteristic->setValue(message.c_str());
+      bleStatusCharacteristic->notify();
+      networkCount++;
+      delay(40);
     }
-    delay(250);
+    WiFi.scanDelete();
+    if (pass + 1 < SCAN_PASSES) delay(150);
   }
   Serial.printf("[BLE] Full channel Wi-Fi scan result: %u network(s)\n", networkCount);
   setBleStatus("scan_complete", networkCount ? "주변 2.4 GHz Wi-Fi 목록을 불러왔습니다." : "주변 Wi-Fi를 찾지 못했습니다. 옷봉 위치와 전원을 확인하세요.");
@@ -346,6 +390,19 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
   memcpy(&p, data, sizeof p);
   if (!sw::valid(p)) return;
   Serial.printf("[ESPNOW-RX] Hanger=%s Type=%u State=%u Seq=%lu\n", p.hangerId, unsigned(p.type), unsigned(p.state), p.sequence);
+  if (localStatusCharacteristic && (p.type == sw::Type::EVENT || p.type == sw::Type::STATUS)) {
+    JsonDocument local;
+    local["type"] = "hanger_state";
+    local["hangerId"] = p.hangerId;
+    local["state"] = stateName(p.state);
+    local["tagUid"] = uidHex(p);
+    local["sequence"] = p.sequence;
+    local["errorFlags"] = p.errorFlags;
+    String message;
+    serializeJson(local, message);
+    localStatusCharacteristic->setValue(message.c_str());
+    localStatusCharacteristic->notify();
+  }
   enqueue(p);
 }
 
@@ -586,11 +643,56 @@ void upload(const sw::Packet& p) {
   String body, out;
   serializeJson(d, body);
   int httpCode = 0;
-  const uint16_t timeoutMs = 2500;
+  // State edges are latency-sensitive. Fail fast and let the C6 heartbeat
+  // retry rather than blocking the next PRESENT/EMPTY edge for seconds.
+  const uint16_t timeoutMs = 600;
   if (request("/api/gateway/status", "POST", body, out, timeoutMs, &httpCode)) {
     Serial.printf("[CLOUD] %s OK\n", p.hangerId);
   } else {
     Serial.printf("[CLOUD] %s FAIL http=%d\n", p.hangerId, httpCode);
+  }
+}
+
+void sendLocalCommand(const String& command, const JsonArrayConst& targets, uint16_t durationMs) {
+  const uint8_t count = min<size_t>(targets.size(), sw::MAX_TARGETS);
+  if (!count) return;
+  sw::Packet p;
+  p.type = sw::Type::COMMAND;
+  strlcpy(p.gatewayId, gateway.c_str(), sizeof p.gatewayId);
+  p.sequence = ++sequence;
+  p.commandId = ++sequence;
+  p.command = command == "local_off" ? sw::Command::LED_OFF : sw::Command::LED_BLINK;
+  p.durationMs = p.command == sw::Command::LED_OFF ? 0 : min<uint16_t>(durationMs, 60000);
+  p.targetCount = count;
+  for (uint8_t i = 0; i < count; ++i) p.targetIds[i] = sw::idCode(targets[i] | "");
+  // Local BLE commands bypass HTTP completely; a short radio burst handles a
+  // C6 that is just relocking its ESP-NOW channel.
+  for (uint8_t i = 0; i < 4; ++i) { send(p); if (i < 3) delay(15); }
+  Serial.printf("[LOCAL-BLE] cmd=%u targets=%u\n", unsigned(p.command), p.targetCount);
+}
+
+void uploadBatch(const sw::Packet* packets, uint8_t count) {
+  JsonDocument d;
+  JsonArray items = d["items"].to<JsonArray>();
+  for (uint8_t i = 0; i < count; ++i) {
+    const sw::Packet& p = packets[i];
+    JsonObject item = items.add<JsonObject>();
+    item["gatewayId"] = gateway;
+    item["hangerId"] = p.hangerId;
+    item["state"] = stateName(p.state);
+    item["tagUid"] = uidHex(p);
+    item["sequence"] = p.sequence;
+    item["bootId"] = p.bootId;
+    item["channel"] = WiFi.channel();
+    item["firmwareVersion"] = p.firmware;
+    item["gatewayFirmwareVersion"] = "1.0.0";
+    item["errorFlags"] = p.errorFlags;
+  }
+  String body, out;
+  serializeJson(d, body);
+  int httpCode = 0;
+  if (!request("/api/gateway/status/batch", "POST", body, out, 600, &httpCode)) {
+    Serial.printf("[CLOUD] batch FAIL count=%u http=%d\n", count, httpCode);
   }
 }
 
@@ -693,7 +795,7 @@ void fetchCommands() {
   // bounded timeout keeps command polling responsive without starving beacons.
   // The next poll follows quickly. Prefer a bounded physical-state latency to
   // waiting several seconds for one stale/slow command response.
-  if (!request("/api/gateway/commands", "GET", "", out, 800)) {
+  if (!request("/api/gateway/commands", "GET", "", out, 250)) {
     Serial.println("[COMMAND-POLL] HTTP request failed");
     return;
   }
@@ -720,7 +822,11 @@ void fetchCommands() {
     p.sequence = ++sequence;
     p.commandId = c["numericId"] | 0;
     const char* cmdStr = c["command"] | "LED_BLINK";
-    if (strcmp(cmdStr, "LED_OFF") == 0) {
+    const bool factoryReset = strcmp(cmdStr, "FACTORY_RESET") == 0;
+    if (factoryReset || strcmp(cmdStr, "UNPAIR") == 0) {
+      p.command = sw::Command::UNPAIR;
+      p.durationMs = 0;
+    } else if (strcmp(cmdStr, "LED_OFF") == 0) {
       p.command = sw::Command::LED_OFF;
       p.durationMs = 0;
     } else {
@@ -733,9 +839,17 @@ void fetchCommands() {
     // The C6 can be completing an ESP-NOW channel relock when a cloud command
     // arrives. A short burst makes a real FIND reliable without changing its
     // command ID or producing a second cloud command.
-    for (uint8_t i = 0; i < 4; i++) {
+    const uint8_t burstCount = p.command == sw::Command::UNPAIR ? 8 : 4;
+    for (uint8_t i = 0; i < burstCount; i++) {
       send(p);
-      if (i < 3) delay(30);
+      if (i + 1 < burstCount) delay(30);
+    }
+    if (factoryReset) {
+      wifiPrefs.clear();
+      wifiPrefs.putBool("disabled", true);
+      Serial.println("[REMOTE-RESET] Cloud deletion applied; clearing Wi-Fi and paired hangers");
+      rebootAt = millis() + 500;
+      return;
     }
     Serial.printf("[COMMAND] %lu cmd=%u targets=%u\n", p.commandId, (unsigned)p.command, p.targetCount);
   }
@@ -839,6 +953,12 @@ void setup() {
   snprintf(id, sizeof id, "GW-%06llX", mac & 0xffffff);
   gateway = id;
   wifiPrefs.begin("wardrobe-wifi", false);
+  // ESP-NOW requires the Arduino Wi-Fi driver to be initialized even when the
+  // rod has no saved SSID yet (the normal first-setup state). Previously the
+  // early return in wifi() left the driver uninitialized and esp_now_init()
+  // dereferenced a null internal handle, rebooting the S3 before registration.
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
   // BLE stays available even after Wi-Fi succeeds, so first setup and later
   // router changes always use the same user-facing flow.  It must start
   // before a potentially slow saved-Wi-Fi retry, so it is discoverable
@@ -862,6 +982,11 @@ void loop() {
     setupServer.handleClient();
   }
   if (rebootAt && millis() >= rebootAt) ESP.restart();
+  if (bleAdvertiseRestartAt && millis() >= bleAdvertiseRestartAt) {
+    bleAdvertiseRestartAt = 0;
+    BLEDevice::startAdvertising();
+    Serial.println("[BLE] Advertising restarted after disconnect");
+  }
   if (bleWifiScanRequested) {
     bleWifiScanRequested = false;
     scanNearbyWifiForBle();
@@ -885,17 +1010,25 @@ void loop() {
   // 1. A physical NFC transition is the source of truth. Process exactly one
   // pending packet before command polling so PRESENT/EMPTY never waits behind
   // a slow Cloud GET request.
+  // Drain up to six physical state packets per Cloud request.  This keeps a
+  // simultaneous wardrobe change from serialising into six HTTPS round trips.
+  sw::Packet batch[6];
+  uint8_t batchCount = 0;
   sw::Packet p;
-  if (dequeue(p)) {
+  while (batchCount < 6 && dequeue(p)) {
     if (duplicateStatus(p)) {
       Serial.printf("[ESPNOW] duplicate skipped Hanger=%s Seq=%lu\n", p.hangerId, p.sequence);
-    } else {
-      if (p.type == sw::Type::ACK) {
-        if (WiFi.status() == WL_CONNECTED) ack(p);
-      } else if (p.type == sw::Type::STATUS || p.type == sw::Type::EVENT) {
-        if (WiFi.status() == WL_CONNECTED) upload(p);
-      }
+      continue;
     }
+    if (p.type == sw::Type::ACK) {
+      if (WiFi.status() == WL_CONNECTED) ack(p);
+    } else if (p.type == sw::Type::STATUS || p.type == sw::Type::EVENT) {
+      batch[batchCount++] = p;
+    }
+  }
+  if (WiFi.status() == WL_CONNECTED && batchCount) {
+    if (batchCount == 1) upload(batch[0]);
+    else uploadBatch(batch, batchCount);
   }
 
   // 2. Cloud FIND remains frequent, but comes after the physical state event.

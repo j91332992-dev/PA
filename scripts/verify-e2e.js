@@ -9,7 +9,7 @@ async function run() {
   console.log('=== Step 1: Starting Real Backend Server (Port 8999) ===');
   const serverProc = spawn('node', ['backend/server.js'], {
     cwd: path.resolve(__dirname, '..'),
-    env: { ...process.env, PORT: '8999', DATA_PATH: 'data/test-e2e.json' },
+    env: { ...process.env, PORT: '8999', DATA_PATH: 'data/test-e2e.json', SIMULATION_ENABLED: 'true' },
     stdio: 'inherit'
   });
 
@@ -37,8 +37,17 @@ async function run() {
     console.log('[HTTP] Signup status:', signupRes.status, 'User:', signupData.user?.email);
     const token = signupData.token;
 
+    console.log('\n=== Step 3b: Claim Virtual Gateway and its Hangers ===');
+    const claimRes = await fetch(baseUrl + '/api/gateways/GW-SIM001/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + token },
+      body: '{}'
+    });
+    if (!claimRes.ok) throw new Error(`Gateway claim failed: ${claimRes.status} ${await claimRes.text()}`);
+    console.log('[HTTP] Gateway claimed:', (await claimRes.json()).gatewayId);
+
     console.log('\n=== Step 4: Connect Real WebSocket Client ===');
-    const ws = new WebSocket('ws://localhost:8999/ws?token=' + encodeURIComponent(token));
+    const ws = new WebSocket('ws://localhost:8999/ws', [`wardrobe-token.${token}`]);
     const wsEvents = [];
     ws.on('message', d => {
       const parsed = JSON.parse(d.toString());

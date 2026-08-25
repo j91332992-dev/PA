@@ -1,0 +1,14 @@
+.env
+.env.*
+.git
+.vercel
+node_modules
+data
+firmware
+presentation
+simulator
+tests
+tools
+*.log
+*.bak
+*.tmp

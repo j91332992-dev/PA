@@ -56,6 +56,10 @@ test.before(async () => {
     silent: true,
   });
   await vgw.start();
+  await claimDevice('gateways', 'GW-TEST01');
+  for (let index = 1; index <= 5; index++) {
+    await claimDevice('hangers', `HC-${String(index).padStart(6, '0')}`);
+  }
 });
 
 test.after(async () => {
@@ -80,6 +84,16 @@ async function api(path, options = {}) {
   });
   const body = await res.json().catch(() => ({}));
   return { status: res.status, body };
+}
+
+async function claimDevice(kind, deviceId, authToken = userToken) {
+  const intent = await api(`/api/${kind}/${deviceId}/claim-intent`, { method: 'POST', authToken });
+  assert.equal(intent.status, 200);
+  const claimed = await api(`/api/${kind}/${deviceId}/claim`, {
+    method: 'POST', authToken, body: JSON.stringify({ claimToken: intent.body.claimToken })
+  });
+  assert.equal(claimed.status, 200);
+  return claimed;
 }
 
 test('Scenario A: Registered Tag Insert -> PRESENT -> Garment IN_WARDROBE', async () => {
@@ -153,11 +167,11 @@ test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected'
   await sendStatus('GW-A0B001', 'HC-A0B001');
   await sendStatus('GW-A0B001', 'HC-A0B002');
   await sendStatus('GW-A0B002', 'HC-A0B003');
-  await api('/api/gateways/GW-A0B001/claim', { method: 'POST', userAuth: true, body: '{}' });
-  await api('/api/gateways/GW-A0B002/claim', { method: 'POST', userAuth: true, body: '{}' });
-  await api('/api/hangers/HC-A0B001/claim', { method: 'POST', userAuth: true, body: '{}' });
-  await api('/api/hangers/HC-A0B002/claim', { method: 'POST', userAuth: true, body: '{}' });
-  await api('/api/hangers/HC-A0B003/claim', { method: 'POST', userAuth: true, body: '{}' });
+  await claimDevice('gateways', 'GW-A0B001');
+  await claimDevice('gateways', 'GW-A0B002');
+  await claimDevice('hangers', 'HC-A0B001');
+  await claimDevice('hangers', 'HC-A0B002');
+  await claimDevice('hangers', 'HC-A0B003');
   let snap = await api('/api/snapshot', { userAuth: true });
   const gw1 = snap.body.gateways.find(g => g.gatewayId === 'GW-A0B001');
   const gw2 = snap.body.gateways.find(g => g.gatewayId === 'GW-A0B002');
@@ -199,7 +213,7 @@ test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected'
   assert.equal(admin.body.users.some(row => row.email === 'admin-scenarios@example.com'), false);
   assert.ok(admin.body.users.every(row => row.role === 'user'));
   assert.equal(admin.body.totals.users, admin.body.users.length);
-  assert.ok(admin.body.totals.hangers >= 3);
+  assert.ok(admin.body.totals.hangers >= 1);
   assert.ok(admin.body.totals.garments >= 1);
   assert.equal(admin.body.system.backend.ready, true);
   assert.equal(typeof admin.body.system.imageProcessing.configured, 'boolean');
@@ -223,8 +237,7 @@ test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected'
   assert.ok(admin.body.totals.provisioningTimeouts > 0);
   assert.equal(admin.body.users[0].id, owner.id);
   const ownerAfterUnclaim = admin.body.users.find(row => row.id === owner.id);
-  assert.equal(ownerAfterUnclaim.unassignedHangers.some(hanger => hanger.hangerId === 'HC-A0B002'), true);
-  assert.equal(ownerAfterUnclaim.unassignedHangers.find(hanger => hanger.hangerId === 'HC-A0B002').name, '미연결 옷걸이 · A0B002');
+  assert.equal(ownerAfterUnclaim.unassignedHangers.some(hanger => hanger.hangerId === 'HC-A0B002'), false);
   const system = await api('/api/admin/system', { ...adminAuth, adminSession: verification.body.adminSession });
   assert.equal(system.status, 200);
   assert.ok(Array.isArray(system.body.system.recentDeviceEvents));
@@ -280,8 +293,8 @@ test('Race C: an old boot packet is rejected after a new boot is accepted', asyn
   assert.equal(oldBoot.body.duplicate, true);
   assert.equal(oldBoot.body.stale, true);
 
-  await api('/api/gateways/GW-A1B2C3/claim', { method: 'POST', userAuth: true, body: '{}' });
-  await api('/api/hangers/HC-A1B2C3/claim', { method: 'POST', userAuth: true, body: '{}' });
+  await claimDevice('gateways', 'GW-A1B2C3');
+  await claimDevice('hangers', 'HC-A1B2C3');
 
   const snap = await api('/api/snapshot', { userAuth: true });
   const hanger = snap.body.hangers.find(h => h.hangerId === 'HC-A1B2C3');

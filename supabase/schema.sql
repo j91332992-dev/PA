@@ -64,6 +64,25 @@ create index if not exists hangers_gateway_idx on hangers(gateway_id);
 create index if not exists hangers_tag_idx on hangers(wardrobe_id,tag_uid);
 create unique index if not exists hangers_gateway_number_unique on hangers(gateway_id,hanger_number) where gateway_id is not null and hanger_number is not null;
 
+-- Authoritative ownership is intentionally separated from volatile hardware
+-- telemetry. A NULL wardrobe_id is a durable release tombstone: stale
+-- serverless instances may update last_seen, but can never restore an old
+-- user's ownership. Only the explicit + 새 장비 연결 flow writes a non-NULL
+-- owner here.
+create table if not exists device_ownership (
+  device_kind text not null check (device_kind in ('gateway','hanger')),
+  device_id text not null,
+  wardrobe_id text,
+  gateway_id text,
+  updated_at timestamptz not null default now(),
+  primary key (device_kind,device_id)
+);
+create index if not exists device_ownership_wardrobe_idx on device_ownership(wardrobe_id);
+create table if not exists device_ownership_meta (
+  singleton boolean primary key default true check (singleton),
+  migrated_at timestamptz not null default now()
+);
+
 create table if not exists garments (
   id text primary key,
   wardrobe_id text not null references wardrobes(id) on delete cascade,
@@ -159,3 +178,5 @@ alter table hangers enable row level security;
 alter table garments enable row level security;
 alter table device_commands enable row level security;
 alter table wardrobe_events enable row level security;
+alter table device_ownership enable row level security;
+alter table device_ownership_meta enable row level security;

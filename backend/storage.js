@@ -32,16 +32,34 @@ function jsonStorage(file, initial){
     writes=job.catch(error=>console.error(`[SAVE] ${error.message}`));
     return job;
   }
-  return {mode:'json',load:async()=>load(),save,close:async()=>{}};
+  return {
+    mode:'json',load:async()=>load(),save,close:async()=>{},
+    syncDeviceOwnership:async()=>{},
+    claimDeviceOwnership:async()=>({ok:true}),
+    releaseGatewayOwnership:async()=>({ok:true,releasedHangerIds:[]}),
+    releaseHangerOwnership:async()=>({ok:true}),
+  };
 }
 
 function postgresStorage(connectionString, initial){
+  const localDatabase=/localhost|127\.0\.0\.1/.test(connectionString);
+  let normalizedConnectionString=connectionString;
+  if(!localDatabase){
+    const parsed=new URL(connectionString);
+    // pg-connection-string lets an sslmode query parameter replace the
+    // explicit TLS object. Remove it so rejectUnauthorized is deterministic.
+    parsed.searchParams.delete('sslmode');
+    normalizedConnectionString=parsed.toString();
+  }
   const pool=new Pool({
-    connectionString,
+    connectionString:normalizedConnectionString,
     // Hosted Supabase endpoints require TLS. Local PostgreSQL URLs keep their
     // own SSL settings instead of silently disabling certificate checks.
-    ssl:/localhost|127\.0\.0\.1/.test(connectionString)?undefined:{rejectUnauthorized:false},
-    max:Number(process.env.PG_POOL_MAX||10),
+    ssl:localDatabase?undefined:{rejectUnauthorized:false},
+    // Serverless instances can multiply quickly. A small pool prevents one
+    // mobile dashboard's polling from exhausting the shared Supabase pool.
+    max:Number(process.env.PG_POOL_MAX||2),
+    connectionTimeoutMillis:7000,
   });
   const scalar={
     users:['id','email','name','passwordHash','role','lastLoginAt','createdAt'],
@@ -53,6 +71,65 @@ function postgresStorage(connectionString, initial){
     events:['id','wardrobeId','type','severity','payload','at'],
   };
   const table={users:'app_users',wardrobes:'wardrobes',gateways:'gateways',hangers:'hangers',garments:'garments',commands:'device_commands',events:'wardrobe_events'};
+  async function ensureDeviceOwnershipSchema(client) {
+    await client.query(`
+      create table if not exists device_ownership (
+        device_kind text not null check (device_kind in ('gateway','hanger')),
+        device_id text not null,
+        wardrobe_id text,
+        gateway_id text,
+        updated_at timestamptz not null default now(),
+        primary key (device_kind, device_id)
+      )
+    `);
+    await client.query('create index if not exists device_ownership_wardrobe_idx on device_ownership(wardrobe_id)');
+    await client.query(`
+      create table if not exists device_ownership_meta (
+        singleton boolean primary key default true check (singleton),
+        migrated_at timestamptz not null default now()
+      )
+    `);
+  }
+  async function seedDeviceOwnership(client) {
+    // One atomic migration captures both claimed and already-released devices.
+    // It never runs again, so a stale legacy instance cannot later seed an old
+    // owner after the deployment has established the ownership authority.
+    await client.query(`
+      with first_run as (
+        insert into device_ownership_meta(singleton) values(true)
+        on conflict(singleton) do nothing returning singleton
+      ), candidates as (
+        select 'gateway'::text as device_kind,gateway_id as device_id,wardrobe_id,null::text as gateway_id from gateways
+        union all
+        select 'hanger'::text,hanger_id,wardrobe_id,gateway_id from hangers
+      )
+      insert into device_ownership(device_kind,device_id,wardrobe_id,gateway_id)
+      select device_kind,device_id,wardrobe_id,gateway_id from candidates
+      where exists(select 1 from first_run)
+      on conflict(device_kind,device_id) do nothing
+    `);
+  }
+  function enforceDeviceOwnership(data, rows) {
+    const ownership=new Map(rows.map(row=>[`${row.device_kind}:${row.device_id}`,row]));
+    for(const gateway of data.gateways||[]){
+      const authoritative=ownership.get(`gateway:${gateway.gatewayId}`);
+      gateway.wardrobeId=authoritative?.wardrobe_id||null;
+      if(!gateway.wardrobeId){gateway.gatewayNumber=null;gateway.customName='';}
+    }
+    for(const hanger of data.hangers||[]){
+      const authoritative=ownership.get(`hanger:${hanger.hangerId}`);
+      hanger.wardrobeId=authoritative?.wardrobe_id||null;
+      hanger.gatewayId=authoritative?.wardrobe_id?(authoritative.gateway_id||hanger.gatewayId||null):null;
+      if(!hanger.wardrobeId){hanger.hangerNumber=null;hanger.customName='';}
+    }
+  }
+  async function readAndEnforceDeviceOwnership(client,data){
+    await ensureDeviceOwnershipSchema(client);
+    await seedDeviceOwnership(client);
+    const result=await client.query('select device_kind,device_id,wardrobe_id,gateway_id from device_ownership');
+    enforceDeviceOwnership(data,result.rows);
+    return result.rows;
+  }
   async function runGarmentsMigration(client) {
     for (const statement of [
       "alter table garments add column if not exists category text not null default ''",
@@ -80,12 +157,17 @@ function postgresStorage(connectionString, initial){
         const result=await client.query(`select payload from ${table[key]} order by ${orderColumn} asc`);
         out[key]=result.rows.map(row=>row.payload||{});
       }
+      await readAndEnforceDeviceOwnership(client,out);
       // The one-time importer intentionally runs only against an empty cloud
       // database. It never replaces an existing friend's data.
       const seed=process.env.SEED_JSON_PATH;
       if(!out.users.length&&seed&&fs.existsSync(seed)){
         console.log(`[STORAGE] importing empty cloud DB from ${seed}`);
-        return {...initial(),...JSON.parse(fs.readFileSync(seed,'utf8'))};
+        const imported={...initial(),...JSON.parse(fs.readFileSync(seed,'utf8'))};
+        // Persist immediately. A v5 seed does not need a schema migration, so
+        // relying on the caller's migration flag would never write it.
+        await persist(imported);
+        return imported;
       }
       return {...out,schemaVersion:4};
     }finally{client.release();}
@@ -116,6 +198,10 @@ function postgresStorage(connectionString, initial){
     const client = await pool.connect();
     try {
       await client.query('begin');
+      // Ownership is stored separately from volatile telemetry. This makes a
+      // release durable even if an older Vercel instance later saves a stale
+      // in-memory snapshot of the same hardware.
+      await readAndEnforceDeviceOwnership(client,data);
       for (const key of ['commands', 'events', 'garments', 'hangers', 'gateways', 'wardrobes', 'users']) {
         await client.query(`delete from ${table[key]}`);
       }
@@ -170,17 +256,113 @@ function postgresStorage(connectionString, initial){
     });
   }
 
+  async function syncDeviceOwnership(data){
+    const client=await pool.connect();
+    try{await readAndEnforceDeviceOwnership(client,data);}finally{client.release();}
+  }
+
+  async function claimDeviceOwnership(kind,deviceId,wardrobeId,gatewayId=null){
+    const client=await pool.connect();
+    try{
+      await client.query('begin');
+      await ensureDeviceOwnershipSchema(client);
+      await seedDeviceOwnership(client);
+      const current=await client.query(
+        'select wardrobe_id from device_ownership where device_kind=$1 and device_id=$2 for update',
+        [kind,deviceId],
+      );
+      const currentWardrobeId=current.rows[0]?.wardrobe_id||null;
+      if(currentWardrobeId&&currentWardrobeId!==wardrobeId){
+        await client.query('rollback');
+        return {ok:false,wardrobeId:currentWardrobeId};
+      }
+      await client.query(`
+        insert into device_ownership(device_kind,device_id,wardrobe_id,gateway_id,updated_at)
+        values($1,$2,$3,$4,now())
+        on conflict(device_kind,device_id) do update
+        set wardrobe_id=excluded.wardrobe_id,gateway_id=excluded.gateway_id,updated_at=now()
+      `,[kind,deviceId,wardrobeId,gatewayId]);
+      if(kind==='gateway'){
+        await client.query(`update gateways set wardrobe_id=$2,payload=coalesce(payload,'{}'::jsonb)||jsonb_build_object('wardrobeId',$2) where gateway_id=$1`,[deviceId,wardrobeId]);
+      }else{
+        await client.query(`update hangers set wardrobe_id=$2,gateway_id=$3,payload=coalesce(payload,'{}'::jsonb)||jsonb_build_object('wardrobeId',$2,'gatewayId',$3) where hanger_id=$1`,[deviceId,wardrobeId,gatewayId]);
+      }
+      await client.query('commit');
+      return {ok:true};
+    }catch(error){await client.query('rollback').catch(()=>{});throw error;}finally{client.release();}
+  }
+
+  async function releaseGatewayOwnership(gatewayId,wardrobeId){
+    const client=await pool.connect();
+    try{
+      await client.query('begin');
+      await ensureDeviceOwnershipSchema(client);
+      await seedDeviceOwnership(client);
+      const current=await client.query(
+        "select wardrobe_id from device_ownership where device_kind='gateway' and device_id=$1 for update",
+        [gatewayId],
+      );
+      if(current.rows[0]?.wardrobe_id!==wardrobeId){await client.query('rollback');return {ok:false,releasedHangerIds:[]};}
+      const hangers=await client.query(`
+        select distinct device_id as hanger_id from device_ownership
+        where device_kind='hanger' and wardrobe_id=$2 and gateway_id=$1
+        union select hanger_id from hangers where gateway_id=$1 and wardrobe_id=$2
+      `,[gatewayId,wardrobeId]);
+      const hangerIds=hangers.rows.map(row=>row.hanger_id);
+      await client.query(`
+        insert into device_ownership(device_kind,device_id,wardrobe_id,gateway_id,updated_at)
+        values('gateway',$1,null,null,now())
+        on conflict(device_kind,device_id) do update set wardrobe_id=null,gateway_id=null,updated_at=now()
+      `,[gatewayId]);
+      for(const hangerId of hangerIds)await client.query(`
+        insert into device_ownership(device_kind,device_id,wardrobe_id,gateway_id,updated_at)
+        values('hanger',$1,null,null,now())
+        on conflict(device_kind,device_id) do update set wardrobe_id=null,gateway_id=null,updated_at=now()
+      `,[hangerId]);
+      await client.query(`update gateways set wardrobe_id=null,gateway_number=null,custom_name='',payload=coalesce(payload,'{}'::jsonb)||'{"wardrobeId":null,"gatewayNumber":null,"customName":""}'::jsonb where gateway_id=$1`,[gatewayId]);
+      await client.query(`update hangers set wardrobe_id=null,gateway_id=null,hanger_number=null,custom_name='',payload=coalesce(payload,'{}'::jsonb)||'{"wardrobeId":null,"gatewayId":null,"hangerNumber":null,"customName":""}'::jsonb where hanger_id=any($1::text[])`,[hangerIds]);
+      await client.query('commit');
+      return {ok:true,releasedHangerIds:hangerIds};
+    }catch(error){await client.query('rollback').catch(()=>{});throw error;}finally{client.release();}
+  }
+
+  async function releaseHangerOwnership(hangerId,wardrobeId){
+    const client=await pool.connect();
+    try{
+      await client.query('begin');
+      await ensureDeviceOwnershipSchema(client);
+      await seedDeviceOwnership(client);
+      const current=await client.query(
+        "select wardrobe_id from device_ownership where device_kind='hanger' and device_id=$1 for update",
+        [hangerId],
+      );
+      if(current.rows[0]?.wardrobe_id!==wardrobeId){await client.query('rollback');return {ok:false};}
+      await client.query(`
+        insert into device_ownership(device_kind,device_id,wardrobe_id,gateway_id,updated_at)
+        values('hanger',$1,null,null,now())
+        on conflict(device_kind,device_id) do update set wardrobe_id=null,gateway_id=null,updated_at=now()
+      `,[hangerId]);
+      await client.query(`update hangers set wardrobe_id=null,gateway_id=null,hanger_number=null,custom_name='',payload=coalesce(payload,'{}'::jsonb)||'{"wardrobeId":null,"gatewayId":null,"hangerNumber":null,"customName":""}'::jsonb where hanger_id=$1`,[hangerId]);
+      await client.query('commit');
+      return {ok:true};
+    }catch(error){await client.query('rollback').catch(()=>{});throw error;}finally{client.release();}
+  }
+
   async function close() {
     while (isSaving || pendingSnapshot) {
       await new Promise(r => setTimeout(r, 20));
     }
     await pool.end();
   }
-  return { mode: 'postgres', load, save, close };
+  return {mode:'postgres',load,save,close,syncDeviceOwnership,claimDeviceOwnership,releaseGatewayOwnership,releaseHangerOwnership};
 }
 
 function createStorage({file,initial}){
-  return process.env.DATABASE_URL?postgresStorage(process.env.DATABASE_URL,initial):jsonStorage(file,initial);
+  const connectionString=process.env.DATABASE_URL
+    ||process.env.POSTGRES_URL
+    ||process.env.POSTGRES_URL_NON_POOLING
+    ||process.env.SUPABASE_DB_URL;
+  return connectionString?postgresStorage(connectionString,initial):jsonStorage(file,initial);
 }
 
 module.exports={createStorage};

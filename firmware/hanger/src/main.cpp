@@ -56,6 +56,7 @@ uint8_t noTagHits = 0;
 uint32_t lastNfcInitAttemptMs = 0;
 uint32_t lastNfcHealthCheckMs = 0;
 uint32_t lastRawUidLogMs = 0;
+uint32_t lastEmptyNfcRecoveryMs = 0;
 
 // Channel lock state machine
 enum class ChannelState { SEARCHING, LOCKED };
@@ -74,11 +75,14 @@ uint32_t lastBeaconWarningMs = 0;
 constexpr uint32_t PN532_REINIT_COOLDOWN_MS = 500;
 // A passive NTAG answers immediately.  Keep no-tag polls short so removal
 // does not keep the app in IN_WARDROBE for several 200ms timeouts.
-constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 80;
+constexpr uint16_t PN532_SCAN_TIMEOUT_MS = 35;
+// Two clean misses plus the grace period reject RF glitches, while allowing a
+// real garment removal to be visible in the web app well below one second.
 constexpr uint8_t REMOVE_CONFIRM_HITS = 3;
 constexpr uint8_t PRESENT_CONFIRM_HITS = PRESENT_CONFIRM_COUNT < 1 ? 1 : PRESENT_CONFIRM_COUNT;
 constexpr uint32_t FIND_REJECTED_EMPTY = 2;
 constexpr uint32_t PN532_HEALTH_CHECK_MS = 1000;
+constexpr uint32_t PN532_EMPTY_RECOVERY_MS = 2500;
 
 sw::State state = sw::State::EMPTY;
 bool nfcReady = false;
@@ -348,11 +352,9 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
   if (p.type == sw::Type::BEACON) {
     discoveredGateway = p.gatewayId;
     if (hangerLinkDisabled) return;
-    if (!pairedGateway.length()) {
-      pairedGateway = discoveredGateway;
-      prefs.putString("gateway", pairedGateway);
-      Serial.printf("[GATEWAY] adopted gatewayId=%s\n", pairedGateway.c_str());
-    }
+    // Discovery is not pairing.  A reset or fresh hanger must never adopt the
+    // first nearby rod by itself; the user explicitly presses "옷봉과 연결".
+    if (!pairedGateway.length()) return;
     if (pairedGateway != discoveredGateway) return;
 
     const uint32_t now = millis();
@@ -378,12 +380,27 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
     return;
   }
   if (p.type == sw::Type::COMMAND) {
-    const bool gatewayMatches = !pairedGateway.length() || pairedGateway == String(p.gatewayId);
+    const bool gatewayMatches = pairedGateway.length() && pairedGateway == String(p.gatewayId);
     const bool targeted = sw::target(p, hanger.c_str());
     Serial.printf("[COMMAND-RX] id=%lu cmd=%u from=%s paired=%s target=%s ch=%u link=%s\n",
                   p.commandId, unsigned(p.command), p.gatewayId,
                   pairedGateway.c_str(), targeted ? "yes" : "no", channel,
                   hangerLinkDisabled ? "disabled" : "enabled");
+    const bool resetAllFromPairedGateway = p.command == sw::Command::UNPAIR && p.targetCount == 0;
+    if (p.command == sw::Command::UNPAIR && gatewayMatches && (targeted || resetAllFromPairedGateway)) {
+      ledUntil = 0;
+      ledBlinkStartedAt = 0;
+      led(false);
+      pairedGateway = "";
+      discoveredGateway = "";
+      hangerLinkDisabled = true;
+      prefs.remove("gateway");
+      prefs.remove("channel");
+      prefs.putBool("linkDisabled", true);
+      setHangerBleStatus("unpaired", "옷봉 연결이 초기화되었습니다. 다시 연결하려면 블루투스로 옷봉과 연결하세요.");
+      Serial.println("[PAIR] Reset by paired gateway");
+      return;
+    }
     if (hangerLinkDisabled || !gatewayMatches || !targeted) {
       Serial.printf("[COMMAND-IGNORE] gateway-match=%s target=%s\n",
                     gatewayMatches ? "yes" : "no", targeted ? "yes" : "no");
@@ -457,7 +474,10 @@ bool tryInitNfc() {
   }
   Serial.printf("[NFC] READY! SPI version=%08lX\n", version);
   nfc.SAMConfig();
-  nfc.setPassiveActivationRetries(0xFF);
+  // Infinite passive retries can leave a PN532 target session stuck after
+  // rapid remove/re-present cycles. Keep the controller bounded and let our
+  // fast scan loop perform the retry instead.
+  nfc.setPassiveActivationRetries(0x02);
   nfcReady = true;
   setHangerBleStatus("nfc_ready", "옷 태그 읽기 장치가 준비되었습니다. 옷 태그를 대보세요.");
   return true;
@@ -496,6 +516,7 @@ void scanNfc() {
 
   if (res == 1) {
     // === TAG FOUND ===
+    lastEmptyNfcRecoveryMs = now;
     noTagHits = 0;
     if (state == sw::State::PRESENT) {
       if (same(u, len, currentUid, currentLen)) {
@@ -519,20 +540,23 @@ void scanNfc() {
         }
       }
     } else {
-      // A validated UID can re-enter immediately after the tag is returned.
-      if (same(u, len, candidateUid, candidateLen)) {
-        if (++candidateHits >= PRESENT_CONFIRM_HITS) {
-          memcpy(currentUid, candidateUid, candidateLen);
-          currentLen = candidateLen;
-          lastSeenMs = now;
-          candidateHits = 0;
-          logUid("[NFC] RAW UID=", currentUid, currentLen);
-          transition(sw::State::PRESENT);
-        }
-      } else {
+      // scanCard already performs an immediate second UID read. With a
+      // configured confirmation count of one, publish the first validated
+      // result now instead of waiting for another scheduled NFC poll.
+      if (!same(u, len, candidateUid, candidateLen)) {
         memcpy(candidateUid, u, len);
         candidateLen = len;
         candidateHits = 1;
+      } else if (candidateHits < 255) {
+        ++candidateHits;
+      }
+      if (candidateHits >= PRESENT_CONFIRM_HITS) {
+        memcpy(currentUid, candidateUid, candidateLen);
+        currentLen = candidateLen;
+        lastSeenMs = now;
+        candidateHits = 0;
+        logUid("[NFC] RAW UID=", currentUid, currentLen);
+        transition(sw::State::PRESENT);
       }
     }
   } else if (res == 0) {
@@ -552,6 +576,14 @@ void scanNfc() {
         noTagHits = 0;
         transition(sw::State::EMPTY);
       }
+    } else if (now - lastEmptyNfcRecoveryMs >= PN532_EMPTY_RECOVERY_MS) {
+      // If rapid tag cycling left the PN532 RF target state stale, rebuild the
+      // reader session while EMPTY. A real tag is then detected on the next
+      // scan instead of requiring a power cycle.
+      lastEmptyNfcRecoveryMs = now;
+      Serial.println("[NFC] EMPTY recovery: restarting PN532 reader session");
+      nfcReady = false;
+      tryInitNfc();
     }
   } else {
     // A PN532 reinitialisation/read failure is not proof that the tag was
@@ -656,7 +688,9 @@ void loop() {
   }
 
   // Keep the PN532 poll cadence bounded so ESP-NOW work can run between polls.
-  if (t - lastScan >= NFC_SCAN_INTERVAL_MS + (bootId % 73)) {
+  // NFC is local to each hanger, so scan jitter only makes the physical UI
+  // response random; ESP-NOW heartbeat jitter below already spreads airtime.
+  if (t - lastScan >= NFC_SCAN_INTERVAL_MS) {
     lastScan = t;
     scanNfc();
   }
