@@ -2356,11 +2356,16 @@ function renderNativeGatewayChoices(devices) {
   target.hidden = false;
   target.innerHTML = `<p class="muted" style="margin:8px 0 6px"><b>발견된 옷봉을 선택하세요.</b></p>${nativeGatewayCandidates.map((device, index) => `<button type="button" class="ghost native-gateway-choice" data-native-gateway-index="${index}" style="width:100%;margin:6px 0;text-align:left;color:var(--ink);border:1px solid #cbd4cd"><b>${esc(device.name || '스마트 옷봉')}</b><br><small class="muted">신호 ${Number(device.rssi) || '-'} dBm · ${esc(device.deviceId)}</small></button>`).join('')}`;
   target.querySelectorAll('[data-native-gateway-index]').forEach(button => {
-    button.onclick = () => {
+    button.onclick = async () => {
       const device = nativeGatewayCandidates[Number(button.dataset.nativeGatewayIndex)];
       if (!device) return;
-      target.hidden = true;
-      connectHangerBluetooth({ scanWifi: true, allowChooser: false, silent: false, selectedDeviceId: device.deviceId });
+      target.querySelectorAll('[data-native-gateway-index]').forEach(item => { item.disabled = true; });
+      setBleSetupMessage('선택한 옷봉에 연결하고 있습니다…');
+      const connected = await connectHangerBluetooth({ scanWifi: true, allowChooser: false, silent: false, selectedDeviceId: device.deviceId });
+      if (!connected) {
+        renderNativeGatewayChoices(nativeGatewayCandidates);
+        setBleSetupMessage('선택한 옷봉과 연결하지 못했습니다. 목록에서 다른 옷봉을 선택하거나 “옷봉 찾기”를 눌러 다시 검색하세요.', true);
+      }
     };
   });
 }
