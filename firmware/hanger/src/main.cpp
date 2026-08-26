@@ -413,11 +413,11 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
     discoveredGateway = p.gatewayId;
     const uint8_t gwCh = (uint8_t)p.errorFlags;
     if (gwCh >= 1 && gwCh <= 13) discoveredGatewayChannel = gwCh;
-    if (hangerLinkDisabled) {
-      // Passive discovery only: follow the rod's live Wi-Fi channel so this
-      // unclaimed C6 can report STATUS. It does not save a gateway ID, claim
+    if (hangerLinkDisabled || !pairedGateway.length()) {
+      // An unclaimed or released C6 follows the rod's live Wi-Fi channel only
+      // long enough to report STATUS. It does not save a gateway ID, claim
       // ownership, or accept commands; explicit app registration remains the
-      // only way to pair it.
+      // only way to pair it. This also makes freshly flashed units discoverable.
       if (gwCh >= 1 && gwCh <= 13 && channel != gwCh) {
         setChannel(gwCh);
         Serial.printf("[DISCOVERY] gateway beacon ch=%u; reporting as unclaimed\n", channel);

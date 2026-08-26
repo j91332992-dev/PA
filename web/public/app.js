@@ -2260,7 +2260,7 @@ setInterval(() => {
   const setupOpen = !!document.querySelector('nav button[data-view="setup"].active');
   // Local BLE notifications are newer than a cloud snapshot. Avoid repeatedly
   // replacing a just-received NFC state while this browser is nearby.
-  const localBleActive = !!(localGatewayCommandCharacteristic && localGatewayDevice?.gatt?.connected);
+  const localBleActive = nativeGatewayBleConnected || !!(localGatewayCommandCharacteristic && localGatewayDevice?.gatt?.connected);
   const interval = localBleActive ? 15000 : (setupOpen ? 1000 : 5000);
   const currentTime = Date.now();
   if (currentTime - lastForegroundRefreshAt < interval) return;
@@ -3170,7 +3170,7 @@ function physicalGatewayStatus() {
   // A Web Bluetooth GATT connection is authoritative for nearby control.
   // Status notifications are intermittent by design, so their age must not
   // make an otherwise connected rod appear offline.
-  const bleOnline = !!(localGatewayCommandCharacteristic && localGatewayDevice?.gatt?.connected);
+  const bleOnline = nativeGatewayBleConnected || !!(localGatewayCommandCharacteristic && localGatewayDevice?.gatt?.connected);
   const cloudOnline = !!latest && now - Date.parse(latest.lastSeen || 0) < GATEWAY_OFFLINE_AFTER_MS;
   return { gateway: latest, online: bleOnline || cloudOnline, bleOnline, cloudOnline };
 }
