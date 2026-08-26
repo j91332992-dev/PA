@@ -34,6 +34,7 @@ String displayName;
 bool hangerLinkDisabled = false;
 volatile bool reportAfterGatewayBeacon = false;
 uint32_t sequence = 0, bootId = 0, lastHeartbeat = 0, lastScan = 0, lastBeacon = 0, ledUntil = 0, ledBlinkStartedAt = 0;
+bool hangerLocateIgnoresTag = false;
 uint8_t channel = 1;
 BLECharacteristic* bleStatusCharacteristic = nullptr;
 bool bleActive = false;
@@ -375,7 +376,7 @@ void transition(sw::State s) {
   state = s;
   // Once the garment tag leaves this hanger, a previous FIND must not keep
   // advertising an empty hanger.  Stop the real LED before reporting EMPTY.
-  if (state == sw::State::EMPTY) {
+  if (state == sw::State::EMPTY && !hangerLocateIgnoresTag) {
     ledUntil = 0;
     ledBlinkStartedAt = 0;
     led(false);
@@ -516,14 +517,17 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
     if (p.command == sw::Command::LED_OFF) {
       ledUntil = 0;
       ledBlinkStartedAt = 0;
+      hangerLocateIgnoresTag = false;
       led(false);
     } else if (p.command == sw::Command::LED_BLINK) {
-      // Cloud retries can arrive after an NFC removal report.  Never let an
-      // empty hanger revive its LED: a FIND is valid only for a confirmed
-      // garment currently on this hanger.
-      if (state != sw::State::PRESENT) {
+      // The hanger-menu locate command is identified by its fixed three-second
+      // duration. It locates the physical hanger itself, so NFC presence or
+      // removal must not reject or shorten the blink.
+      const bool hangerLocate = p.durationMs == 3000;
+      if (state != sw::State::PRESENT && !hangerLocate) {
         ledUntil = 0;
         ledBlinkStartedAt = 0;
+        hangerLocateIgnoresTag = false;
         led(false);
         Serial.printf("[LED] REJECT FIND: no confirmed tag, id=%lu\n", p.commandId);
         ack(p, FIND_REJECTED_EMPTY);
@@ -533,6 +537,7 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
       // Use a command-relative phase so a FIND never starts in an OFF slice.
       ledBlinkStartedAt = millis();
       ledUntil = p.durationMs == 0 ? (ledBlinkStartedAt + LED_SAFETY_TIMEOUT_MS) : (ledBlinkStartedAt + p.durationMs);
+      hangerLocateIgnoresTag = hangerLocate;
       led(true);
     }
     ack(p);
@@ -811,6 +816,11 @@ void loop() {
   if (!runSerialLedTest(t)) {
     bool isBlinking = (t < ledUntil) && (((t - ledBlinkStartedAt) / 250) % 2 == 0);
     led(isBlinking);
+    if (ledUntil && t >= ledUntil) {
+      ledUntil = 0;
+      ledBlinkStartedAt = 0;
+      hangerLocateIgnoresTag = false;
+    }
   }
 
   if (reportAfterGatewayBeacon) {
