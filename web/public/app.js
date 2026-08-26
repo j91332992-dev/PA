@@ -2226,7 +2226,10 @@ setInterval(() => {
 setInterval(() => {
   if (!token || document.visibilityState !== 'visible') return;
   const setupOpen = !!document.querySelector('nav button[data-view="setup"].active');
-  const interval = setupOpen ? 1000 : 5000;
+  // Local BLE notifications are newer than a cloud snapshot. Avoid repeatedly
+  // replacing a just-received NFC state while this browser is nearby.
+  const localBleActive = !!(localGatewayCommandCharacteristic && localGatewayDevice?.gatt?.connected);
+  const interval = localBleActive ? 15000 : (setupOpen ? 1000 : 5000);
   const currentTime = Date.now();
   if (currentTime - lastForegroundRefreshAt < interval) return;
   lastForegroundRefreshAt = currentTime;
@@ -2488,9 +2491,12 @@ async function queueCloudGatewayCommand(action, targets, durationMs = 0) {
 }
 
 async function sendPrimaryLocalCommand(action, targets, durationMs = 0) {
-  // A registered hanger must be findable from any phone/browser. BLE is an
-  // optional low-latency path only when this browser already has an active
-  // GATT connection; never open the Bluetooth chooser from an LED button.
+  // A registered hanger must be findable from any phone/browser. Reconnect to
+  // a previously granted nearby gateway after a refresh before using cloud.
+  // Browsers without safe Web Bluetooth restoration still use cloud fallback.
+  if (!localGatewayCommandCharacteristic || !localGatewayDevice?.gatt?.connected) {
+    await connectHangerBluetooth({ scanWifi: false, allowChooser: false, silent: true });
+  }
   if (localGatewayCommandCharacteristic && localGatewayDevice?.gatt?.connected) {
     try {
       await writeLocalGatewayCommand(action, targets, durationMs);
