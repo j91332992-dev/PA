@@ -55,6 +55,8 @@ const LAST_GATEWAY_BLE_PAIRING_KEY = 'wardrobeGatewayBlePairing';
 function accountStorageKey(base) { return base + ':' + (sessionUser?.id || 'anonymous'); }
 const LOCAL_LED_SAFETY_MS = 300000;
 const localLedStates = new Map();
+// Direct BLE is successful only after the addressed C6 acknowledges it.
+const localCommandAckWaiters = new Map();
 // NFC removal is newer than a delayed Vercel snapshot. Keep this only for the current browser session.
 const nfcRemovalAtByHanger = new Map();
 try {
@@ -2509,11 +2511,34 @@ async function factoryResetGatewayBeforeRemoval(gatewayId) {
   disconnectLocalGatewayBluetooth();
 }
 
+function waitForLocalCommandAcks(targets, timeoutMs = 700) {
+  const targetIds = targets.map(target => String(target).toUpperCase());
+  const pending = new Set(targetIds);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const clean = () => { clearTimeout(timer); for (const hangerId of targetIds) localCommandAckWaiters.delete(hangerId); };
+    const fail = message => { if (settled) return; settled = true; clean(); reject(new Error(message)); };
+    const timer = setTimeout(() => fail('근처 옷걸이의 실제 응답이 0.7초 안에 오지 않았습니다.'), timeoutMs);
+    for (const hangerId of targetIds) localCommandAckWaiters.set(hangerId, info => {
+      if (String(info.result || 'ERROR').toUpperCase() !== 'OK') return fail(`옷걸이 명령 실패 (코드 ${Number(info.errorCode || 0)})`);
+      pending.delete(hangerId);
+      if (!pending.size && !settled) { settled = true; clean(); resolve(); }
+    });
+  });
+}
+
 async function writeLocalGatewayCommand(action, targets, durationMs = 0) {
-  if (!localGatewayCommandCharacteristic) return false;
+  if (!localGatewayCommandCharacteristic || !targets.length) throw new Error('근처 옷봉 연결이 없습니다.');
+  const acknowledged = waitForLocalCommandAcks(targets);
   const payload = new TextEncoder().encode(JSON.stringify({ action, targets, durationMs }));
-  if (typeof localGatewayCommandCharacteristic.writeValueWithResponse === 'function') await localGatewayCommandCharacteristic.writeValueWithResponse(payload);
-  else await localGatewayCommandCharacteristic.writeValue(payload);
+  try {
+    if (typeof localGatewayCommandCharacteristic.writeValueWithResponse === 'function') await localGatewayCommandCharacteristic.writeValueWithResponse(payload);
+    else await localGatewayCommandCharacteristic.writeValue(payload);
+    await acknowledged;
+  } catch (error) {
+    for (const hangerId of targets) localCommandAckWaiters.delete(String(hangerId).toUpperCase());
+    throw error;
+  }
   setLocalLedState(targets, action !== 'local_off', durationMs);
   const command = { id: `local-${Date.now()}`, command: action === 'local_off' ? 'LED_OFF' : 'LED_BLINK', targets, durationMs, status: action === 'local_off' ? 'CANCELLED' : 'ACKED', createdAt: new Date().toISOString(), local: true };
   model.commands = [command, ...(model.commands || []).filter(c => !targets.some(target => c.targets?.includes(target)))];
@@ -2567,8 +2592,14 @@ function handleLocalGatewayStatus(value) {
   try {
     const info = JSON.parse(new TextDecoder().decode(value));
     localGatewayBleLastSeenAt = Date.now();
-    if (info.type !== 'hanger_state' || !info.hangerId) return;
-    const hanger = (model.hangers || []).find(h => h.hangerId === info.hangerId);
+    const hangerId = String(info.hangerId || '').toUpperCase();
+    if (info.type === 'command_ack' && hangerId) {
+      const waiter = localCommandAckWaiters.get(hangerId);
+      if (waiter) waiter(info);
+      return;
+    }
+    if (info.type !== 'hanger_state' || !hangerId) return;
+    const hanger = (model.hangers || []).find(h => h.hangerId === hangerId);
     if (!hanger) return;
     const tagUid = info.tagUid || null;
     const known = tagUid && (model.garments || []).find(g => g.tagUid === tagUid);

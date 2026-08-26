@@ -434,7 +434,18 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
   memcpy(&p, data, sizeof p);
   if (!sw::valid(p)) return;
   Serial.printf("[ESPNOW-RX] Hanger=%s Type=%u State=%u Seq=%lu\n", p.hangerId, unsigned(p.type), unsigned(p.state), p.sequence);
-  if (localStatusCharacteristic && (p.type == sw::Type::EVENT || p.type == sw::Type::STATUS)) {
+  if (localStatusCharacteristic && p.type == sw::Type::ACK) {
+    // Do not show local LED success until the addressed C6 acknowledges it.
+    JsonDocument local;
+    local["type"] = "command_ack";
+    local["hangerId"] = p.hangerId;
+    local["result"] = p.errorFlags == 0 ? "OK" : "ERROR";
+    local["errorCode"] = p.errorFlags;
+    String message;
+    serializeJson(local, message);
+    localStatusCharacteristic->setValue(message.c_str());
+    localStatusCharacteristic->notify();
+  } else if (localStatusCharacteristic && (p.type == sw::Type::EVENT || p.type == sw::Type::STATUS)) {
     JsonDocument local;
     local["type"] = "hanger_state";
     local["hangerId"] = p.hangerId;
