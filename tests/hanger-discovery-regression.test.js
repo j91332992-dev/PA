@@ -6,6 +6,7 @@ process.env.PORT='0';
 process.env.DEVICE_TOKEN='test-device';
 process.env.JWT_SECRET='test-secret';
 process.env.OFFLINE_TIMEOUT_MS='80';
+process.env.DISCOVERY_RETENTION_MS='80';
 process.env.DISABLE_BACKGROUND_TASKS='true';
 const {server,closeStorage}=require('../backend/server');
 let origin,token;

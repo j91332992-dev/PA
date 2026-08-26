@@ -33,7 +33,7 @@ function jsonStorage(file, initial){
     return job;
   }
   return {
-    mode:'json',load:async()=>load(),save,close:async()=>{},
+    mode:'json',load:async()=>load(),reload:async()=>load(),save,close:async()=>{},
     syncDeviceOwnership:async()=>{},
     claimDeviceOwnership:async()=>({ok:true}),
     releaseGatewayOwnership:async()=>({ok:true,releasedHangerIds:[]}),
@@ -379,7 +379,7 @@ function postgresStorage(connectionString, initial){
     }
     await pool.end();
   }
-  return {mode:'postgres',load,save,close,syncDeviceOwnership,claimDeviceOwnership,releaseGatewayOwnership,releaseHangerOwnership};
+  return {mode:'postgres',load,reload:load,save,close,syncDeviceOwnership,claimDeviceOwnership,releaseGatewayOwnership,releaseHangerOwnership};
 }
 
 function createStorage({file,initial}){

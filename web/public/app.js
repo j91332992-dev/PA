@@ -182,7 +182,7 @@ async function api(path, options = {}) {
     if (r.ok) return x;
     // This response is emitted before the API route executes, so retrying it
     // cannot duplicate a registration or a hardware command.
-    if (r.status === 503 && /데이터 연결을 다시 시도|스토리지 초기화/i.test(x.error || '') && attempt < 2) {
+    if ([502, 503, 504].includes(r.status) && attempt < 2) {
       await new Promise(resolve => setTimeout(resolve, 700 * (attempt + 1)));
       continue;
     }
@@ -1189,6 +1189,11 @@ async function refreshAfterMutation() {
 
 function connect() {
   if (!token || !sessionUser || (sessionUser.role === 'admin' && sessionUser.adminVerified)) return;
+  if (location.hostname.endsWith('.vercel.app')) {
+    document.querySelector('#connection').textContent = '클라우드 연결됨';
+    document.querySelector('#dot').className = 'on';
+    return;
+  }
   clearTimeout(retry);
   const epoch = ++socketEpoch;
   const previous = socket;
@@ -1300,12 +1305,23 @@ async function enter(knownUser = null) {
     loadWeather($('#weatherCitySelect')?.value || 'seoul');
   } catch (err) {
     console.error('Enter error:', err);
-    localStorage.removeItem('wardrobeToken');
-    clearAdminSession();
-    token = null;
-    showAuth();
-    const authError = $('#authError');
-    if (authError) authError.textContent = `로그인 후 내 옷장 데이터를 불러오지 못했습니다: ${err.message || '잠시 후 다시 시도해 주세요.'}`;
+    if (err.status === 401) {
+      localStorage.removeItem('wardrobeToken');
+      clearAdminSession();
+      token = null;
+      showAuth();
+      const authError = document.querySelector('#authError');
+      if (authError) authError.textContent = '로그인이 만료되었습니다. 다시 로그인해 주세요.';
+    } else {
+      document.querySelector('#auth').hidden = true;
+      document.querySelector('#auth').style.display = 'none';
+      document.querySelector('#app').hidden = false;
+      document.querySelector('#app').style.display = 'block';
+      document.querySelector('#connection').textContent = '클라우드 재연결 중';
+      document.querySelector('#dot').className = '';
+      clearTimeout(retry);
+      retry = setTimeout(() => enter(null), 2000);
+    }
   }
 }
 
