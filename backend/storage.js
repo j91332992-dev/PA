@@ -72,7 +72,10 @@ function postgresStorage(connectionString, initial){
     events:['id','wardrobeId','type','severity','payload','at'],
   };
   const table={users:'app_users',wardrobes:'wardrobes',gateways:'gateways',hangers:'hangers',garments:'garments',commands:'device_commands',events:'wardrobe_events'};
+  let ownershipSchemaReady = false;
+  let ownershipSeeded = false;
   async function ensureDeviceOwnershipSchema(client) {
+    if (ownershipSchemaReady) return;
     await client.query(`
       create table if not exists device_ownership (
         device_kind text not null check (device_kind in ('gateway','hanger')),
@@ -92,8 +95,10 @@ function postgresStorage(connectionString, initial){
         migrated_at timestamptz not null default now()
       )
     `);
+    ownershipSchemaReady = true;
   }
   async function seedDeviceOwnership(client) {
+    if (ownershipSeeded) return;
     // One atomic migration captures both claimed and already-released devices.
     // It never runs again, so a stale legacy instance cannot later seed an old
     // owner after the deployment has established the ownership authority.
@@ -111,6 +116,7 @@ function postgresStorage(connectionString, initial){
       where exists(select 1 from first_run)
       on conflict(device_kind,device_id) do nothing
     `);
+    ownershipSeeded = true;
   }
   function enforceDeviceOwnership(data, rows) {
     const ownership=new Map(rows.map(row=>[`${row.device_kind}:${row.device_id}`,row]));

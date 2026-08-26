@@ -55,6 +55,8 @@ const LAST_GATEWAY_BLE_PAIRING_KEY = 'wardrobeGatewayBlePairing';
 function accountStorageKey(base) { return base + ':' + (sessionUser?.id || 'anonymous'); }
 const LOCAL_LED_SAFETY_MS = 300000;
 const localLedStates = new Map();
+// NFC removal is newer than a delayed Vercel snapshot. Keep this only for the current browser session.
+const nfcRemovalAtByHanger = new Map();
 try {
   const savedLedStates = JSON.parse(sessionStorage.getItem(LOCAL_LED_STORAGE_KEY) || '{}');
   for (const [hangerId, value] of Object.entries(savedLedStates)) {
@@ -223,7 +225,8 @@ function isHangerLedActive(hangerId) {
   const simH = (simState.hangers || []).find(h => h.hangerId === hangerId);
   if (simH && Date.now() < (simH.ledUntil || 0)) return true;
 
-  const cmds = (model.commands || []).filter(c => c.targets?.includes(hangerId));
+  const removalAt = nfcRemovalAtByHanger.get(hangerId) || 0;
+  const cmds = (model.commands || []).filter(c => c.targets?.includes(hangerId) && Date.parse(c.createdAt || 0) > removalAt);
   if (!cmds.length) return false;
   const latest = cmds[0];
   if (latest.command === 'LED_OFF') return false;
@@ -254,7 +257,10 @@ function setLocalLedState(targets, active, durationMs = 0) {
 
 function clearFindingForEmptyHanger(hangerId) {
   if (!hangerId) return;
-  setLocalLedState([hangerId], false);
+  nfcRemovalAtByHanger.set(hangerId, Date.now());
+  // A new command after the garment is re-hung must work immediately.
+  localLedStates.delete(hangerId);
+  persistLocalLedStates();
   // NFC removal is the physical source of truth. Reflect it in the current
   // screen immediately instead of waiting for a later commands snapshot.
   model.commands = (model.commands || []).map(command => {
@@ -1117,13 +1123,25 @@ function mergeSnapshot(snapshot) {
     const current = currentById.get(id);
     if (current && !hangerFreshness.isFresher(incoming, current)) return current;
     hangerFreshness.remember(incoming);
+    // Only a fresher physical EMPTY event may cancel FIND. A delayed snapshot
+    // must never turn off a command issued after the garment was re-hung.
+    if (incoming.state === 'EMPTY') clearFindingForEmptyHanger(id);
     return incoming;
   });
 
   // A snapshot is authoritative for account ownership. Keeping a missing
   // local record here made a released hanger remain visible while the same
   // hardware also appeared in discoveredHangers.
-  return { ...snapshot, hangers };
+  const commands = (snapshot.commands || []).map(command => {
+    const removedTarget = (command.targets || []).some(target => {
+      const removedAt = nfcRemovalAtByHanger.get(target) || 0;
+      return removedAt && Date.parse(command.createdAt || 0) <= removedAt;
+    });
+    return removedTarget && command.command !== 'LED_OFF' && ['QUEUED', 'SENT', 'ACKED'].includes(command.status)
+      ? { ...command, status: 'CANCELLED', cancelledReason: 'NFC_TAG_REMOVED' }
+      : command;
+  });
+  return { ...snapshot, hangers, commands };
 }
 
 function applyHangerEvent(hanger) {

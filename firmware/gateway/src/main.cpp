@@ -736,7 +736,7 @@ void uploadBatch(const sw::Packet* packets, uint8_t count) {
   String body, out;
   serializeJson(d, body);
   int httpCode = 0;
-  if (!request("/api/gateway/status/batch", "POST", body, out, 600, &httpCode)) {
+  if (!request("/api/gateway/status/batch", "POST", body, out, 2500, &httpCode)) {
     Serial.printf("[CLOUD] batch FAIL count=%u http=%d\n", count, httpCode);
   }
 }
