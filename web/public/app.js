@@ -2316,6 +2316,17 @@ let rebootCountdownInterval = null;
 let localGatewayBleLastSeenAt = 0;
 let localGatewayReconnectTimer = null;
 let localGatewayReconnectAttempt = 0;
+let nativeGatewayBleConnected = false;
+let nativeGatewayBleId = '';
+
+function hasNativeGatewayBridge() {
+  return window.__OTKOK_NATIVE_APK__ === true && typeof window.flutter_inappwebview?.callHandler === 'function';
+}
+
+function nativeGatewayCall(handler, payload = {}) {
+  if (!hasNativeGatewayBridge()) return Promise.reject(new Error('앱 BLE 브리지를 사용할 수 없습니다.'));
+  return window.flutter_inappwebview.callHandler(handler, payload);
+}
 
 function rememberedGatewayIdForDevice(device) {
   try {
@@ -2335,14 +2346,28 @@ function updateGatewayTransportIndicator() {
   const label = $('#connection');
   const dot = $('#dot');
   if (!label || !dot || !token || !sessionUser) return;
-  const direct = !!(localGatewayCommandCharacteristic && localGatewayDevice?.gatt?.connected);
+  const direct = nativeGatewayBleConnected || !!(localGatewayCommandCharacteristic && localGatewayDevice?.gatt?.connected);
   label.textContent = direct ? '근처 BLE 직통 연결됨' : '클라우드 연결됨';
   dot.className = 'on';
 }
 
 function scheduleLocalGatewayReconnect() {
   clearTimeout(localGatewayReconnectTimer);
-  if (!token || !sessionUser || !navigator.bluetooth?.getDevices) return;
+  if (!token || !sessionUser) return;
+  if (hasNativeGatewayBridge()) {
+    const delay = Math.min(700 * (2 ** localGatewayReconnectAttempt), 8000);
+    localGatewayReconnectTimer = setTimeout(async () => {
+      localGatewayReconnectTimer = null;
+      const connected = await connectHangerBluetooth({ scanWifi: false, allowChooser: false, silent: true });
+      if (connected) localGatewayReconnectAttempt = 0;
+      else {
+        localGatewayReconnectAttempt = Math.min(localGatewayReconnectAttempt + 1, 4);
+        scheduleLocalGatewayReconnect();
+      }
+    }, delay);
+    return;
+  }
+  if (!navigator.bluetooth?.getDevices) return;
   const delay = Math.min(700 * (2 ** localGatewayReconnectAttempt), 8000);
   localGatewayReconnectTimer = setTimeout(async () => {
     localGatewayReconnectTimer = null;
@@ -2357,6 +2382,9 @@ function scheduleLocalGatewayReconnect() {
   }, delay);
 }
 function disconnectLocalGatewayBluetooth() {
+  if (hasNativeGatewayBridge()) nativeGatewayCall('otkokBleDisconnect').catch(() => {});
+  nativeGatewayBleConnected = false;
+  nativeGatewayBleId = '';
   const device = localGatewayDevice;
   if (device) device.ongattserverdisconnected = null;
   try {
@@ -2477,6 +2505,15 @@ function renderNearbyWifiChoices() {
 }
 
 async function scanHangerWifi() {
+  if (hasNativeGatewayBridge()) {
+    if (!nativeGatewayBleConnected) return setBleSetupMessage('먼저 옷봉을 블루투스로 연결하세요.', true);
+    nearbyWifiNetworks = [];
+    renderNearbyWifiChoices();
+    setBleSetupMessage('옷봉이 주변 2.4 GHz Wi-Fi를 검색 중입니다. 잠시 기다려 주세요.');
+    try { await writeGatewayBle('scan'); }
+    catch (error) { setBleSetupMessage(error?.message || 'Wi-Fi 검색 요청에 실패했습니다.', true); }
+    return;
+  }
   if (!bleConfigCharacteristic) return setBleSetupMessage('먼저 옷봉을 블루투스로 연결하세요.', true);
   nearbyWifiNetworks = [];
   renderNearbyWifiChoices();
@@ -2491,6 +2528,12 @@ async function scanHangerWifi() {
 }
 
 async function writeGatewayBle(action, extra = {}) {
+  if (hasNativeGatewayBridge()) {
+    if (!nativeGatewayBleConnected) throw new Error('옷봉 블루투스 연결이 필요합니다.');
+    const result = await nativeGatewayCall('otkokBleConfig', { action, ...extra });
+    if (!result?.ok) throw new Error(result?.error || '옷봉 설정 명령 전송에 실패했습니다.');
+    return;
+  }
   if (!bleConfigCharacteristic) throw new Error('옷봉 블루투스 연결이 필요합니다.');
   const payload = new TextEncoder().encode(JSON.stringify({ action, ...extra }));
   if (typeof bleConfigCharacteristic.writeValueWithResponse === 'function') await bleConfigCharacteristic.writeValueWithResponse(payload);
@@ -2562,6 +2605,18 @@ async function queueCloudGatewayCommand(action, targets, durationMs = 0) {
 }
 
 async function sendPrimaryLocalCommand(action, targets, durationMs = 0) {
+  if (hasNativeGatewayBridge()) {
+    if (!nativeGatewayBleConnected) await connectHangerBluetooth({ scanWifi: false, allowChooser: false, silent: true });
+    if (nativeGatewayBleConnected) {
+      const result = await nativeGatewayCall('otkokBleCommand', { action, targets, durationMs });
+      if (!result?.ok) throw new Error(result?.error || '근처 BLE 직통 명령을 확인하지 못했습니다.');
+      setLocalLedState(targets, action !== 'local_off', durationMs);
+      const command = { id: `native-${Date.now()}`, command: action === 'local_off' ? 'LED_OFF' : 'LED_BLINK', targets, durationMs, status: action === 'local_off' ? 'CANCELLED' : 'ACKED', createdAt: new Date().toISOString(), local: true };
+      model.commands = [command, ...(model.commands || []).filter(c => !targets.some(target => c.targets?.includes(target)))];
+      render();
+      return { transport: 'ble' };
+    }
+  }
   // A registered hanger must be findable from any phone/browser. Reconnect to
   // a previously granted nearby gateway after a refresh before using cloud.
   // Browsers without safe Web Bluetooth restoration still use cloud fallback.
@@ -2663,11 +2718,80 @@ async function handleGatewayBleStatus(value, fallbackName = '') {
   } catch (_) {}
 }
 
+function nativeStatusDataView(info) {
+  const bytes = new TextEncoder().encode(JSON.stringify(info || {}));
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+
+window.addEventListener('otkokNativeBleStatus', event => {
+  const info = event.detail || {};
+  if (info.type === 'transport') {
+    nativeGatewayBleConnected = info.connected === true;
+    nativeGatewayBleId = nativeGatewayBleConnected ? String(info.gatewayId || '').toUpperCase() : '';
+    if (nativeGatewayBleConnected) {
+      currentBleGatewayId = nativeGatewayBleId;
+      localGatewayBleLastSeenAt = Date.now();
+      localGatewayReconnectAttempt = 0;
+    } else {
+      localGatewayBleLastSeenAt = 0;
+      scheduleLocalGatewayReconnect();
+    }
+    updateGatewayTransportIndicator();
+    render();
+    return;
+  }
+  if (info.hangerId) handleLocalGatewayStatus(nativeStatusDataView(info));
+  else handleGatewayBleStatus(nativeStatusDataView(info), '스마트 옷봉');
+});
+
+window.addEventListener('otkokNativeReady', () => {
+  setTimeout(() => connectHangerBluetooth({ scanWifi: false, allowChooser: false, silent: true }), 400);
+  setTimeout(() => {
+    if (!nativeGatewayBleConnected) connectHangerBluetooth({ scanWifi: false, allowChooser: false, silent: true });
+  }, 1600);
+});
+
+window.addEventListener('otkokNativeResume', () => {
+  if (!nativeGatewayBleConnected) connectHangerBluetooth({ scanWifi: false, allowChooser: false, silent: true });
+});
 async function connectHangerBluetooth(options = {}) {
   const shouldScanWifi = options?.scanWifi !== false;
   const allowChooser = options?.allowChooser !== false;
   const silent = options?.silent === true;
   const forceChooser = options?.forceChooser === true;
+  if (hasNativeGatewayBridge()) {
+    if (nativeGatewayBleConnected && nativeGatewayBleId) return true;
+    const expectedGatewayIds = (model.gateways || []).map(item => String(item.gatewayId || '').toUpperCase()).filter(Boolean);
+    try {
+      const result = await nativeGatewayCall('otkokBleConnect', { expectedGatewayIds });
+      const gatewayId = String(result?.gatewayId || '').toUpperCase();
+      if (!result?.connected || !gatewayId) {
+        if (!silent) setBleSetupMessage(result?.error || '근처 옷봉을 찾지 못했습니다.', true);
+        return false;
+      }
+      const pairing = await refreshBleOwnership('gateways', gatewayId, result?.name || '');
+      if (pairing.ownership === 'OTHER_ACCOUNT') {
+        await nativeGatewayCall('otkokBleDisconnect').catch(() => {});
+        if (!silent) setBleSetupMessage(pairingBlockedMessage('gateways', pairing), true);
+        return false;
+      }
+      nativeGatewayBleConnected = true;
+      nativeGatewayBleId = gatewayId;
+      currentBleGatewayId = gatewayId;
+      localGatewayBleLastSeenAt = Date.now();
+      localGatewayReconnectAttempt = 0;
+      updateGatewayTransportIndicator();
+      render();
+      if (shouldScanWifi) await scanHangerWifi();
+      if (!silent) toast('근처 옷봉과 연결되었습니다. 옷 상태와 LED 찾기는 앱 BLE로 즉시 처리됩니다.');
+      return true;
+    } catch (error) {
+      nativeGatewayBleConnected = false;
+      nativeGatewayBleId = '';
+      if (!silent) setBleSetupMessage(error?.message || '앱 BLE 연결에 실패했습니다.', true);
+      return false;
+    }
+  }
   if (!navigator.bluetooth || !window.isSecureContext) {
     if (!silent) setBleSetupMessage('이 기능은 블루투스가 켜진 Chrome에서 HTTPS 또는 localhost로 열어야 합니다.', true);
     return false;
