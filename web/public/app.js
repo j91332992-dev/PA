@@ -2329,6 +2329,7 @@ let localGatewayReconnectTimer = null;
 let localGatewayReconnectAttempt = 0;
 let nativeGatewayBleConnected = false;
 let nativeGatewayBleId = '';
+let nativeGatewayCandidates = [];
 
 function hasNativeGatewayBridge() {
   return window.__OTKOK_NATIVE_APK__ === true;
@@ -2342,6 +2343,34 @@ async function nativeGatewayCall(handler, payload = {}) {
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   throw new Error('앱 블루투스 기능을 준비하지 못했습니다. 앱을 완전히 종료한 뒤 다시 실행해 주세요.');
+}
+function renderNativeGatewayChoices(devices) {
+  const target = $('#nativeGatewayChoices');
+  if (!target) return;
+  nativeGatewayCandidates = (devices || []).filter(device => device?.deviceId);
+  if (!nativeGatewayCandidates.length) {
+    target.hidden = true;
+    target.innerHTML = '';
+    return;
+  }
+  target.hidden = false;
+  target.innerHTML = `<p class="muted" style="margin:8px 0 6px"><b>발견된 옷봉을 선택하세요.</b></p>${nativeGatewayCandidates.map((device, index) => `<button type="button" class="ghost native-gateway-choice" data-native-gateway-index="${index}" style="width:100%;margin:6px 0;text-align:left;color:var(--ink);border:1px solid #cbd4cd"><b>${esc(device.name || '스마트 옷봉')}</b><br><small class="muted">신호 ${Number(device.rssi) || '-'} dBm · ${esc(device.deviceId)}</small></button>`).join('')}`;
+  target.querySelectorAll('[data-native-gateway-index]').forEach(button => {
+    button.onclick = () => {
+      const device = nativeGatewayCandidates[Number(button.dataset.nativeGatewayIndex)];
+      if (!device) return;
+      target.hidden = true;
+      connectHangerBluetooth({ scanWifi: true, allowChooser: false, silent: false, selectedDeviceId: device.deviceId });
+    };
+  });
+}
+
+function clearNativeGatewayChoices() {
+  const target = $('#nativeGatewayChoices');
+  if (target) {
+    target.hidden = true;
+    target.innerHTML = '';
+  }
 }
 
 function rememberedGatewayIdForDevice(device) {
@@ -2777,7 +2806,8 @@ async function connectHangerBluetooth(options = {}) {
   const forceChooser = options?.forceChooser === true;
   if (hasNativeGatewayBridge()) {
     const expectedGatewayIds = (model.gateways || []).map(item => String(item.gatewayId || '').toUpperCase()).filter(Boolean);
-    if (nativeGatewayBleConnected && nativeGatewayBleId) {
+    const selectedDeviceId = String(options?.selectedDeviceId || '');
+    if (nativeGatewayBleConnected && nativeGatewayBleId && !allowChooser && !selectedDeviceId) {
       const pairing = await refreshBleOwnership('gateways', nativeGatewayBleId);
       if (pairing.ownership === 'OTHER_ACCOUNT') {
         await nativeGatewayCall('otkokBleDisconnect').catch(() => {});
@@ -2801,7 +2831,20 @@ async function connectHangerBluetooth(options = {}) {
     }
     if (!silent) setBleSetupMessage('근처에서 전원이 켜진 스마트 옷봉을 검색하고 있습니다…');
     try {
-      const result = await nativeGatewayCall('otkokBleConnect', { expectedGatewayIds });
+      if (allowChooser && !selectedDeviceId) {
+        const scan = await nativeGatewayCall('otkokBleScan');
+        if (!scan?.ok) {
+          if (!silent) setBleSetupMessage(scan?.error || '근처 옷봉 검색을 시작하지 못했습니다.', true);
+          return false;
+        }
+        renderNativeGatewayChoices(scan.devices || []);
+        if (!scan.devices?.length) setBleSetupMessage('전원이 켜진 옷봉을 찾지 못했습니다. 옷봉 가까이에서 다시 검색해 주세요.', true);
+        else setBleSetupMessage('발견된 옷봉 목록에서 연결할 기기를 선택하세요.');
+        return false;
+      }
+      const nativeHandler = selectedDeviceId ? 'otkokBleConnectSelected' : 'otkokBleConnect';
+      const nativePayload = selectedDeviceId ? { expectedGatewayIds, deviceId: selectedDeviceId } : { expectedGatewayIds };
+      const result = await nativeGatewayCall(nativeHandler, nativePayload);
       const gatewayId = String(result?.gatewayId || '').toUpperCase();
       if (!result?.connected || !gatewayId) {
         if (!silent) setBleSetupMessage(result?.error || '근처 옷봉을 찾지 못했습니다.', true);
@@ -3637,6 +3680,7 @@ function installGatewayWifiSetup() {
     <div id="bleStepConnect">
       <p><b>처음 한 번만 설정하면 됩니다.</b> PC·휴대폰의 Wi-Fi는 바꾸지 않고, 블루투스로 옷봉에 연결할 2.4 GHz Wi-Fi 정보를 전달합니다.</p>
       <button type="button" id="connectHangerBle" class="primary" style="margin:12px 0;width:100%">옷봉 찾기 (블루투스)</button>
+      <div id="nativeGatewayChoices" hidden></div>
       <p id="bleDeviceName" class="muted"></p>
       <p id="bleSetupMessage" class="muted">블루투스 연결을 시작하세요.</p>
       <button type="button" id="claimReleasedGateway" class="primary" hidden style="margin:8px 0;width:100%">이 옷봉을 내 계정에 등록</button>
@@ -3683,6 +3727,7 @@ function installGatewayWifiSetup() {
   document.body.append(dialog);
 
   const showGatewayWifiHelp = () => {
+    clearNativeGatewayChoices();
     resetProvisionProgressUI();
     try {
       if (typeof dialog.showModal === 'function') {

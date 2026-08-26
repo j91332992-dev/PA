@@ -107,6 +107,52 @@ class GatewayBle {
     }
     return {'connected': false, 'error': expected.isEmpty ? '근처 옷봉을 찾지 못했습니다.' : '이 계정에 등록된 근처 옷봉을 찾지 못했습니다.'};
   }
+  Future<Map<String, dynamic>> scanGateways() async {
+    if (!await _requestPermissions()) return {'ok': false, 'error': '블루투스 권한이 필요합니다.', 'devices': <Map<String, dynamic>>[]};
+    final found = <String, ScanResult>{};
+    StreamSubscription<List<ScanResult>>? subscription;
+    try {
+      _events.add({'type': 'scan', 'state': 'started'});
+      subscription = FlutterBluePlus.scanResults.listen((results) {
+        for (final result in results) {
+          if (result.advertisementData.serviceUuids.contains(_gatewayService)) {
+            found[result.device.remoteId.str] = result;
+          }
+        }
+      });
+      await FlutterBluePlus.startScan(withServices: [_gatewayService], timeout: const Duration(seconds: 4));
+      await Future<void>.delayed(const Duration(seconds: 4));
+    } catch (_) {
+      // Preserve candidates gathered before the Android scan controller stops.
+    } finally {
+      try { await FlutterBluePlus.stopScan(); } catch (_) {}
+      await subscription?.cancel();
+      _events.add({'type': 'scan', 'state': 'stopped', 'count': found.length});
+    }
+    final candidates = found.values.toList()..sort((a, b) => b.rssi.compareTo(a.rssi));
+    final devices = candidates.map((candidate) {
+      final advertisedName = candidate.advertisementData.advName;
+      final platformName = candidate.device.platformName;
+      return <String, dynamic>{
+        'deviceId': candidate.device.remoteId.str,
+        'name': advertisedName.isNotEmpty ? advertisedName : (platformName.isNotEmpty ? platformName : '스마트 옷봉'),
+        'rssi': candidate.rssi,
+      };
+    }).toList();
+    return {'ok': true, 'devices': devices};
+  }
+
+  Future<Map<String, dynamic>> connectSelectedGateway(List<String> expectedGatewayIds, String deviceId) async {
+    final expected = expectedGatewayIds.map((id) => id.toUpperCase()).toSet();
+    if (!await _requestPermissions()) return {'connected': false, 'error': '블루투스 권한이 필요합니다.'};
+    try {
+      if (await _attach(BluetoothDevice.fromId(deviceId), expected)) return _connectionResult(true);
+    } catch (_) {
+      await disconnect();
+    }
+    return {'connected': false, 'error': '선택한 옷봉과 연결하지 못했습니다. 전원과 거리를 확인해 주세요.'};
+  }
+
 
   Future<bool> _attach(BluetoothDevice device, Set<String> expected) async {
     await disconnect();
@@ -301,6 +347,16 @@ class _OtkokWebAppState extends State<OtkokWebApp> with WidgetsBindingObserver {
                     if (!await _controllerIsTrusted(controller)) return {'ok': false};
                     await _ble.disconnect();
                     return {'ok': true};
+                  });
+                  controller.addJavaScriptHandler(handlerName: 'otkokBleScan', callback: (_) async {
+                    if (!await _controllerIsTrusted(controller)) return {'ok': false, 'error': '허용되지 않은 페이지입니다.', 'devices': <Map<String, dynamic>>[]};
+                    return _ble.scanGateways();
+                  });
+                  controller.addJavaScriptHandler(handlerName: 'otkokBleConnectSelected', callback: (arguments) async {
+                    if (!await _controllerIsTrusted(controller)) return {'connected': false, 'error': '허용되지 않은 페이지입니다.'};
+                    final data = arguments.isNotEmpty && arguments.first is Map ? Map<String, dynamic>.from(arguments.first as Map) : <String, dynamic>{};
+                    final expected = ((data['expectedGatewayIds'] as List?) ?? const []).map((value) => value.toString()).toList();
+                    return _ble.connectSelectedGateway(expected, (data['deviceId'] ?? '').toString());
                   });
                 },
                 onLoadStop: _installBridge,
