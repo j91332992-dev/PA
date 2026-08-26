@@ -148,7 +148,7 @@ String cloudBaseUrl() {
     // The temporary Cloudflare tunnel used during development disappears when
     // the PC is off. Move existing rods to the permanent OTKOK production
     // endpoint automatically after this firmware update.
-    if (saved.indexOf(".trycloudflare.com") >= 0 || saved.indexOf("onrender.com") >= 0) {
+    if (saved == "https://otkok.vercel.app" || saved.indexOf(".trycloudflare.com") >= 0 || saved.indexOf("onrender.com") >= 0) {
       wifiPrefs.putString("server", CLOUD_BASE_URL);
       Serial.println("[CLOUD] Replaced legacy temporary server URL with OTKOK production");
       return String(CLOUD_BASE_URL);
