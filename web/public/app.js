@@ -3324,6 +3324,37 @@ async function connectPhysicalHangerBluetooth() {
   }
 }
 
+async function pairAndRegisterPhysicalHanger() {
+  if (!currentBleHangerId) return setHangerBleMessage('연결된 옷걸이의 고유 코드를 읽지 못했습니다. 다시 검색해 주세요.', true);
+  const hangerId = currentBleHangerId;
+  const sent = await writeHangerBle('pair');
+  if (sent === false) return;
+  setHangerBleMessage('옷봉 연결과 내 계정 등록을 완료하는 중입니다…');
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, attempt ? 800 : 250));
+    const pairing = await refreshBleOwnership('hangers', hangerId);
+    if (pairing.ownership === 'OWNED') {
+      await refreshAfterMutation();
+      setHangerBleMessage('내 옷봉과 계정에 등록되었습니다.');
+      toast('옷걸이 등록 완료');
+      return true;
+    }
+    if (pairing.ownership === 'OTHER_ACCOUNT') {
+      setHangerBleMessage(pairingBlockedMessage('hangers'), true);
+      return false;
+    }
+    const result = await claimDevice('hangers', hangerId, { quietNotFound: true, confirmOwnership: true });
+    if (result?.ok) {
+      await refreshAfterMutation();
+      setHangerBleMessage('내 옷봉과 계정에 등록되었습니다.');
+      toast(`${result.item.alias || `${result.item.hangerNumber}번 옷걸이`} 등록 완료`);
+      return true;
+    }
+  }
+  setHangerBleMessage('옷봉 연결은 전달됐지만 서버 등록 확인이 늦어지고 있습니다. 전원을 확인한 뒤 다시 눌러 주세요.', true);
+  return false;
+}
+
 async function forgetPhysicalHanger() {
   if ((hasNativeGatewayBridge() && !nativeHangerBleConnected) || (!hasNativeGatewayBridge() && !hangerBleConfigCharacteristic)) return setHangerBleMessage('먼저 옷걸이를 블루투스로 연결하세요.', true);
   if (!window.confirm('이 옷걸이의 옷봉 연결을 제거할까요? 제거 후에는 태그 상태가 웹에 전송되지 않습니다.')) return;
@@ -3968,7 +3999,7 @@ function installGatewayWifiSetup() {
   if (connectPhysicalHangerBleBtn) connectPhysicalHangerBleBtn.onclick = connectPhysicalHangerBluetooth;
 
   const pairPhysicalHangerBtn = $('#pairPhysicalHanger');
-  if (pairPhysicalHangerBtn) pairPhysicalHangerBtn.onclick = () => writeHangerBle('pair');
+  if (pairPhysicalHangerBtn) pairPhysicalHangerBtn.onclick = pairAndRegisterPhysicalHanger;
 
   const forgetPhysicalHangerBtn = $('#forgetPhysicalHanger');
   if (forgetPhysicalHangerBtn) forgetPhysicalHangerBtn.onclick = forgetPhysicalHanger;
