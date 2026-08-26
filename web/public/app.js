@@ -2540,7 +2540,9 @@ async function sendPrimaryLocalCommand(action, targets, durationMs = 0) {
   // a previously granted nearby gateway after a refresh before using cloud.
   // Browsers without safe Web Bluetooth restoration still use cloud fallback.
   if (!localGatewayCommandCharacteristic || !localGatewayDevice?.gatt?.connected) {
-    await connectHangerBluetooth({ scanWifi: false, allowChooser: false, silent: true });
+    // A FIND tap is a browser user gesture. Do not silently use the slow
+    // cloud route when this phone has not granted the nearby S3 yet.
+    await connectHangerBluetooth({ scanWifi: false, forceChooser: true, silent: false });
   }
   if (localGatewayCommandCharacteristic && localGatewayDevice?.gatt?.connected) {
     try {
