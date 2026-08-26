@@ -48,6 +48,7 @@ let localGatewayDevice = null;
 let nearbyWifiNetworks = [];
 let hangerBleConfigCharacteristic = null;
 let currentBleHangerId = '';
+let currentBleHangerGatewayId = '';
 let nativeHangerBleConnected = false;
 let nativeHangerCandidates = [];
 const claimedDeviceIds = new Set();
@@ -2392,6 +2393,7 @@ let localGatewayReconnectAttempt = 0;
 let nativeGatewayBleConnected = false;
 let nativeGatewayBleId = '';
 let nativeGatewayCandidates = [];
+let lastGatewayBleProvisionStatus = null;
 
 function hasNativeGatewayBridge() {
   return window.__OTKOK_NATIVE_APK__ === true;
@@ -2797,6 +2799,7 @@ async function handleGatewayBleStatus(value, fallbackName = '') {
   try {
     const text = new TextDecoder().decode(value);
     const info = JSON.parse(text);
+    lastGatewayBleProvisionStatus = info;
     localGatewayBleLastSeenAt = Date.now();
     if (info.gatewayId) {
       currentBleGatewayId = info.gatewayId;
@@ -3087,6 +3090,7 @@ async function saveHangerWifi(event) {
   const password = String(form.get('password') || '');
   const server = String(form.get('server') || '').trim();
   if (!ssid || !server.startsWith('http')) return setBleSetupMessage('목록에서 2.4 GHz Wi-Fi를 선택하고 서버 주소를 확인하세요.', true);
+  lastGatewayBleProvisionStatus = null;
 
   const connectStep = $('#bleStepConnect');
   if (connectStep) connectStep.hidden = true;
@@ -3140,6 +3144,7 @@ function startConnectionPolling(targetSsid) {
 
   let pollCount = 0;
   const maxPolls = 25;
+  let accountClaimed = false;
 
   provisionPollInterval = setInterval(async () => {
     pollCount++;
@@ -3155,6 +3160,10 @@ function startConnectionPolling(targetSsid) {
         return;
       }
       const snap = await api('/api/snapshot');
+      if (claim?.ok || (snap.gateways || []).some(g => g.gatewayId === currentBleGatewayId)) {
+        accountClaimed = true;
+        setStageItem('stage_claim', 'done', '내 계정에 옷봉 등록 완료');
+      }
       model = mergeSnapshot(snap);
       const physical = (snap.gateways || []).filter(g => !String(g.gatewayId || '').startsWith('GW-SIM'));
       const onlineGateway = physical.find(g => g.gatewayId === currentBleGatewayId && Date.now() - Date.parse(g.lastSeen || 0) < 35000);
@@ -3176,6 +3185,16 @@ function startConnectionPolling(targetSsid) {
         render();
         return;
       }
+      const bleState = String(lastGatewayBleProvisionStatus?.state || '');
+      if (/^wifi_(?:password_failed|not_found|connection_failed)$/.test(bleState)) {
+        clearInterval(provisionPollInterval);
+        const detail = lastGatewayBleProvisionStatus?.message || '선택한 2.4 GHz Wi-Fi에 연결하지 못했습니다.';
+        setStageItem('stage_wifi', 'failed', detail);
+        setStageItem('stage_cloud', 'failed', 'Wi-Fi 연결이 되지 않아 클라우드 heartbeat를 보낼 수 없습니다.');
+        if (accountClaimed) setStageItem('stage_claim', 'done', '계정 등록은 완료됨 · Wi-Fi만 다시 설정하세요.');
+        showProvisionFailure(`${detail} 휴대폰과 같은 Wi-Fi일 필요는 없으며, 옷봉이 사용할 2.4 GHz Wi-Fi 비밀번호를 다시 입력해 주세요.`);
+        return;
+      }
     } catch (_) {}
 
     if (pollCount >= maxPolls) {
@@ -3183,7 +3202,9 @@ function startConnectionPolling(targetSsid) {
       setStageItem('stage_wifi', 'failed', 'Wi-Fi/Cloud 연결 확인 시간 초과');
       setStageItem('stage_cloud', 'failed', '옷봉 heartbeat를 확인하지 못했습니다.');
       recordGatewayProvisionTimeout().catch(() => {});
-      showProvisionFailure('설정 후 옷봉 heartbeat를 확인하지 못했습니다. Wi-Fi 비밀번호·신호·Cloud 연결 중 어느 단계인지는 현재 확인할 수 없습니다.');
+      showProvisionFailure(accountClaimed
+        ? '옷봉의 계정 등록은 완료됐지만 인터넷 연결은 확인되지 않았습니다. 옷봉 찾기를 다시 눌러 2.4 GHz Wi-Fi 비밀번호를 재설정해 주세요. 휴대폰은 모바일 데이터를 사용해도 됩니다.'
+        : '설정 후 옷봉 heartbeat를 확인하지 못했습니다. 옷봉 찾기를 다시 눌러 2.4 GHz Wi-Fi 비밀번호를 재설정해 주세요.');
     }
   }, 2000);
 }
@@ -3270,6 +3291,8 @@ async function handleHangerBleStatus(value) {
   try {
     const info = JSON.parse(new TextDecoder().decode(value));
     if (info.hangerId) currentBleHangerId = info.hangerId;
+    const reportedGatewayId = String(info.gatewayId || info.discoveredGatewayId || '').toUpperCase();
+    if (reportedGatewayId) currentBleHangerGatewayId = reportedGatewayId;
     setHangerBleMessage(info.message || '옷걸이 상태를 받았습니다.', /error|failed/i.test(info.state || ''));
     showHangerBleStatus(info);
     const gatewayId = info.gatewayId || info.discoveredGatewayId;
@@ -3289,7 +3312,7 @@ async function handleHangerBleStatus(value) {
   }
 }
 
-async function claimDevice(kind, deviceId, { quietNotFound = false, confirmOwnership = false, retryNotFoundMs = 0 } = {}) {
+async function claimDevice(kind, deviceId, { quietNotFound = false, confirmOwnership = false, retryNotFoundMs = 0, gatewayId = '' } = {}) {
   if (!deviceId) return;
   const key = `${kind}:${deviceId}`;
   if (claimedDeviceIds.has(key)) return { ok: false, reason: 'PENDING' };
@@ -3304,7 +3327,7 @@ async function claimDevice(kind, deviceId, { quietNotFound = false, confirmOwner
       try {
         const item = await api(`/api/${kind}/${encodeURIComponent(deviceId)}/claim`, {
           method: 'POST',
-          body: JSON.stringify({ claimToken: intent.claimToken }),
+          body: JSON.stringify({ claimToken: intent.claimToken, gatewayId: String(gatewayId || '').toUpperCase() || undefined }),
         });
         return { ok: true, item };
       } catch (error) {
@@ -3357,6 +3380,7 @@ async function writeHangerBle(action, extra = {}) {
 
 function renderNativeHangerChoices(devices) { const target = $('#nativeHangerChoices'); if (!target) return; nativeHangerCandidates = (devices || []).filter(device => device?.deviceId); target.hidden = false; if (!nativeHangerCandidates.length) { target.innerHTML = '<p class="error">발견된 옷걸이가 없습니다. 전원·거리·블루투스를 확인한 뒤 다시 검색하세요.</p>'; return; } target.innerHTML = `<p class="muted"><b>발견된 옷걸이를 선택하세요.</b></p>${nativeHangerCandidates.map((device,index)=>`<button type="button" class="ghost" data-native-hanger-index="${index}" style="width:100%;margin:6px 0;text-align:left;color:var(--ink);border:1px solid #cbd4cd"><b>${esc(device.name || '스마트 옷걸이')}</b><br><small>신호 ${Number(device.rssi) || '-'} dBm</small></button>`).join('')}`; target.querySelectorAll('[data-native-hanger-index]').forEach(button => { button.onclick = async () => { const device = nativeHangerCandidates[Number(button.dataset.nativeHangerIndex)]; if (!device) return; target.querySelectorAll('button').forEach(item => { item.disabled = true; }); setHangerBleMessage('선택한 옷걸이에 연결하고 있습니다…'); try { const result = await nativeGatewayCall('otkokHangerBleConnectSelected', { deviceId: device.deviceId }); if (!result?.connected) throw new Error(result?.error || '연결에 실패했습니다.'); nativeHangerBleConnected = true; currentBleHangerId = String(result.status?.hangerId || '').toUpperCase(); $('#hangerBleDeviceName').textContent = `${device.name || '스마트 옷걸이'} 연결됨`; target.hidden = true; $('#pairPhysicalHanger').hidden = false; $('#forgetPhysicalHanger').hidden = false; if (result.status) await handleHangerBleStatus(nativeStatusDataView(result.status)); setHangerBleMessage('옷걸이와 실제 Bluetooth 연결이 완료되었습니다.'); } catch (error) { renderNativeHangerChoices(nativeHangerCandidates); setHangerBleMessage(bleErrorMessage(error, '옷걸이 연결'), true); } }; }); }
 async function connectPhysicalHangerBluetooth() {
+  currentBleHangerGatewayId = '';
   if (hasNativeGatewayBridge()) { const button = $('#connectPhysicalHangerBle'); if (button) { button.disabled = true; button.textContent = '옷걸이 검색 중…'; } try { setHangerBleMessage('주변의 스마트 옷걸이를 검색하고 있습니다.'); const result = await nativeGatewayCall('otkokHangerBleScan'); if (!result?.ok) throw new Error(result?.error || '검색에 실패했습니다.'); renderNativeHangerChoices(result.devices || []); setHangerBleMessage((result.devices || []).length ? '목록에서 연결할 옷걸이를 선택하세요.' : '옷걸이를 찾지 못했습니다.', !(result.devices || []).length); return ''; } catch (error) { setHangerBleMessage(bleErrorMessage(error, '옷걸이 검색'), true); return ''; } finally { if (button) { button.disabled = false; button.textContent = '옷걸이 찾기 (블루투스)'; } } }
   if (!navigator.bluetooth || !window.isSecureContext) {
     setHangerBleMessage('이 기능은 블루투스가 켜진 Chrome에서 HTTPS 또는 localhost로 열어야 합니다.', true);
@@ -3427,6 +3451,7 @@ async function pairAndRegisterPhysicalHanger() {
       quietNotFound: true,
       confirmOwnership: true,
       retryNotFoundMs: 7500,
+      gatewayId: currentBleHangerGatewayId,
     });
     if (!result?.ok) {
       setHangerBleMessage('옷봉 신호 확인이 늦어지고 있습니다. 전원을 확인한 뒤 다시 눌러 주세요.', true);
@@ -3822,6 +3847,7 @@ function renderDeviceManagement() {
 
 async function factoryResetHangerBeforeRemoval(hangerId) {
   currentBleHangerId = '';
+  currentBleHangerGatewayId = '';
   const connectedId = await connectPhysicalHangerBluetooth();
   if (connectedId !== hangerId) throw new Error('등록 해제할 동일한 옷걸이를 블루투스 선택창에서 선택해 주세요.');
   await writeHangerBle('forget');
