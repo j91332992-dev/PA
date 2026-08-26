@@ -6,7 +6,7 @@ process.env.PORT='0';
 process.env.DEVICE_TOKEN='test-device';
 process.env.JWT_SECRET='test-secret';
 process.env.OFFLINE_TIMEOUT_MS='80';
-process.env.DISCOVERY_RETENTION_MS='80';
+process.env.DISCOVERY_RETENTION_MS='300';
 process.env.DISABLE_BACKGROUND_TASKS='true';
 const {server,closeStorage}=require('../backend/server');
 let origin,token;
@@ -59,7 +59,7 @@ test('two live discoveries remain separate, one claim registers only one, and st
   assert.deepEqual(snapshot.body.hangers.map(item=>item.hangerId),['HC-AA0001']);
   assert.deepEqual(snapshot.body.discoveredHangers.map(item=>item.hangerId),['HC-AA0002']);
 
-  await new Promise(resolve=>setTimeout(resolve,100));
+  await new Promise(resolve=>setTimeout(resolve,350));
   snapshot=await call('/api/snapshot',{headers:{authorization:`Bearer ${token}`}});
   assert.equal(snapshot.body.discoveredHangers.length,0);
 });

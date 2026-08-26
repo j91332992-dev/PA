@@ -221,7 +221,7 @@ function postgresStorage(connectionString, initial){
       // release durable even if an older Vercel instance later saves a stale
       // in-memory snapshot of the same hardware.
       await readAndEnforceDeviceOwnership(client,data);
-      for (const key of ['commands', 'events', 'garments', 'hangers', 'gateways', 'wardrobes', 'users']) {
+      for (const key of ['events', 'garments', 'hangers', 'gateways', 'wardrobes', 'users']) {
         await client.query(`delete from ${table[key]}`);
       }
       const asJson = value => JSON.stringify(value ?? {});
@@ -231,7 +231,14 @@ function postgresStorage(connectionString, initial){
       await insertBatch(client, 'gateways', ['gateway_id', 'wardrobe_id', 'name', 'custom_name', 'gateway_number', 'state', 'last_seen', 'channel', 'firmware_version', 'created_at', 'payload'], data.gateways, g => [g.gatewayId, g.wardrobeId, g.name || '새 옷봉', g.customName || '', g.gatewayNumber || null, g.state || null, g.lastSeen || null, g.channel || null, g.firmwareVersion || null, g.createdAt || new Date().toISOString(), asJson(g)]);
       await insertBatch(client, 'hangers', ['hanger_id', 'wardrobe_id', 'gateway_id', 'alias', 'custom_name', 'hanger_number', 'state', 'reported_state', 'tag_uid', 'last_seen', 'last_sequence', 'boot_id', 'channel', 'rssi', 'error_flags', 'firmware_version', 'created_at', 'payload'], data.hangers, h => [h.hangerId, h.wardrobeId, h.gatewayId || null, h.alias || '', h.customName || '', h.hangerNumber || null, h.state || null, h.reportedState || null, h.tagUid || null, h.lastSeen || null, h.lastSequence ?? -1, h.bootId || null, h.channel || null, h.rssi || null, h.errorFlags || null, h.firmwareVersion || null, h.createdAt || new Date().toISOString(), asJson(h)]);
       await insertBatch(client, 'garments', ['id', 'wardrobe_id', 'created_by', 'tag_uid', 'name', 'category', 'color', 'season', 'brand', 'memo', 'image_url', 'original_image_path', 'processed_image_path', 'image_processing_status', 'classification', 'classification_confidence', 'processing_error', 'current_state', 'current_hanger', 'last_seen', 'created_at', 'payload'], data.garments, g => [g.id, g.wardrobeId, g.createdBy || null, g.tagUid, g.name, g.category || '', g.color || '', g.season || '', g.brand || '', g.memo || '', g.imageUrl || '', g.originalImagePath || '', g.processedImagePath || '', g.imageProcessingStatus || 'ready', asJson(g.classification || {}), asJson(g.classificationConfidence || {}), g.processingError || '', g.currentState || 'OUT', g.currentHanger || null, g.lastSeen || null, g.createdAt || new Date().toISOString(), asJson(g)]);
-      await insertBatch(client, 'device_commands', ['id', 'numeric_id', 'wardrobe_id', 'requested_by', 'command', 'targets', 'duration_ms', 'status', 'acknowledgements', 'created_at', 'expires_at', 'sent_at', 'payload'], data.commands, c => [c.id, c.numericId, c.wardrobeId, c.requestedBy || null, c.command, asJson(c.targets || []), c.durationMs || 0, c.status, asJson(c.acknowledgements || {}), c.createdAt, c.expiresAt || null, c.sentAt || null, asJson(c)]);
+      for (const c of data.commands || []) await client.query(`
+        insert into device_commands(id,numeric_id,wardrobe_id,requested_by,command,targets,duration_ms,status,acknowledgements,created_at,expires_at,sent_at,payload)
+        values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        on conflict(id) do update set
+          status=excluded.status,acknowledgements=excluded.acknowledgements,sent_at=coalesce(excluded.sent_at,device_commands.sent_at),payload=excluded.payload
+        where (case excluded.status when 'QUEUED' then 0 when 'SENT' then 1 when 'PARTIAL' then 2 when 'ACKED' then 3 when 'TIMEOUT' then 3 when 'CANCELLED' then 4 else 0 end)
+           >= (case device_commands.status when 'QUEUED' then 0 when 'SENT' then 1 when 'PARTIAL' then 2 when 'ACKED' then 3 when 'TIMEOUT' then 3 when 'CANCELLED' then 4 else 0 end)
+      `,[c.id,c.numericId,c.wardrobeId,c.requestedBy||null,c.command,asJson(c.targets||[]),c.durationMs||0,c.status,asJson(c.acknowledgements||{}),c.createdAt,c.expiresAt||null,c.sentAt||null,asJson(c)]);
       await insertBatch(client, 'wardrobe_events', ['id', 'wardrobe_id', 'type', 'severity', 'payload', 'at'], data.events, e => [e.id, e.wardrobeId || null, e.type, e.severity || 'info', asJson(e), e.at]);
 
       await client.query('commit');
