@@ -38,7 +38,7 @@
     const text = `${g?.category || ''} ${g?.name || ''}`.toLowerCase();
     if (['아우터', '자켓', '재킷', '코트', '패딩', '가디건', '블레이저', '점퍼', '집업', '조끼', 'outer', 'jacket', 'coat', 'cardigan', 'padding'].some(k => text.includes(k)))
       return 'outer';
-    if (['하의', '바지', '팬츠', '슬랙스', '청바지', '데님', '치노', '스커트', '반바지', '면바지', 'pants', 'bottom', 'slacks', 'jeans', 'skirt', 'shorts'].some(k => text.includes(k)))
+    if (['하의', '바지', '팬츠', '슬랙스', '슬렉스', '청바지', '데님', '치노', '스커트', '반바지', '면바지', 'pants', 'bottom', 'slacks', 'jeans', 'skirt', 'shorts'].some(k => text.includes(k)))
       return 'bottom';
     return 'top';
   }

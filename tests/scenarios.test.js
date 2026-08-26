@@ -609,7 +609,14 @@ test('Scenario L: Multi-Hanger Outfit FIND & STOP flow', async () => {
 });
 
 test('Scenario M: Recommendation Engine Unit Tests (0~100 score, search, ranking, chat)', () => {
-  const OutfitEngine = require('../shared/recommendation');
+  const sharedEnginePath = path.join(__dirname, '..', 'shared', 'recommendation.js');
+  const browserEnginePath = path.join(__dirname, '..', 'web', 'public', 'recommendation.js');
+  assert.equal(
+    fs.readFileSync(browserEnginePath, 'utf8'),
+    fs.readFileSync(sharedEnginePath, 'utf8'),
+    'Browser recommendation engine must stay synchronized with the shared source'
+  );
+  const OutfitEngine = require('../web/public/recommendation');
 
   // 1. Chosung & search
   assert.ok(OutfitEngine.matchQuery('네이비 셔츠', '네'));
@@ -620,6 +627,7 @@ test('Scenario M: Recommendation Engine Unit Tests (0~100 score, search, ranking
   // 2. Garment categorization
   assert.equal(OutfitEngine.categorizeGarment({ category: '셔츠', name: '옥스포드' }), 'top');
   assert.equal(OutfitEngine.categorizeGarment({ category: '바지', name: '치노 팬츠' }), 'bottom');
+  assert.equal(OutfitEngine.categorizeGarment({ category: '슬렉스', name: '검정 슬렉스' }), 'bottom');
   assert.equal(OutfitEngine.categorizeGarment({ category: '아우터', name: '블레이저' }), 'outer');
 
   // 3. Mock garments

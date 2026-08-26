@@ -38,7 +38,7 @@
     const text = `${g?.category || ''} ${g?.name || ''}`.toLowerCase();
     if (['아우터', '자켓', '재킷', '코트', '패딩', '가디건', '블레이저', '점퍼', '집업', '조끼', 'outer', 'jacket', 'coat', 'cardigan', 'padding'].some(k => text.includes(k)))
       return 'outer';
-    if (['하의', '바지', '팬츠', '슬랙스', '청바지', '데님', '치노', '스커트', '반바지', '면바지', 'pants', 'bottom', 'slacks', 'jeans', 'skirt', 'shorts'].some(k => text.includes(k)))
+    if (['하의', '바지', '팬츠', '슬랙스', '슬렉스', '청바지', '데님', '치노', '스커트', '반바지', '면바지', 'pants', 'bottom', 'slacks', 'jeans', 'skirt', 'shorts'].some(k => text.includes(k)))
       return 'bottom';
     return 'top';
   }
@@ -144,6 +144,7 @@
    */
   function normalizeDisplayScore(rawScore, minRaw = 40, maxRaw = 100) {
     if (rawScore >= maxRaw) {
+      // Scale gracefully between 95 and 100
       const overflow = rawScore - maxRaw;
       return Math.min(100, Math.round(95 + Math.min(5, overflow * 0.25)));
     }
@@ -155,12 +156,12 @@
    * Generate Whole Outfit Recommendations (Top 1~3)
    */
   function generateWholeOutfits(garments, weather = null, occasion = 'all') {
-    const inWardrobe = (garments || []).filter(g => g.currentState === 'IN_WARDROBE' && g.currentHanger);
-    if (inWardrobe.length < 2) return [];
+    const registered = (garments || []).filter(g => g && g.id);
+    if (registered.length < 2) return [];
 
-    const tops = inWardrobe.filter(g => categorizeGarment(g) === 'top');
-    const bottoms = inWardrobe.filter(g => categorizeGarment(g) === 'bottom');
-    const outers = inWardrobe.filter(g => categorizeGarment(g) === 'outer');
+    const tops = registered.filter(g => categorizeGarment(g) === 'top');
+    const bottoms = registered.filter(g => categorizeGarment(g) === 'bottom');
+    const outers = registered.filter(g => categorizeGarment(g) === 'outer');
 
     const candidates = [];
 
@@ -194,7 +195,7 @@
           displayScore: normalizeDisplayScore(rawScore),
           reasons: reasons.slice(0, 3),
           items: [top, bottom],
-          targets: [top.currentHanger, bottom.currentHanger],
+          targets: [top.currentHanger, bottom.currentHanger].filter(Boolean),
         });
 
         // 2. Top + Bottom + Outer
@@ -227,7 +228,7 @@
             displayScore: normalizeDisplayScore(outerRawScore),
             reasons: outerReasons.slice(0, 3),
             items: [outer, top, bottom],
-            targets: [outer.currentHanger, top.currentHanger, bottom.currentHanger],
+            targets: [outer.currentHanger, top.currentHanger, bottom.currentHanger].filter(Boolean),
           });
         }
       }
@@ -242,12 +243,12 @@
    */
   function generateSingleGarmentMatches(baseGarmentId, garments, weather = null, occasion = 'all') {
     const base = (garments || []).find(g => g.id === baseGarmentId);
-    if (!base || base.currentState !== 'IN_WARDROBE') return [];
+    if (!base) return [];
 
     const baseCat = categorizeGarment(base);
-    const inWardrobe = (garments || []).filter(g => g.currentState === 'IN_WARDROBE' && g.id !== base.id && g.currentHanger);
+    const registered = (garments || []).filter(g => g && g.id !== base.id);
 
-    const matches = inWardrobe.map(g => {
+    const matches = registered.map(g => {
       let rawScore = 50;
       const reasons = [];
       const targetCat = categorizeGarment(g);
@@ -283,7 +284,7 @@
         rawScore,
         displayScore: normalizeDisplayScore(rawScore),
         reasons: reasons.slice(0, 3),
-        targets: [base.currentHanger, g.currentHanger],
+        targets: [base.currentHanger, g.currentHanger].filter(Boolean),
       };
     });
 
