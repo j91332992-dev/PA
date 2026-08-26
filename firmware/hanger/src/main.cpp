@@ -424,6 +424,7 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
       }
       lastBeaconMs = millis();
       channelState = ChannelState::LOCKED;
+      reportAfterGatewayBeacon = true;
       return;
     }
     // Discovery is not pairing. A reset or fresh hanger must never adopt the
@@ -701,7 +702,7 @@ void maintainChannel() {
 
   // A paired hanger stays on the last proven channel indefinitely. Searching
   // is reserved for a fresh hanger or the explicit BLE re-pair action above.
-  if (pairedGateway.length() && !manualPairSearchActive) return;
+  if (pairedGateway.length() && !hangerLinkDisabled && !manualPairSearchActive) return;
   // An unpaired hanger locks temporarily only to report through a nearby
   // rod. If that rod disappears, resume discovery instead of staying forever
   // on a stale channel.
