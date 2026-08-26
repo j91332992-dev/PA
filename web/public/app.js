@@ -1291,6 +1291,7 @@ async function enter(knownUser = null) {
       sessionUser.adminVerified = !!adminStatus.verified;
       if (!sessionUser.adminVerified) {
         showAdminSecondFactor();
+        finishSessionRestore();
         return;
       }
       hideAdminSecondFactor();
@@ -1299,6 +1300,7 @@ async function enter(knownUser = null) {
       $('#app').hidden = true;
       $('#app').style.display = 'none';
       await showAdminShell();
+      finishSessionRestore();
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
@@ -1309,6 +1311,7 @@ async function enter(knownUser = null) {
     $('#auth').style.display = 'none';
     $('#app').hidden = false;
     $('#app').style.display = 'block';
+    finishSessionRestore();
     ensureAdminUi();
     switchView('dashboard');
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1331,6 +1334,7 @@ async function enter(knownUser = null) {
       clearAdminSession();
       token = null;
       showAuth();
+      finishSessionRestore();
       const authError = document.querySelector('#authError');
       if (authError) authError.textContent = '로그인이 만료되었습니다. 다시 로그인해 주세요.';
     } else {
@@ -1338,6 +1342,7 @@ async function enter(knownUser = null) {
       document.querySelector('#auth').style.display = 'none';
       document.querySelector('#app').hidden = false;
       document.querySelector('#app').style.display = 'block';
+      finishSessionRestore();
       document.querySelector('#connection').textContent = '클라우드 재연결 중';
       document.querySelector('#dot').className = '';
       clearTimeout(retry);
@@ -1345,6 +1350,12 @@ async function enter(knownUser = null) {
     }
   }
 }
+function finishSessionRestore() {
+  document.documentElement.classList.remove('session-restoring');
+  const overlay = document.querySelector('#sessionRestore');
+  if (overlay) overlay.style.display = 'none';
+}
+
 
 async function showAuth() {
   hideAdminShell();
@@ -2760,8 +2771,30 @@ async function connectHangerBluetooth(options = {}) {
   const silent = options?.silent === true;
   const forceChooser = options?.forceChooser === true;
   if (hasNativeGatewayBridge()) {
-    if (nativeGatewayBleConnected && nativeGatewayBleId) return true;
     const expectedGatewayIds = (model.gateways || []).map(item => String(item.gatewayId || '').toUpperCase()).filter(Boolean);
+    if (nativeGatewayBleConnected && nativeGatewayBleId) {
+      const pairing = await refreshBleOwnership('gateways', nativeGatewayBleId);
+      if (pairing.ownership === 'OTHER_ACCOUNT') {
+        await nativeGatewayCall('otkokBleDisconnect').catch(() => {});
+        nativeGatewayBleConnected = false;
+        nativeGatewayBleId = '';
+        if (!silent) setBleSetupMessage(pairingBlockedMessage('gateways', pairing), true);
+        return false;
+      }
+      currentBleGatewayId = nativeGatewayBleId;
+      if (shouldScanWifi) await scanHangerWifi();
+      if (!silent) {
+        setBleSetupMessage('스마트 옷봉과 BLE로 연결되었습니다. 주변 Wi-Fi 검색 결과를 기다려 주세요.');
+        toast('근처 옷봉과 연결되었습니다.');
+      }
+      return true;
+    }
+    const button = $('#connectHangerBle');
+    if (button) {
+      button.disabled = true;
+      button.textContent = '근처 옷봉 검색 중…';
+    }
+    if (!silent) setBleSetupMessage('근처에서 전원이 켜진 스마트 옷봉을 검색하고 있습니다…');
     try {
       const result = await nativeGatewayCall('otkokBleConnect', { expectedGatewayIds });
       const gatewayId = String(result?.gatewayId || '').toUpperCase();
@@ -2790,6 +2823,11 @@ async function connectHangerBluetooth(options = {}) {
       nativeGatewayBleId = '';
       if (!silent) setBleSetupMessage(error?.message || '앱 BLE 연결에 실패했습니다.', true);
       return false;
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = '옷봉 찾기 (블루투스)';
+      }
     }
   }
   if (!navigator.bluetooth || !window.isSecureContext) {
@@ -3658,7 +3696,7 @@ function installGatewayWifiSetup() {
   };
 
   const connectHangerBleBtn = $('#connectHangerBle');
-  if (connectHangerBleBtn) connectHangerBleBtn.onclick = connectHangerBluetooth;
+  if (connectHangerBleBtn) connectHangerBleBtn.onclick = () => connectHangerBluetooth({ scanWifi: true, allowChooser: true, silent: false });
 
   const claimReleasedGatewayBtn = $('#claimReleasedGateway');
   if (claimReleasedGatewayBtn) {

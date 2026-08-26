@@ -40,12 +40,23 @@ class GatewayBle {
   StreamSubscription<List<int>>? _statusSubscription;
   StreamSubscription<List<int>>? _gatewayStatusSubscription;
   StreamSubscription<BluetoothConnectionState>? _connectionSubscription;
+  Future<Map<String, dynamic>>? _connecting;
   String gatewayId = '';
 
   Stream<Map<String, dynamic>> get events => _events.stream;
   bool get connected => _device != null && _command != null && gatewayId.isNotEmpty;
 
-  Future<Map<String, dynamic>> connect(List<String> expectedGatewayIds) async {
+  Future<Map<String, dynamic>> connect(List<String> expectedGatewayIds) {
+    final active = _connecting;
+    if (active != null) return active;
+    final request = _connect(expectedGatewayIds);
+    _connecting = request;
+    return request.whenComplete(() {
+      if (identical(_connecting, request)) _connecting = null;
+    });
+  }
+
+  Future<Map<String, dynamic>> _connect(List<String> expectedGatewayIds) async {
     final expected = expectedGatewayIds.map((id) => id.toUpperCase()).toSet();
     if (connected && (expected.isEmpty || expected.contains(gatewayId))) return _connectionResult(true);
     if (!await _requestPermissions()) return {'connected': false, 'error': '블루투스 권한이 필요합니다.'};
@@ -60,20 +71,29 @@ class GatewayBle {
     }
 
     final found = <String, ScanResult>{};
+    final firstCandidate = Completer<void>();
     StreamSubscription<List<ScanResult>>? scanSubscription;
     try {
+      _events.add({'type': 'scan', 'state': 'started'});
       scanSubscription = FlutterBluePlus.scanResults.listen((results) {
         for (final result in results) {
-          if (result.advertisementData.serviceUuids.contains(_gatewayService)) found[result.device.remoteId.str] = result;
+          if (result.advertisementData.serviceUuids.contains(_gatewayService)) {
+            found[result.device.remoteId.str] = result;
+            if (!firstCandidate.isCompleted) firstCandidate.complete();
+          }
         }
       });
-      await FlutterBluePlus.startScan(withServices: [_gatewayService], timeout: const Duration(seconds: 7));
-      await Future<void>.delayed(const Duration(seconds: 7));
+      await FlutterBluePlus.startScan(withServices: [_gatewayService], timeout: const Duration(seconds: 5));
+      await Future.any([
+        firstCandidate.future.then((_) => Future<void>.delayed(const Duration(milliseconds: 650))),
+        Future<void>.delayed(const Duration(seconds: 5)),
+      ]);
     } catch (_) {
       // Candidates collected before an Android controller timeout remain valid.
     } finally {
       try { await FlutterBluePlus.stopScan(); } catch (_) {}
       await scanSubscription?.cancel();
+      _events.add({'type': 'scan', 'state': 'stopped', 'count': found.length});
     }
 
     final candidates = found.values.toList()..sort((a, b) => b.rssi.compareTo(a.rssi));
