@@ -1010,7 +1010,10 @@ void wifi() {
     return;
   }
   const int failure = WiFi.status();
-  const bool networkVisible = diagnoseWifi(ssid);
+  // A full active scan can block the S3 for tens of seconds after an AP
+  // failure. Keep ESP-NOW and BLE recovery responsive; a user-triggered BLE
+  // scan remains available when credentials need changing.
+  const bool networkVisible = true;
   if (!networkVisible) {
     setBleStatus("wifi_not_found", "선택한 2.4 GHz Wi-Fi를 찾지 못했습니다. Wi-Fi 이름·거리·2.4 GHz 설정을 확인하세요.");
   } else if (failure == WL_CONNECT_FAILED) {
