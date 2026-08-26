@@ -18,3 +18,4 @@ data/*.log
 __pycache__/
 *.py[cod]
 .vercel-package/
+.vercel/

@@ -59,7 +59,8 @@ function postgresStorage(connectionString, initial){
     // Serverless instances can multiply quickly. A small pool prevents one
     // mobile dashboard's polling from exhausting the shared Supabase pool.
     max:Number(process.env.PG_POOL_MAX||2),
-    connectionTimeoutMillis:7000,
+    connectionTimeoutMillis:Number(process.env.PG_CONNECTION_TIMEOUT_MS||20000),
+    keepAlive:true,
   });
   const scalar={
     users:['id','email','name','passwordHash','role','lastLoginAt','createdAt'],
