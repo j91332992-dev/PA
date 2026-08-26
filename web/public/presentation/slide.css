@@ -324,7 +324,7 @@ h3 {
 
 .hook-layout {
   display: grid;
-  grid-template-columns: minmax(0, .88fr) minmax(420px, 1.12fr);
+  grid-template-columns: minmax(0, .66fr) minmax(520px, 1.34fr);
   align-items: center;
   gap: clamp(34px, 5vw, 84px);
   flex: 1;
@@ -352,8 +352,12 @@ h3 {
 .hook-stat b { display: block; color: var(--navy); font-size: 13px; }
 .hook-stat span { color: var(--muted); font-size: 10px; }
 
-.hook-visual { position: relative; min-height: 545px; display: grid; place-items: center; }
-.hook-visual .video-slot { position: absolute; right: 1%; bottom: 4%; width: min(45%, 290px); min-height: 165px; z-index: 4; }
+.hook-visual { position: relative; min-height: 570px; display: grid; place-items: center; }
+.hook-visual .video-slot { position: relative; right: auto; bottom: auto; width: 100%; min-height: 420px; aspect-ratio: 16 / 9; z-index: 4; }
+.hook-visual .video-slot .slot-center { padding: 30px; }
+.hook-visual .video-slot .slot-center strong { font-size: clamp(18px, 1.6vw, 26px); }
+.hook-visual .video-slot .slot-center span { max-width: 330px; font-size: 12px; }
+.hook-visual .hanger-stage { position: absolute; left: -9%; bottom: -11%; z-index: 5; width: 280px; height: 300px; transform: scale(.62); transform-origin: left bottom; opacity: .88; pointer-events: none; }
 .hanger-stage { position: relative; width: min(510px, 44vw); height: 520px; }
 .hanger-halo { position: absolute; inset: 4% 6%; border: 1px solid rgba(47, 120, 208, .23); border-radius: 50%; box-shadow: 0 0 80px rgba(47, 120, 208, .13), inset 0 0 90px rgba(47, 120, 208, .06); }
 .hanger-halo::after { content: ""; position: absolute; inset: 11%; border: 1px dashed rgba(47, 120, 208, .18); border-radius: 50%; }
@@ -561,7 +565,8 @@ h3 {
   .hook-layout, .intro-layout, .problem-layout, .survey-layout, .market-layout, .system-layout, .app-layout, .live-layout, .validation-layout { grid-template-columns: 1fr; gap: 25px; }
   .hook-visual { min-height: 430px; }
   .hanger-stage { width: min(520px, 92vw); }
-  .hook-visual .video-slot { width: 48%; }
+  .hook-visual .video-slot { width: 100%; min-height: 330px; }
+  .hook-visual .hanger-stage { left: -4%; bottom: -7%; transform: scale(.48); }
   .customer-grid, .solution-track { grid-template-columns: 1fr; }
   .solution-node:not(:last-child)::after { content: "↓"; right: auto; left: 50%; top: auto; bottom: -25px; transform: translateX(-50%); }
   .need-row { grid-template-columns: repeat(2, 1fr); }
