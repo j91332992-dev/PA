@@ -924,6 +924,37 @@ window.stopGarment = async hangerId => {
   }
 };
 
+window.findHangerForThreeSeconds = async (hangerId, button) => {
+  const hanger = (model.hangers || []).find(item => item.hangerId === hangerId);
+  if (!hanger) {
+    toast('내 계정에 등록된 옷걸이만 찾을 수 있습니다.');
+    return;
+  }
+  const originalText = button?.textContent || '옷걸이 찾기 · 3초';
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'LED 점멸 중 · 3초';
+  }
+  try {
+    const result = await sendPrimaryLocalCommand('local_find', [hangerId], 3000);
+    toast(result.transport === 'ble'
+      ? `[근처 옷봉] ${hangerDisplayName(hanger)} LED가 3초간 점멸합니다.`
+      : `${hangerDisplayName(hanger)} LED 3초 찾기 명령을 전송했습니다.`);
+    setTimeout(() => {
+      if (button?.isConnected) {
+        button.disabled = false;
+        button.textContent = originalText;
+      }
+    }, 3000);
+  } catch (error) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+    toast(`[옷걸이 찾기 오류] ${error.message}`);
+  }
+};
+
 window.findOutfit = async (targets, title) => {
   if (!targets || !targets.length) return;
   try {
@@ -1073,6 +1104,9 @@ function render() {
             ${x.lastSeen ? new Date(x.lastSeen).toLocaleString() : '신호 없음'}<br>
             진단 ID ${esc(x.hangerId)} · FW ${esc(x.firmwareVersion)}
           </small>
+          <div style="margin-top:10px">
+            <button class="primary" style="width:100%;font-size:12px;padding:8px" onclick="findHangerForThreeSeconds('${x.hangerId}', this)">옷걸이 찾기 · 3초</button>
+          </div>
           ${
             isLedOn
               ? `<div style="margin-top:10px">
@@ -3626,6 +3660,7 @@ function renderDeviceManagement() {
           </div>
           <div class="actions">
             <button type="button" data-hanger-action="settings" data-id="${esc(h.hangerId)}">설정</button>
+            <button type="button" class="primary" data-hanger-action="find" data-id="${esc(h.hangerId)}">옷걸이 찾기 · 3초</button>
             <button type="button" class="ghost" style="color:var(--ink);border:1px solid #cbd4cd" data-hanger-action="diagnose" data-id="${esc(h.hangerId)}">진단</button>
           </div>
         </div>`;
@@ -3694,6 +3729,10 @@ function renderDeviceManagement() {
 
   panel.querySelectorAll('[data-hanger-action="settings"]').forEach(btn => {
     btn.onclick = () => openHangerSettings(btn.dataset.id);
+  });
+
+  panel.querySelectorAll('[data-hanger-action="find"]').forEach(btn => {
+    btn.onclick = () => window.findHangerForThreeSeconds(btn.dataset.id, btn);
   });
 
   panel.querySelectorAll('[data-hanger-action="diagnose"]').forEach(btn => {
