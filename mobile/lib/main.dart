@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -270,6 +271,14 @@ class _OtkokWebAppState extends State<OtkokWebApp> with WidgetsBindingObserver {
             child: Stack(children: [
               InAppWebView(
                 initialUrlRequest: URLRequest(url: WebUri(_webUrl)),
+                initialUserScripts: UnmodifiableListView([
+                  UserScript(
+                    groupName: 'otkok-native-bridge',
+                    source: 'window.__OTKOK_NATIVE_APK__=true;',
+                    injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                    forMainFrameOnly: true,
+                  ),
+                ]),
                 initialSettings: InAppWebViewSettings(javaScriptEnabled: true, domStorageEnabled: true, databaseEnabled: true, cacheEnabled: true, supportZoom: false, mediaPlaybackRequiresUserGesture: false, allowsInlineMediaPlayback: true, useShouldOverrideUrlLoading: true),
                 onWebViewCreated: (controller) {
                   _controller = controller;

@@ -2331,12 +2331,17 @@ let nativeGatewayBleConnected = false;
 let nativeGatewayBleId = '';
 
 function hasNativeGatewayBridge() {
-  return window.__OTKOK_NATIVE_APK__ === true && typeof window.flutter_inappwebview?.callHandler === 'function';
+  return window.__OTKOK_NATIVE_APK__ === true;
 }
 
-function nativeGatewayCall(handler, payload = {}) {
+async function nativeGatewayCall(handler, payload = {}) {
   if (!hasNativeGatewayBridge()) return Promise.reject(new Error('앱 BLE 브리지를 사용할 수 없습니다.'));
-  return window.flutter_inappwebview.callHandler(handler, payload);
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const callHandler = window.flutter_inappwebview?.callHandler;
+    if (typeof callHandler === 'function') return callHandler.call(window.flutter_inappwebview, handler, payload);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error('앱 블루투스 기능을 준비하지 못했습니다. 앱을 완전히 종료한 뒤 다시 실행해 주세요.');
 }
 
 function rememberedGatewayIdForDevice(device) {
