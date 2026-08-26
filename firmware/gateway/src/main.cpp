@@ -493,7 +493,10 @@ bool connectWifi(const String& ssid, const String& password, uint32_t timeoutMs 
   // A previous reconnect can still be in progress after a failed association.
   // Starting WiFi.begin() on top of it leaves the S3 stuck in STA_CONNECTING.
   if (WiFi.status() != WL_CONNECTED) {
-    WiFi.disconnect(false, true);
+    // Keep the saved AP profile intact. Erasing it while recovering from a
+    // transient disconnect can leave the S3 in a reconnect loop after DHCP
+    // renewals or a router restart.
+    WiFi.disconnect(false, false);
     delay(250);
   }
   WiFi.mode(WIFI_STA);
@@ -505,8 +508,8 @@ bool connectWifi(const String& ssid, const String& password, uint32_t timeoutMs 
   const uint32_t started = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - started < timeoutMs) delay(100);
   if (WiFi.status() == WL_CONNECTED) {
-    IPAddress dns1(8, 8, 8, 8), dns2(1, 1, 1, 1);
-    WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), dns1, dns2);
+    // Retain DHCP's lease, gateway and DNS. Re-applying the current address
+    // after association turns it into a stale static lease on some routers.
     return true;
   }
   Serial.printf("[WIFI] Connection attempt ended with status=%d\n", WiFi.status());
