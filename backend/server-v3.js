@@ -150,6 +150,20 @@ function initializeStorage() {
   return ready;
 }
 initializeStorage();
+// Serverless requests can hit different warm instances, but reloading every
+// table (and running ownership DDL) for every poll turns a healthy database
+// into a login/504 bottleneck. Keep a very short authoritative cache: device
+// claim operations remain transaction-protected in PostgreSQL and nearby BLE
+// status never waits for this cloud refresh.
+let authoritativeReloadAt=0,authoritativeReloadPromise=null;
+async function reloadAuthoritativeState(force=false){
+  if(!(process.env.VERCEL&&storage.mode==='postgres'))return;
+  if(!force&&Date.now()-authoritativeReloadAt<1500)return;
+  if(!authoritativeReloadPromise)authoritativeReloadPromise=storage.reload().then(loaded=>{
+    db=loaded;reconcile();authoritativeReloadAt=Date.now();
+  }).finally(()=>{authoritativeReloadPromise=null;});
+  await authoritativeReloadPromise;
+}
 let ownershipSyncAt=0,ownershipSyncPromise=null;
 async function syncDeviceOwnershipState(force=false){
   if(storage.mode!=='postgres')return;
@@ -398,7 +412,7 @@ const server=http.createServer(async(req,res)=>{try{
     if(!isReady)throw error(503,'데이터 연결을 다시 시도 중입니다. 잠시 후 자동으로 다시 연결됩니다.');
   }
   // Vercel may route consecutive requests to different warm instances. PostgreSQL is authoritative.
-  if(process.env.VERCEL&&storage.mode==='postgres'){db=await storage.reload();reconcile();}
+  await reloadAuthoritativeState();
   // Device ownership is authoritative in PostgreSQL, not in a warm Vercel
   // instance's memory. Refreshing it prevents a stale instance from showing
   // or saving a device that another request has already released.

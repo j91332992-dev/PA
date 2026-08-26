@@ -188,13 +188,36 @@ function postgresStorage(connectionString, initial){
         await persist(imported);
         return imported;
       }
-      return {...out,schemaVersion:4};
+      const hydrated={...out,schemaVersion:4};
+      baselineByData.set(hydrated,clone(hydrated));
+      return hydrated;
     }finally{client.release();}
   }
-  async function insertBatch(client, tableName, columns, rows, mapRow, batchSize = 100) {
+  const clone = value => JSON.parse(JSON.stringify(value));
+  const baselineByData = new WeakMap();
+  const recordKey = {
+    users: value => value.id,
+    wardrobes: value => value.id,
+    gateways: value => value.gatewayId,
+    hangers: value => value.hangerId,
+    garments: value => value.id,
+    commands: value => value.id,
+    events: value => value.id,
+  };
+  const changedRecords = (key, current, baseline) => {
+    const before = new Map((baseline || []).map(value => [recordKey[key](value), JSON.stringify(value)]));
+    return (current || []).filter(value => before.get(recordKey[key](value)) !== JSON.stringify(value));
+  };
+  const removedRecordIds = (key, current, baseline) => {
+    const present = new Set((current || []).map(recordKey[key]));
+    return (baseline || []).map(recordKey[key]).filter(value => !present.has(value));
+  };
+
+  async function insertBatch(client, tableName, columns, rows, mapRow, conflictColumn = columns[0], batchSize = 100) {
     if (!rows || rows.length === 0) return;
     const colList = columns.join(',');
     const colCount = columns.length;
+    const updates = columns.filter(column => column !== conflictColumn).map(column => `${column}=excluded.${column}`).join(',');
     for (let i = 0; i < rows.length; i += batchSize) {
       const chunk = rows.slice(i, i + batchSize);
       const valuePlaceholders = [];
@@ -208,30 +231,42 @@ function postgresStorage(connectionString, initial){
         }
         valuePlaceholders.push(`(${placeholders.join(',')})`);
       }
-      const query = `insert into ${tableName} (${colList}) values ${valuePlaceholders.join(',')}`;
+      const query = `insert into ${tableName} (${colList}) values ${valuePlaceholders.join(',')} on conflict (${conflictColumn}) do update set ${updates}`;
       await client.query(query, flatParams);
     }
   }
 
-  async function persist(data) {
+  async function deleteRemoved(client, tableName, column, ids) {
+    if (!ids.length) return;
+    await client.query(`delete from ${tableName} where ${column} = any($1::text[])`, [ids]);
+  }
+
+  async function persist(data, baseline = initial()) {
     const client = await pool.connect();
     try {
       await client.query('begin');
-      // Ownership is stored separately from volatile telemetry. This makes a
-      // release durable even if an older Vercel instance later saves a stale
-      // in-memory snapshot of the same hardware.
+      // Ownership has its own authority table. Reconcile it before calculating
+      // the delta so a stale serverless instance cannot reclaim a released rod.
       await readAndEnforceDeviceOwnership(client,data);
-      for (const key of ['events', 'garments', 'hangers', 'gateways', 'wardrobes', 'users']) {
-        await client.query(`delete from ${table[key]}`);
-      }
+      const changed = key => changedRecords(key, data[key], baseline[key]);
+      const removed = key => removedRecordIds(key, data[key], baseline[key]);
+      // Delete only records this request actually removed from the version it
+      // loaded. Never truncate shared tables: other accounts stay untouched.
+      await deleteRemoved(client, 'wardrobe_events', 'id', removed('events'));
+      await deleteRemoved(client, 'device_commands', 'id', removed('commands'));
+      await deleteRemoved(client, 'garments', 'id', removed('garments'));
+      await deleteRemoved(client, 'hangers', 'hanger_id', removed('hangers'));
+      await deleteRemoved(client, 'gateways', 'gateway_id', removed('gateways'));
+      await deleteRemoved(client, 'wardrobes', 'id', removed('wardrobes'));
+      await deleteRemoved(client, 'app_users', 'id', removed('users'));
       const asJson = value => JSON.stringify(value ?? {});
 
-      await insertBatch(client, 'app_users', ['id', 'email', 'name', 'password_hash', 'role', 'last_login_at', 'created_at', 'payload'], data.users, u => [u.id, u.email, u.name, u.passwordHash, u.role || 'user', u.lastLoginAt || null, u.createdAt, asJson(u)]);
-      await insertBatch(client, 'wardrobes', ['id', 'user_id', 'name', 'created_at', 'payload'], data.wardrobes, w => [w.id, w.userId, w.name, w.createdAt, asJson(w)]);
-      await insertBatch(client, 'gateways', ['gateway_id', 'wardrobe_id', 'name', 'custom_name', 'gateway_number', 'state', 'last_seen', 'channel', 'firmware_version', 'created_at', 'payload'], data.gateways, g => [g.gatewayId, g.wardrobeId, g.name || '새 옷봉', g.customName || '', g.gatewayNumber || null, g.state || null, g.lastSeen || null, g.channel || null, g.firmwareVersion || null, g.createdAt || new Date().toISOString(), asJson(g)]);
-      await insertBatch(client, 'hangers', ['hanger_id', 'wardrobe_id', 'gateway_id', 'alias', 'custom_name', 'hanger_number', 'state', 'reported_state', 'tag_uid', 'last_seen', 'last_sequence', 'boot_id', 'channel', 'rssi', 'error_flags', 'firmware_version', 'created_at', 'payload'], data.hangers, h => [h.hangerId, h.wardrobeId, h.gatewayId || null, h.alias || '', h.customName || '', h.hangerNumber || null, h.state || null, h.reportedState || null, h.tagUid || null, h.lastSeen || null, h.lastSequence ?? -1, h.bootId || null, h.channel || null, h.rssi || null, h.errorFlags || null, h.firmwareVersion || null, h.createdAt || new Date().toISOString(), asJson(h)]);
-      await insertBatch(client, 'garments', ['id', 'wardrobe_id', 'created_by', 'tag_uid', 'name', 'category', 'color', 'season', 'brand', 'memo', 'image_url', 'original_image_path', 'processed_image_path', 'image_processing_status', 'classification', 'classification_confidence', 'processing_error', 'current_state', 'current_hanger', 'last_seen', 'created_at', 'payload'], data.garments, g => [g.id, g.wardrobeId, g.createdBy || null, g.tagUid, g.name, g.category || '', g.color || '', g.season || '', g.brand || '', g.memo || '', g.imageUrl || '', g.originalImagePath || '', g.processedImagePath || '', g.imageProcessingStatus || 'ready', asJson(g.classification || {}), asJson(g.classificationConfidence || {}), g.processingError || '', g.currentState || 'OUT', g.currentHanger || null, g.lastSeen || null, g.createdAt || new Date().toISOString(), asJson(g)]);
-      for (const c of data.commands || []) await client.query(`
+      await insertBatch(client, 'app_users', ['id', 'email', 'name', 'password_hash', 'role', 'last_login_at', 'created_at', 'payload'], changed('users'), u => [u.id, u.email, u.name, u.passwordHash, u.role || 'user', u.lastLoginAt || null, u.createdAt, asJson(u)]);
+      await insertBatch(client, 'wardrobes', ['id', 'user_id', 'name', 'created_at', 'payload'], changed('wardrobes'), w => [w.id, w.userId, w.name, w.createdAt, asJson(w)]);
+      await insertBatch(client, 'gateways', ['gateway_id', 'wardrobe_id', 'name', 'custom_name', 'gateway_number', 'state', 'last_seen', 'channel', 'firmware_version', 'created_at', 'payload'], changed('gateways'), g => [g.gatewayId, g.wardrobeId, g.name || '새 옷봉', g.customName || '', g.gatewayNumber || null, g.state || null, g.lastSeen || null, g.channel || null, g.firmwareVersion || null, g.createdAt || new Date().toISOString(), asJson(g)]);
+      await insertBatch(client, 'hangers', ['hanger_id', 'wardrobe_id', 'gateway_id', 'alias', 'custom_name', 'hanger_number', 'state', 'reported_state', 'tag_uid', 'last_seen', 'last_sequence', 'boot_id', 'channel', 'rssi', 'error_flags', 'firmware_version', 'created_at', 'payload'], changed('hangers'), h => [h.hangerId, h.wardrobeId, h.gatewayId || null, h.alias || '', h.customName || '', h.hangerNumber || null, h.state || null, h.reportedState || null, h.tagUid || null, h.lastSeen || null, h.lastSequence ?? -1, h.bootId || null, h.channel || null, h.rssi || null, h.errorFlags || null, h.firmwareVersion || null, h.createdAt || new Date().toISOString(), asJson(h)]);
+      await insertBatch(client, 'garments', ['id', 'wardrobe_id', 'created_by', 'tag_uid', 'name', 'category', 'color', 'season', 'brand', 'memo', 'image_url', 'original_image_path', 'processed_image_path', 'image_processing_status', 'classification', 'classification_confidence', 'processing_error', 'current_state', 'current_hanger', 'last_seen', 'created_at', 'payload'], changed('garments'), g => [g.id, g.wardrobeId, g.createdBy || null, g.tagUid, g.name, g.category || '', g.color || '', g.season || '', g.brand || '', g.memo || '', g.imageUrl || '', g.originalImagePath || '', g.processedImagePath || '', g.imageProcessingStatus || 'ready', asJson(g.classification || {}), asJson(g.classificationConfidence || {}), g.processingError || '', g.currentState || 'OUT', g.currentHanger || null, g.lastSeen || null, g.createdAt || new Date().toISOString(), asJson(g)]);
+      for (const c of changed('commands')) await client.query(`
         insert into device_commands(id,numeric_id,wardrobe_id,requested_by,command,targets,duration_ms,status,acknowledgements,created_at,expires_at,sent_at,payload)
         values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
         on conflict(id) do update set
@@ -239,8 +274,7 @@ function postgresStorage(connectionString, initial){
         where (case excluded.status when 'QUEUED' then 0 when 'SENT' then 1 when 'PARTIAL' then 2 when 'ACKED' then 3 when 'TIMEOUT' then 3 when 'CANCELLED' then 4 else 0 end)
            >= (case device_commands.status when 'QUEUED' then 0 when 'SENT' then 1 when 'PARTIAL' then 2 when 'ACKED' then 3 when 'TIMEOUT' then 3 when 'CANCELLED' then 4 else 0 end)
       `,[c.id,c.numericId,c.wardrobeId,c.requestedBy||null,c.command,asJson(c.targets||[]),c.durationMs||0,c.status,asJson(c.acknowledgements||{}),c.createdAt,c.expiresAt||null,c.sentAt||null,asJson(c)]);
-      await insertBatch(client, 'wardrobe_events', ['id', 'wardrobe_id', 'type', 'severity', 'payload', 'at'], data.events, e => [e.id, e.wardrobeId || null, e.type, e.severity || 'info', asJson(e), e.at]);
-
+      await insertBatch(client, 'wardrobe_events', ['id', 'wardrobe_id', 'type', 'severity', 'payload', 'at'], changed('events'), e => [e.id, e.wardrobeId || null, e.type, e.severity || 'info', asJson(e), e.at]);
       await client.query('commit');
     } catch (error) {
       await client.query('rollback').catch(() => {});
@@ -258,13 +292,13 @@ function postgresStorage(connectionString, initial){
     if (isSaving) return;
     isSaving = true;
     while (pendingSnapshot) {
-      const snapshot = pendingSnapshot;
+      const pending = pendingSnapshot;
       const waiters = pendingWaiters;
       pendingSnapshot = null;
       pendingWaiters = [];
-
       try {
-        await persist(snapshot);
+        await persist(pending.snapshot, pending.baseline);
+        baselineByData.set(pending.source, clone(pending.snapshot));
         waiters.forEach(w => w.resolve());
       } catch (err) {
         waiters.forEach(w => w.reject(err));
@@ -274,14 +308,14 @@ function postgresStorage(connectionString, initial){
   }
 
   function save(data) {
-    const snapshot = JSON.parse(JSON.stringify(data));
-    pendingSnapshot = snapshot;
+    const snapshot = clone(data);
+    const baseline = clone(baselineByData.get(data) || initial());
+    pendingSnapshot = {snapshot, baseline, source: data};
     return new Promise((resolve, reject) => {
       pendingWaiters.push({ resolve, reject });
       runSaveLoop().catch(() => {});
     });
   }
-
   async function syncDeviceOwnership(data){
     const client=await pool.connect();
     try{await readAndEnforceDeviceOwnership(client,data);}finally{client.release();}
