@@ -635,9 +635,17 @@ test('Scenario M: Recommendation Engine Unit Tests (0~100 score, search, ranking
   assert.ok(outfits.length > 0);
   for (const o of outfits) {
     assert.ok(o.displayScore >= 0 && o.displayScore <= 100, `displayScore ${o.displayScore} is between 0 and 100`);
-    assert.ok(o.items.every(item => item.currentState === 'IN_WARDROBE'), 'Only IN_WARDROBE garments included');
+    assert.ok(o.items.every(item => mockGarments.some(g => g.id === item.id)), 'Only registered garments included');
     assert.ok(o.reasons.length >= 1, 'At least 1 reason provided');
   }
+
+  const outEligible = OutfitEngine.generateWholeOutfits([
+    mockGarments[0],
+    mockGarments[3],
+  ], { temp: 25, precipitation: 0 }, 'all');
+  assert.equal(outEligible.length, 1, 'OUT garment can participate in a recommendation');
+  assert.deepEqual(outEligible[0].items.map(item => item.id), ['g1', 'g4']);
+  assert.deepEqual(outEligible[0].targets, ['HC-000001'], 'Only currently attached hangers become LED targets');
 
   // 5. Single Garment Matching
   const matches = OutfitEngine.generateSingleGarmentMatches('g1', mockGarments, { temp: 18, precipitation: 0 }, 'business');
@@ -645,10 +653,15 @@ test('Scenario M: Recommendation Engine Unit Tests (0~100 score, search, ranking
   assert.equal(matches[0].garment.id, 'g2'); // Beige slacks best match for navy shirt
   assert.ok(matches[0].displayScore >= 0 && matches[0].displayScore <= 100);
 
+  const outBaseMatches = OutfitEngine.generateSingleGarmentMatches('g4', mockGarments, { temp: 25, precipitation: 0 }, 'all');
+  assert.ok(outBaseMatches.some(match => match.garment.id === 'g1'), 'OUT garment can be the single-match base');
+
   // 6. Chat Query Processing
   const chatRes = OutfitEngine.processChatQuery('오늘 출근할 때 입을 단정한 코디', mockGarments, { temp: 18, precipitation: 0 });
   assert.equal(chatRes.inferredOccasion, 'business');
   assert.ok(chatRes.recommendations.length > 0);
+  const outChat = OutfitEngine.processChatQuery('오늘 입을 코디', [mockGarments[0], mockGarments[3]], { temp: 25, precipitation: 0 });
+  assert.ok(outChat.recommendations[0].items.some(item => item.currentState === 'OUT'), 'Assistant recommends registered OUT garments');
 });
 
 test('Scenario N: Empty Hanger Physical Lifecycle (A, B, C, D) & Logout Persistence', async () => {

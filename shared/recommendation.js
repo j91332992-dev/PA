@@ -156,12 +156,12 @@
    * Generate Whole Outfit Recommendations (Top 1~3)
    */
   function generateWholeOutfits(garments, weather = null, occasion = 'all') {
-    const inWardrobe = (garments || []).filter(g => g.currentState === 'IN_WARDROBE' && g.currentHanger);
-    if (inWardrobe.length < 2) return [];
+    const registered = (garments || []).filter(g => g && g.id);
+    if (registered.length < 2) return [];
 
-    const tops = inWardrobe.filter(g => categorizeGarment(g) === 'top');
-    const bottoms = inWardrobe.filter(g => categorizeGarment(g) === 'bottom');
-    const outers = inWardrobe.filter(g => categorizeGarment(g) === 'outer');
+    const tops = registered.filter(g => categorizeGarment(g) === 'top');
+    const bottoms = registered.filter(g => categorizeGarment(g) === 'bottom');
+    const outers = registered.filter(g => categorizeGarment(g) === 'outer');
 
     const candidates = [];
 
@@ -195,7 +195,7 @@
           displayScore: normalizeDisplayScore(rawScore),
           reasons: reasons.slice(0, 3),
           items: [top, bottom],
-          targets: [top.currentHanger, bottom.currentHanger],
+          targets: [top.currentHanger, bottom.currentHanger].filter(Boolean),
         });
 
         // 2. Top + Bottom + Outer
@@ -228,7 +228,7 @@
             displayScore: normalizeDisplayScore(outerRawScore),
             reasons: outerReasons.slice(0, 3),
             items: [outer, top, bottom],
-            targets: [outer.currentHanger, top.currentHanger, bottom.currentHanger],
+            targets: [outer.currentHanger, top.currentHanger, bottom.currentHanger].filter(Boolean),
           });
         }
       }
@@ -243,12 +243,12 @@
    */
   function generateSingleGarmentMatches(baseGarmentId, garments, weather = null, occasion = 'all') {
     const base = (garments || []).find(g => g.id === baseGarmentId);
-    if (!base || base.currentState !== 'IN_WARDROBE') return [];
+    if (!base) return [];
 
     const baseCat = categorizeGarment(base);
-    const inWardrobe = (garments || []).filter(g => g.currentState === 'IN_WARDROBE' && g.id !== base.id && g.currentHanger);
+    const registered = (garments || []).filter(g => g && g.id !== base.id);
 
-    const matches = inWardrobe.map(g => {
+    const matches = registered.map(g => {
       let rawScore = 50;
       const reasons = [];
       const targetCat = categorizeGarment(g);
@@ -284,7 +284,7 @@
         rawScore,
         displayScore: normalizeDisplayScore(rawScore),
         reasons: reasons.slice(0, 3),
-        targets: [base.currentHanger, g.currentHanger],
+        targets: [base.currentHanger, g.currentHanger].filter(Boolean),
       };
     });
 

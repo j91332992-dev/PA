@@ -519,11 +519,11 @@ function setupCombobox(wrapId, getItemsFn) {
 
 // ----------------- Single Garment Searchable Combobox -----------------
 function getSingleGarmentItems() {
-  const inWardrobe = (model.garments || []).filter(g => g.currentState === 'IN_WARDROBE' && g.currentHanger);
-  return inWardrobe.map(g => ({
+  const registered = (model.garments || []).filter(g => g && g.id);
+  return registered.map(g => ({
     id: g.id,
     garment: g,
-    text: `${g.name} · ${g.category || '의류'} · ${g.color || '미지정'} · ${g.currentHanger}`,
+    text: `${g.name} · ${g.category || '의류'} · ${g.color || '미지정'} · ${g.currentHanger || '옷장 밖'}`,
     searchKey: `${g.name} ${g.category || ''} ${g.color || ''} ${g.currentHanger || ''}`,
   }));
 }
@@ -737,7 +737,7 @@ function renderOutfitRecs() {
     container.innerHTML = `
       <article class="panel" style="grid-column:1/-1;text-align:center;padding:24px">
         <h3>💡 코디 추천을 위한 의류가 부족합니다</h3>
-        <p class="muted">옷장에 상의(Top)와 하의(Bottom)가 각각 1벌 이상 걸려있어야 코디를 추천할 수 있습니다.</p>
+        <p class="muted">등록된 옷에 상의(Top)와 하의(Bottom)가 각각 1벌 이상 있어야 코디를 추천할 수 있습니다.</p>
       </article>`;
     return;
   }
@@ -767,7 +767,7 @@ function renderOutfitRecs() {
                 <b>${esc(item.name)}</b>
                 <span class="muted">(${esc(item.category || '의류')}, ${esc(item.color || '색상 미지정')})</span>
               </div>
-              <span class="pill PRESENT" style="font-size:11px">${esc(item.currentHanger)}</span>
+              <span class="pill PRESENT" style="font-size:11px">${esc(item.currentHanger || '옷장 밖')}</span>
             </div>
           `
             )
@@ -801,8 +801,8 @@ function renderSingleGarmentMatches(baseGarmentId) {
   }
 
   const base = (model.garments || []).find(g => g.id === baseGarmentId);
-  if (!base || base.currentState !== 'IN_WARDROBE') {
-    container.innerHTML = '<p class="error" style="grid-column:1/-1">선택한 옷이 옷장 안에 없습니다.</p>';
+  if (!base) {
+    container.innerHTML = '<p class="error" style="grid-column:1/-1">선택한 등록 옷을 찾을 수 없습니다.</p>';
     return;
   }
 
@@ -810,7 +810,7 @@ function renderSingleGarmentMatches(baseGarmentId) {
   const matches = window.OutfitEngine?.generateSingleGarmentMatches(baseGarmentId, model.garments, currentWeather, occasion) || [];
 
   if (!matches.length) {
-    container.innerHTML = '<p class="muted" style="grid-column:1/-1">함께 매칭할 다른 옷이 옷장에 없습니다.</p>';
+    container.innerHTML = '<p class="muted" style="grid-column:1/-1">함께 매칭할 다른 등록 옷이 없습니다.</p>';
     return;
   }
 
@@ -824,7 +824,7 @@ function renderSingleGarmentMatches(baseGarmentId) {
           <small class="muted">매칭 점수: <b>${m.displayScore}점</b></small>
         </div>
         <h3 style="margin:8px 0 4px">${esc(base.name)} + ${esc(m.garment.name)}</h3>
-        <p class="muted" style="font-size:12px;margin-bottom:8px">위치: <b>${esc(m.garment.currentHanger)}</b> · 색상: ${esc(m.garment.color || '미지정')}</p>
+        <p class="muted" style="font-size:12px;margin-bottom:8px">위치: <b>${esc(m.garment.currentHanger || '옷장 밖')}</b> · 색상: ${esc(m.garment.color || '미지정')}</p>
         
         <div style="background:#f4f6f4;padding:8px 10px;border-radius:8px;margin-bottom:10px;font-size:12px;color:#335c4a">
           <b>💡 매칭 포인트:</b><br>
@@ -861,7 +861,7 @@ function handleChatAssistant(userQuery) {
     respBox.innerHTML = `
       <div style="font-size:14px;color:var(--ink)">
         <b>🤖 코디 어시스턴트:</b><br>
-        "현재 옷장에 코디를 조합할 수 있는 상·하의 의류가 충분하지 않습니다. 새 옷을 등록하거나 옷걸이에 옷을 걸어주세요."
+        "등록된 옷에 코디를 조합할 수 있는 상·하의 의류가 충분하지 않습니다. 새 옷을 등록해 주세요."
       </div>
     `;
     return;
