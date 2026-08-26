@@ -3010,7 +3010,7 @@ function resetProvisionProgressUI() {
 
 async function saveHangerWifi(event) {
   event.preventDefault();
-  if (!bleConfigCharacteristic) return setBleSetupMessage('먼저 옷봉을 블루투스로 연결하세요.', true);
+  if (hasNativeGatewayBridge() ? !nativeGatewayBleConnected : !bleConfigCharacteristic) return setBleSetupMessage('먼저 옷봉을 블루투스로 연결하세요.', true);
   const form = new FormData(event.currentTarget);
   const ssid = String(form.get('ssid') || '').trim();
   const password = String(form.get('password') || '');
@@ -3027,11 +3027,13 @@ async function saveHangerWifi(event) {
   setStageItem('stage_save', 'active', '옷봉에 2.4 GHz Wi-Fi 정보를 전달하고 저장하는 중입니다...');
 
   try {
-    const payload = new TextEncoder().encode(JSON.stringify({ ssid, password, server }));
-    if (typeof bleConfigCharacteristic.writeValueWithResponse === 'function') {
-      await bleConfigCharacteristic.writeValueWithResponse(payload);
+    if (hasNativeGatewayBridge()) {
+      const result = await nativeGatewayCall('otkokBleConfig', { ssid, password, server });
+      if (!result?.ok) throw new Error(result?.error || '옷봉 설정 명령 전송에 실패했습니다.');
     } else {
-      await bleConfigCharacteristic.writeValue(payload);
+      const payload = new TextEncoder().encode(JSON.stringify({ ssid, password, server }));
+      if (typeof bleConfigCharacteristic.writeValueWithResponse === 'function') await bleConfigCharacteristic.writeValueWithResponse(payload);
+      else await bleConfigCharacteristic.writeValue(payload);
     }
 
     setStageItem('stage_save', 'done', 'Wi-Fi 정보가 옷봉에 안전하게 저장되었습니다.');
@@ -3133,12 +3135,17 @@ function showProvisionFailure(reasonMessage) {
 }
 
 async function forgetHangerWifi() {
-  if (!bleConfigCharacteristic) return setBleSetupMessage('먼저 옷봉을 블루투스로 연결하세요.', true);
+  if (hasNativeGatewayBridge() ? !nativeGatewayBleConnected : !bleConfigCharacteristic) return setBleSetupMessage('먼저 옷봉을 블루투스로 연결하세요.', true);
   if (!window.confirm('옷봉에 저장된 Wi-Fi 연결을 제거할까요? 제거하면 옷봉은 오프라인이 되고, 다시 블루투스로 연결해야 합니다.')) return;
   try {
-    const payload = new TextEncoder().encode(JSON.stringify({ action: 'forget' }));
-    if (typeof bleConfigCharacteristic.writeValueWithResponse === 'function') await bleConfigCharacteristic.writeValueWithResponse(payload);
-    else await bleConfigCharacteristic.writeValue(payload);
+    if (hasNativeGatewayBridge()) {
+      const result = await nativeGatewayCall('otkokBleConfig', { action: 'forget' });
+      if (!result?.ok) throw new Error(result?.error || '옷봉 연결 제거 명령 전송에 실패했습니다.');
+    } else {
+      const payload = new TextEncoder().encode(JSON.stringify({ action: 'forget' }));
+      if (typeof bleConfigCharacteristic.writeValueWithResponse === 'function') await bleConfigCharacteristic.writeValueWithResponse(payload);
+      else await bleConfigCharacteristic.writeValue(payload);
+    }
     setBleSetupMessage('옷봉 Wi-Fi 연결을 제거했습니다. 옷봉이 재시작됩니다.');
     rodReconnectStartedAt = 0;
     sessionStorage.removeItem('wardrobeRodReconnectStartedAt');
