@@ -20,6 +20,7 @@ let token = localStorage.getItem('wardrobeToken'),
   outfitRecommendations = [],
   socket,
   retry,
+  socketEpoch = 0,
   simTimer = null,
   selected = new Set(),
   currentWeather = null,
@@ -51,6 +52,7 @@ const claimedDeviceIds = new Set();
 const LOCAL_LED_STORAGE_KEY = 'wardrobeLocalLedStates';
 const LAST_GATEWAY_BLE_DEVICE_KEY = 'wardrobeGatewayBleDeviceId';
 const LAST_GATEWAY_BLE_PAIRING_KEY = 'wardrobeGatewayBlePairing';
+function accountStorageKey(base) { return base + ':' + (sessionUser?.id || 'anonymous'); }
 const LOCAL_LED_SAFETY_MS = 300000;
 const localLedStates = new Map();
 try {
@@ -1186,44 +1188,17 @@ async function refreshAfterMutation() {
 }
 
 function connect() {
-  if (sessionUser?.role === 'admin' && sessionUser.adminVerified) return;
+  if (!token || !sessionUser || (sessionUser.role === 'admin' && sessionUser.adminVerified)) return;
   clearTimeout(retry);
-  socket?.close();
-  socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`, [`wardrobe-token.${token}`]);
-  socket.onopen = () => {
-    $('#connection').textContent = '실시간 연결됨';
-    $('#dot').className = 'on';
-    render();
-  };
-  socket.onmessage = e => {
-    const m = JSON.parse(e.data);
-    if (m.type === 'snapshot') {
-      model = mergeSnapshot(m.payload);
-      render();
-    } else if (m.type === 'hanger.state') {
-      const h = m.payload;
-      if (!applyHangerEvent(h)) return;
-      if (h.state === 'EMPTY') clearFindingForEmptyHanger(h.hangerId);
-      // WebSocket events do not arrive through refresh(), so keep the recent
-      // event feed in sync with the same live state update.
-      model.events = model.events || [];
-      model.events.unshift({ type: 'hanger.state', payload: h, at: m.at || new Date().toISOString() });
-      model.events = model.events.slice(0, 1000);
-      for (const g of (model.garments || [])) {
-        const found = (model.hangers || []).find(x => x.tagUid === g.tagUid && x.state === 'PRESENT');
-        g.currentState = found ? 'IN_WARDROBE' : 'OUT';
-        g.currentHanger = found ? found.hangerId : null;
-      }
-      render();
-    } else {
-      scheduleRefresh();
-    }
-  };
-  socket.onclose = () => {
-    $('#connection').textContent = '재연결 중';
-    $('#dot').className = '';
-    retry = setTimeout(connect, 2000);
-  };
+  const epoch = ++socketEpoch;
+  const previous = socket;
+  if (previous) { previous.onclose = null; previous.close(); }
+  const current = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`, [`wardrobe-token.${token}`]);
+  socket = current;
+  const active = () => epoch === socketEpoch && socket === current && !!token && !!sessionUser;
+  current.onopen = () => { if (!active()) return; $('#connection').textContent = '실시간 연결됨'; $('#dot').className = 'on'; render(); };
+  current.onmessage = e => { if (!active()) return; const m = JSON.parse(e.data); if (m.type === 'snapshot') { model = mergeSnapshot(m.payload); render(); } else if (m.type === 'hanger.state') { const h = m.payload; if (!applyHangerEvent(h)) return; if (h.state === 'EMPTY') clearFindingForEmptyHanger(h.hangerId); model.events = model.events || []; model.events.unshift({ type: 'hanger.state', payload: h, at: m.at || new Date().toISOString() }); model.events = model.events.slice(0, 1000); render(); } else scheduleRefresh(); };
+  current.onclose = () => { if (!active()) return; $('#connection').textContent = '재연결 중'; $('#dot').className = ''; retry = setTimeout(connect, 2000); };
 }
 
 let currentAuthMode = 'login',
@@ -2245,6 +2220,9 @@ setInterval(() => {
 $$('nav button').forEach(b => (b.onclick = () => switchView(b.dataset.view)));
 
 $('#logout').onclick = () => {
+  clearTimeout(retry);
+  socketEpoch++;
+  if (socket) { socket.onclose = null; socket.close(); socket = null; }
   if (simTimer) {
     clearInterval(simTimer);
     simTimer = null;
@@ -2299,7 +2277,7 @@ let localGatewayBleLastSeenAt = 0;
 
 function rememberedGatewayIdForDevice(device) {
   try {
-    const remembered = JSON.parse(localStorage.getItem(LAST_GATEWAY_BLE_PAIRING_KEY) || '{}');
+    const remembered = JSON.parse(localStorage.getItem(accountStorageKey(LAST_GATEWAY_BLE_PAIRING_KEY)) || '{}');
     return remembered.deviceId === device?.id ? String(remembered.gatewayId || '').toUpperCase() : '';
   } catch (_) {
     return '';
@@ -2308,7 +2286,7 @@ function rememberedGatewayIdForDevice(device) {
 
 function rememberGatewayDevice(device, gatewayId) {
   if (!device?.id || !gatewayId) return;
-  localStorage.setItem(LAST_GATEWAY_BLE_PAIRING_KEY, JSON.stringify({ deviceId: device.id, gatewayId: String(gatewayId).toUpperCase() }));
+  localStorage.setItem(accountStorageKey(LAST_GATEWAY_BLE_PAIRING_KEY), JSON.stringify({ deviceId: device.id, gatewayId: String(gatewayId).toUpperCase() }));
 }
 
 function disconnectLocalGatewayBluetooth() {
@@ -2350,14 +2328,14 @@ async function connectGatewayGatt(device) {
 function forgetRememberedGatewayDevice(gatewayId = '') {
   const target = String(gatewayId || '').toUpperCase();
   try {
-    const remembered = JSON.parse(localStorage.getItem(LAST_GATEWAY_BLE_PAIRING_KEY) || '{}');
+    const remembered = JSON.parse(localStorage.getItem(accountStorageKey(LAST_GATEWAY_BLE_PAIRING_KEY)) || '{}');
     if (!target || String(remembered.gatewayId || '').toUpperCase() === target) {
-      localStorage.removeItem(LAST_GATEWAY_BLE_PAIRING_KEY);
-      localStorage.removeItem(LAST_GATEWAY_BLE_DEVICE_KEY);
+      localStorage.removeItem(accountStorageKey(LAST_GATEWAY_BLE_PAIRING_KEY));
+      localStorage.removeItem(accountStorageKey(LAST_GATEWAY_BLE_DEVICE_KEY));
     }
   } catch (_) {
-    localStorage.removeItem(LAST_GATEWAY_BLE_PAIRING_KEY);
-    localStorage.removeItem(LAST_GATEWAY_BLE_DEVICE_KEY);
+    localStorage.removeItem(accountStorageKey(LAST_GATEWAY_BLE_PAIRING_KEY));
+    localStorage.removeItem(accountStorageKey(LAST_GATEWAY_BLE_DEVICE_KEY));
   }
 }
 
@@ -2592,7 +2570,7 @@ async function connectHangerBluetooth(options = {}) {
     let device = forceChooser ? null : localGatewayDevice;
     if (!device && !forceChooser && typeof navigator.bluetooth.getDevices === 'function') {
       const granted = await navigator.bluetooth.getDevices();
-      const savedId = localStorage.getItem(LAST_GATEWAY_BLE_DEVICE_KEY) || '';
+      const savedId = localStorage.getItem(accountStorageKey(LAST_GATEWAY_BLE_DEVICE_KEY)) || '';
       device = savedId ? granted.find(item => item.id === savedId) || null : null;
     }
     if (!device && !allowChooser) return false;
@@ -2638,7 +2616,7 @@ async function connectHangerBluetooth(options = {}) {
     if (deviceLabel) deviceLabel.textContent = `${neutralBleLabel('gateways', currentBleGatewayId || device.name)} 연결됨`;
     const form = $('#bleWifiForm');
     if (form) form.hidden = false;
-    localStorage.setItem(LAST_GATEWAY_BLE_DEVICE_KEY, device.id);
+    localStorage.setItem(accountStorageKey(LAST_GATEWAY_BLE_DEVICE_KEY), device.id);
 
     // Notifications can be missed while Chrome finishes subscribing. Read the
     // current value first so provisioning always has the immutable gateway ID

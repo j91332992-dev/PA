@@ -38,13 +38,23 @@ async function run() {
     const token = signupData.token;
 
     console.log('\n=== Step 3b: Claim Virtual Gateway and its Hangers ===');
+    const claimHeaders = { 'content-type': 'application/json', 'authorization': 'Bearer ' + token };
+    const intentRes = await fetch(baseUrl + '/api/gateways/GW-SIM001/claim-intent', { method: 'POST', headers: claimHeaders });
+    const intent = await intentRes.json();
+    if (!intentRes.ok || !intent.claimToken) throw new Error(`Gateway claim intent failed: ${intentRes.status} ${JSON.stringify(intent)}`);
     const claimRes = await fetch(baseUrl + '/api/gateways/GW-SIM001/claim', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + token },
-      body: '{}'
+      headers: claimHeaders,
+      body: JSON.stringify({ claimToken: intent.claimToken })
     });
     if (!claimRes.ok) throw new Error(`Gateway claim failed: ${claimRes.status} ${await claimRes.text()}`);
     console.log('[HTTP] Gateway claimed:', (await claimRes.json()).gatewayId);
+    const hangerIntentRes = await fetch(baseUrl + '/api/hangers/HC-000001/claim-intent', { method: 'POST', headers: claimHeaders });
+    const hangerIntent = await hangerIntentRes.json();
+    if (!hangerIntentRes.ok || !hangerIntent.claimToken) throw new Error(`Hanger claim intent failed: ${hangerIntentRes.status} ${JSON.stringify(hangerIntent)}`);
+    const hangerClaimRes = await fetch(baseUrl + '/api/hangers/HC-000001/claim', { method: 'POST', headers: claimHeaders, body: JSON.stringify({ claimToken: hangerIntent.claimToken }) });
+    if (!hangerClaimRes.ok) throw new Error(`Hanger claim failed: ${hangerClaimRes.status} ${await hangerClaimRes.text()}`);
+    console.log('[HTTP] Hanger claimed: HC-000001');
 
     console.log('\n=== Step 4: Connect Real WebSocket Client ===');
     const ws = new WebSocket('ws://localhost:8999/ws', [`wardrobe-token.${token}`]);
