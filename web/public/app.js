@@ -1321,7 +1321,8 @@ async function enter(knownUser = null) {
     connect();
     // Reuse the gateway permission granted during first device registration.
     // This reconnects silently after a refresh; no Bluetooth chooser appears.
-    connectHangerBluetooth({ scanWifi: false, allowChooser: false, silent: true }).catch(() => {});
+    // A previously granted nearby rod should keep trying after a reload, not fall silently back to Cloud.
+    connectHangerBluetooth({ scanWifi: false, allowChooser: false, silent: true }).then(connected => { if (!connected) scheduleLocalGatewayReconnect(); }).catch(() => scheduleLocalGatewayReconnect());
     loadWeather($('#weatherCitySelect')?.value || 'seoul');
   } catch (err) {
     console.error('Enter error:', err);
@@ -2573,9 +2574,20 @@ async function sendPrimaryLocalCommand(action, targets, durationMs = 0) {
     try {
       await writeLocalGatewayCommand(action, targets, durationMs);
       return { transport: 'ble' };
-    } catch (_) {
-      // The nearby BLE session may have gone stale. Fall through to the
-      // cloud/ESP-NOW queue instead of asking the user to pair again.
+    } catch (firstError) {
+      // A live nearby GATT session must prefer the direct path. One bounded
+      // retry covers a notification/radio collision without switching an
+      // in-range user to the slower Cloud queue.
+      if (localGatewayCommandCharacteristic && localGatewayDevice?.gatt?.connected) {
+        await waitForBle(180);
+        try {
+          await writeLocalGatewayCommand(action, targets, durationMs);
+          return { transport: 'ble' };
+        } catch (retryError) {
+          throw new Error(`근처 BLE 직통 명령을 확인하지 못했습니다. (${retryError.message || firstError.message || '응답 없음'})`);
+        }
+      }
+      // Only a genuinely lost Bluetooth transport may use Cloud fallback.
       localGatewayCommandCharacteristic = null;
     }
   }
