@@ -28,6 +28,7 @@ let token = localStorage.getItem('wardrobeToken'),
   refreshInFlight = null,
   refreshQueued = false,
   refreshTimer = null,
+  lastForegroundRefreshAt = 0,
   sessionUser = null;
 
 const hangerFreshness = window.HangerFreshness.createTracker();
@@ -80,17 +81,34 @@ const setHTML = (selector, value) => {
   element.innerHTML = value;
 };
 
+function hangerNumberForDisplay(hanger) {
+  if (!hanger?.gatewayId) return null;
+  const physical = (model.hangers || [])
+    .filter(item => item.gatewayId === hanger.gatewayId && !/^HC-00000[1-5]$/i.test(item.hangerId || ''))
+    .sort((a, b) => String(a.createdAt || a.hangerId).localeCompare(String(b.createdAt || b.hangerId)));
+  const explicit = Number(hanger.hangerNumber);
+  const explicitCounts = new Map();
+  for (const item of physical) {
+    const number = Number(item.hangerNumber);
+    if (Number.isInteger(number) && number > 0) explicitCounts.set(number, (explicitCounts.get(number) || 0) + 1);
+  }
+  // Prefer the persisted number only when it is unique. If an older warm
+  // instance sent the same default number for every hanger, derive a stable
+  // order from the immutable creation time and hardware ID instead.
+  if (Number.isInteger(explicit) && explicit > 0 && explicitCounts.get(explicit) === 1) return explicit;
+  const index = physical.findIndex(item => item.hangerId === hanger.hangerId);
+  return index >= 0 ? index + 1 : (Number.isInteger(explicit) && explicit > 0 ? explicit : 1);
+}
+
 function hangerDisplayName(hanger) {
   if (!hanger) return '옷걸이';
-  if (hanger.alias && hanger.alias !== hanger.hangerId && !/^HC-/i.test(hanger.alias)) return hanger.alias;
+  const alias = String(hanger.alias || '').trim();
+  const customName = String(hanger.customName || '').trim();
+  if (customName) return alias || customName;
   if (!hanger.gatewayId) return `미연결 옷걸이 · ${String(hanger.hangerId || '').slice(-6) || 'UNKNOWN'}`;
-  if (Number(hanger.hangerNumber) > 0) return `${Number(hanger.hangerNumber)}번 옷걸이`;
-  if (/^HC-00000[1-5]$/i.test(hanger.hangerId || '')) return hanger.alias || hanger.hangerId;
-  const physical = (model.hangers || [])
-    .filter(item => !/^HC-00000[1-5]$/i.test(item.hangerId || ''))
-    .sort((a, b) => Date.parse(a.createdAt || a.lastSeen || 0) - Date.parse(b.createdAt || b.lastSeen || 0));
-  const number = Math.max(0, physical.findIndex(item => item.hangerId === hanger.hangerId)) + 1;
-  return `${number || 1}번 옷걸이`;
+  if (alias && alias !== hanger.hangerId && !/^HC-/i.test(alias) && !/^\d+번 옷걸이$/.test(alias) && !/^스마트 옷걸이\s*[·•]/.test(alias)) return alias;
+  if (/^HC-00000[1-5]$/i.test(hanger.hangerId || '')) return alias || hanger.hangerId;
+  return `${hangerNumberForDisplay(hanger) || 1}번 옷걸이`;
 }
 
 function ownerDisplayName() {
@@ -107,7 +125,24 @@ function garmentNameForTag(tagUid) {
   return (model.garments || []).find(garment => garment.tagUid === tagUid)?.name || '';
 }
 
+// Match the server leases. Hanger presence is physical and must transition
+// quickly; gateway cloud heartbeats need room for one delayed TLS request.
+const DEVICE_OFFLINE_AFTER_MS = 10000;
+const HANGER_OFFLINE_AFTER_MS = DEVICE_OFFLINE_AFTER_MS;
+const GATEWAY_OFFLINE_AFTER_MS = 30000;
+
+function hangerIsOnline(hanger, at = Date.now()) {
+  if (!hanger || hanger.state === 'OFFLINE') return false;
+  const seenAt = Date.parse(hanger.lastSeen || 0);
+  return Number.isFinite(seenAt) && at - seenAt < HANGER_OFFLINE_AFTER_MS;
+}
+
+function hangerDisplayState(hanger, at = Date.now()) {
+  return hangerIsOnline(hanger, at) ? (hanger.state || hanger.reportedState || 'UNKNOWN') : 'OFFLINE';
+}
+
 function hangerClothingStatus(hanger) {
+  if (!hangerIsOnline(hanger)) return '통신 끊김 · 새 상태 대기 중';
   return hangerFreshness.clothingStatus(hanger, model.garments);
 }
 
@@ -149,7 +184,15 @@ async function api(path, options = {}) {
       await new Promise(resolve => setTimeout(resolve, 700 * (attempt + 1)));
       continue;
     }
-    const failure = Error(x.error || `HTTP ${r.status}`);
+    const rawMessage = String(x.error || '');
+    // Never leak a PostgreSQL parser detail into the device dialog.  This
+    // was the message users saw when a first-time gateway claim hit the old
+    // untyped jsonb parameter; keep the fallback Korean and actionable even
+    // if an older function instance is still draining.
+    const userMessage = /could not determine data type of parameter/i.test(rawMessage)
+      ? '장비 등록 중 서버 데이터 형식 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.'
+      : (rawMessage || `HTTP ${r.status}`);
+    const failure = Error(userMessage);
     // Keep the HTTP status so device-ownership conflicts can be rendered as
     // a precise Korean message instead of falling through to a generic BLE
     // error. This is especially important when another account just released
@@ -265,7 +308,7 @@ function formatEvent(e) {
     case 'hanger.offline':
       return `<div><b>${esc(p.alias || p.hangerId)}</b> <span class="pill OFFLINE">${getKoreanState(
         'OFFLINE'
-      )}</span> · 30초 이상 신호 없음</div><small class="muted">${atStr}</small>`;
+      )}</span> · 10초 이상 신호 없음</div><small class="muted">${atStr}</small>`;
     case 'command.queued':
       return `<div><b>찾기 명령 대기</b> · 대상: <b>${esc((p.targets || []).join(', '))}</b> (${p.command || 'LED_BLINK'})</div><small class="muted">${atStr}</small>`;
     case 'command.ack': {
@@ -852,8 +895,8 @@ window.findGarment = async (id, hangerId) => {
     return;
   }
   try {
-    await sendPrimaryLocalCommand('local_find', [hangerId]);
-    toast(`[근처 옷봉] ${hangerId} LED 점멸을 바로 시작했습니다.`);
+    const result = await sendPrimaryLocalCommand('local_find', [hangerId]);
+    toast(result.transport === 'ble' ? `[근처 옷봉] ${hangerId} LED 점멸을 바로 시작했습니다.` : `${hangerId} LED 찾기 명령을 옷봉에 전송했습니다.`);
   } catch (x) {
     toast(`[찾기 오류] ${x.message}`);
   }
@@ -862,8 +905,8 @@ window.findGarment = async (id, hangerId) => {
 window.stopGarment = async hangerId => {
   if (!hangerId) return;
   try {
-    await sendPrimaryLocalCommand('local_off', [hangerId]);
-    toast(`[근처 옷봉] ${hangerId} LED를 바로 껐습니다.`);
+    const result = await sendPrimaryLocalCommand('local_off', [hangerId]);
+    toast(result.transport === 'ble' ? `[근처 옷봉] ${hangerId} LED를 바로 껐습니다.` : `${hangerId} LED 끄기 명령을 옷봉에 전송했습니다.`);
   } catch (x) {
     toast(`[소등 오류] ${x.message}`);
   }
@@ -872,8 +915,8 @@ window.stopGarment = async hangerId => {
 window.findOutfit = async (targets, title) => {
   if (!targets || !targets.length) return;
   try {
-    await sendPrimaryLocalCommand('local_find', targets);
-    toast(`[근처 옷봉] ${targets.length}개 LED 점멸을 바로 시작했습니다.`);
+    const result = await sendPrimaryLocalCommand('local_find', targets);
+    toast(result.transport === 'ble' ? `[근처 옷봉] ${targets.length}개 LED 점멸을 바로 시작했습니다.` : `${targets.length}개 LED 찾기 명령을 옷봉에 전송했습니다.`);
   } catch (x) {
     toast(`[코디 찾기 오류] ${x.message}`);
   }
@@ -882,8 +925,8 @@ window.findOutfit = async (targets, title) => {
 window.stopOutfit = async targets => {
   if (!targets || !targets.length) return;
   try {
-    await sendPrimaryLocalCommand('local_off', targets);
-    toast('[근처 옷봉] LED를 바로 껐습니다.');
+    const result = await sendPrimaryLocalCommand('local_off', targets);
+    toast(result.transport === 'ble' ? '[근처 옷봉] LED를 바로 껐습니다.' : 'LED 끄기 명령을 옷봉에 전송했습니다.');
   } catch (x) {
     toast(`[소등 오류] ${x.message}`);
   }
@@ -919,10 +962,11 @@ function render() {
     counts = [
       ['전체 옷', g.length],
       ['옷장 안', g.filter(x => x.currentState === 'IN_WARDROBE').length],
-      ['옷 감지됨', h.filter(x => x.state === 'PRESENT').length],
-      ['비어 있음', h.filter(x => x.state === 'EMPTY').length],
-      ['연결 끊김', h.filter(x => x.state === 'OFFLINE').length],
-      ['경고/중복', h.filter(x => ['UNSTABLE', 'CONFLICT', 'UNKNOWN_TAG'].includes(x.state)).length],
+      ['옷 감지됨', h.filter(x => hangerIsOnline(x) && x.state === 'PRESENT').length],
+      ['비어 있음', h.filter(x => hangerIsOnline(x) && x.state === 'EMPTY').length],
+      ['연결 끊김', h.filter(x => !hangerIsOnline(x)).length],
+      ['미등록 태그', h.filter(x => hangerIsOnline(x) && x.state === 'UNKNOWN_TAG').length],
+      ['중복/불안정', h.filter(x => hangerIsOnline(x) && ['UNSTABLE', 'CONFLICT'].includes(x.state)).length],
     ];
 
   setHTML('#summary', counts.map(x => `<article><b>${x[1]}</b><span>${x[0]}</span></article>`).join(''));
@@ -974,33 +1018,39 @@ function render() {
     hf = $('#hangerFilter')?.value || '';
 
   const filteredHangers = h.filter(x => {
-    const isOnline = Date.now() - Date.parse(x.lastSeen || 0) < 30000;
-    if (hq && ![x.hangerId, x.alias, x.tagUid, x.state].join(' ').toLowerCase().includes(hq)) return false;
+    const isOnline = hangerIsOnline(x);
+    const state = hangerDisplayState(x);
+    const visibleTag = isOnline ? x.tagUid : '';
+    if (hq && ![x.hangerId, x.alias, visibleTag, state].join(' ').toLowerCase().includes(hq)) return false;
     if (hf === 'ONLINE') return isOnline;
-    if (hf === 'OFFLINE') return !isOnline || x.state === 'OFFLINE';
-    if (hf === 'CONFLICT') return ['CONFLICT', 'UNKNOWN_TAG', 'UNSTABLE'].includes(x.state);
+    if (hf === 'OFFLINE') return !isOnline;
+    if (hf === 'CONFLICT') return isOnline && ['CONFLICT', 'UNSTABLE'].includes(x.state);
+    if (hf === 'UNKNOWN_TAG') return isOnline && x.state === 'UNKNOWN_TAG';
     if (hf === 'VIRTUAL') return /^HC-00000[1-5]$/.test(x.hangerId);
-    if (hf === 'PRESENT' || hf === 'EMPTY') return x.state === hf;
+    if (hf === 'PRESENT' || hf === 'EMPTY') return isOnline && x.state === hf;
     return true;
   });
 
   setHTML('#hangerCards',
     filteredHangers
       .map(x => {
+        const isOnline = hangerIsOnline(x);
+        const state = hangerDisplayState(x);
         let stateDesc = '';
-        if (x.state === 'CONFLICT') {
+        if (state === 'CONFLICT') {
           stateDesc = '<p class="error" style="font-size:12px;margin:3px 0">⚠️ 동일 UID가 다른 옷걸이에서도 중복 감지됨</p>';
-        } else if (x.state === 'UNKNOWN_TAG') {
+        } else if (state === 'UNKNOWN_TAG') {
           stateDesc = '<p style="color:var(--amber);font-size:12px;margin:3px 0">ℹ️ 미등록 NFC 옷 태그 감지됨 (새 옷 등록 가능)</p>';
+        } else if (state === 'OFFLINE') {
+          stateDesc = '<p class="muted" style="font-size:12px;margin:3px 0">마지막 상태는 보류하고 새 무선 신호를 기다리는 중입니다.</p>';
         }
-        const isOnline = Date.now() - Date.parse(x.lastSeen || 0) < 30000;
         const isLedOn = isHangerLedActive(x.hangerId);
 
         return `<article class="card ${isLedOn ? 'led-on' : ''}">
           <div style="display:flex;justify-content:space-between;align-items:center">
             <h3>${esc(hangerDisplayName(x))}</h3>
             <div>
-              <span class="pill ${x.state}">${getKoreanState(x.state)}</span>
+              <span class="pill ${state}">${getKoreanState(state)}</span>
               ${isLedOn ? '<span class="sim-led-badge on" style="margin-left:4px">💡 LED 점멸 중</span>' : ''}
             </div>
           </div>
@@ -1120,6 +1170,21 @@ async function refresh() {
   }
 }
 
+// A mutation must be followed by a snapshot that started after that mutation.
+// Reusing a request that began before a claim made the server succeed while
+// the screen kept showing the old discovered/offline state until a reload.
+async function refreshAfterMutation() {
+  const pending = refreshInFlight;
+  if (pending) {
+    ++refreshGeneration;
+    try { await pending; } catch (_) {}
+  }
+  clearTimeout(refreshTimer);
+  refreshTimer = null;
+  refreshQueued = false;
+  return refresh();
+}
+
 function connect() {
   if (sessionUser?.role === 'admin' && sessionUser.adminVerified) return;
   clearTimeout(retry);
@@ -1151,8 +1216,6 @@ function connect() {
       }
       render();
     } else {
-      // Heartbeats and command/garment events can arrive in bursts. Coalesce
-      // them instead of starting one full snapshot request per message.
       scheduleRefresh();
     }
   };
@@ -1204,6 +1267,10 @@ function switchView(viewName) {
   const targetView = viewName || 'dashboard';
   $$('nav button').forEach(x => x.classList.toggle('active', x.dataset.view === targetView));
   $$('.view').forEach(v => (v.hidden = v.id !== targetView));
+  if (targetView === 'setup' && token) {
+    lastForegroundRefreshAt = Date.now();
+    refresh();
+  }
   if (targetView === 'outfit') {
     renderOutfitRecs();
   }
@@ -1293,7 +1360,7 @@ function updateDetectedTags() {
   if ($('#garmentDialog')?.open) return;
 
   const currentVal = select.value;
-  const unknownHangers = (model.hangers || []).filter(h => h.state === 'UNKNOWN_TAG' && h.tagUid);
+  const unknownHangers = (model.hangers || []).filter(h => hangerIsOnline(h) && h.state === 'UNKNOWN_TAG' && h.tagUid);
 
   if (!unknownHangers.length) {
     select.innerHTML = '<option value="">-- 현재 감지된 미등록 옷 태그 없음 (직접 입력) --</option>';
@@ -1313,7 +1380,7 @@ function updateDetectedTags() {
     `<option value="">-- 미등록 옷 태그 선택 (${unknownHangers.length}개 감지됨) --</option>`,
     ...unknownHangers.map(h => {
       const timeStr = formatTimeAgo(h.lastSeen);
-      const hangerLabel = Number(h.hangerNumber) > 0 ? `${Number(h.hangerNumber)}번 옷걸이` : (h.alias || h.hangerId);
+      const hangerLabel = h.gatewayId ? hangerDisplayName(h) : (h.alias || h.hangerId);
       return `<option value="${esc(h.tagUid)}">${esc(h.tagUid)} · ${esc(hangerLabel)} · 최근 ${timeStr}</option>`;
     }),
   ].join('');
@@ -2079,8 +2146,8 @@ $('#multiFind').onclick = async () => {
     return;
   }
   try {
-    await sendPrimaryLocalCommand('local_find', [...selected]);
-    toast(`[근처 옷봉] ${selected.size}개 옷걸이의 LED 점멸을 바로 시작했습니다.`);
+    const result = await sendPrimaryLocalCommand('local_find', [...selected]);
+    toast(result.transport === 'ble' ? `[근처 옷봉] ${selected.size}개 옷걸이의 LED 점멸을 바로 시작했습니다.` : `${selected.size}개 LED 찾기 명령을 옷봉에 전송했습니다.`);
     selected.clear();
     render();
   } catch (x) {
@@ -2165,12 +2232,15 @@ setInterval(() => {
   }
 }, 1000);
 
-// Mobile networks or a Quick Tunnel can delay a WebSocket frame. While the
-// dashboard is visible, a compact snapshot fallback keeps a physical NFC
-// transition from waiting for reconnects or a manual refresh.
 setInterval(() => {
-  if (token && document.visibilityState === 'visible') refresh();
-}, 5000);
+  if (!token || document.visibilityState !== 'visible') return;
+  const setupOpen = !!document.querySelector('nav button[data-view="setup"].active');
+  const interval = setupOpen ? 1000 : 5000;
+  const currentTime = Date.now();
+  if (currentTime - lastForegroundRefreshAt < interval) return;
+  lastForegroundRefreshAt = currentTime;
+  refresh();
+}, 1000);
 
 $$('nav button').forEach(b => (b.onclick = () => switchView(b.dataset.view)));
 
@@ -2331,7 +2401,7 @@ function formatRssi(rssi, online) {
 }
 
 function garmentNameForHanger(hanger) {
-  if (!hanger || !hanger.tagUid) return '-';
+  if (!hanger || !hangerIsOnline(hanger) || !hanger.tagUid) return '-';
   const g = (model.garments || []).find(item => item.tagUid === hanger.tagUid);
   return g ? g.name : `미등록 태그 (${hanger.tagUid.slice(0, 8)}…)`;
 }
@@ -2409,18 +2479,40 @@ async function writeLocalGatewayCommand(action, targets, durationMs = 0) {
   return true;
 }
 
+async function queueCloudGatewayCommand(action, targets, durationMs = 0) {
+  const command = action === 'local_off' ? 'LED_OFF' : 'LED_BLINK';
+  const queued = await api('/api/commands', {
+    method: 'POST',
+    body: JSON.stringify({ command, targets, durationMs }),
+  });
+  // Keep the current screen responsive while the gateway polls the cloud
+  // queue. The real ACK/state still arrives through WebSocket/refresh.
+  setLocalLedState(targets, command !== 'LED_OFF', durationMs);
+  model.commands = [queued, ...(model.commands || []).filter(c => !targets.some(target => c.targets?.includes(target)))];
+  render();
+  return queued;
+}
+
 async function sendPrimaryLocalCommand(action, targets, durationMs = 0) {
-  if (!localGatewayCommandCharacteristic) {
-    const connected = await connectHangerBluetooth({ scanWifi: false });
-    if (!connected || !localGatewayCommandCharacteristic) {
-      throw new Error('근처 옷봉 BLE 연결이 필요합니다. 옷봉을 선택한 뒤 다시 눌러 주세요.');
+  // A registered hanger must be findable from any phone/browser. BLE is an
+  // optional low-latency path only when this browser already has an active
+  // GATT connection; never open the Bluetooth chooser from an LED button.
+  if (localGatewayCommandCharacteristic && localGatewayDevice?.gatt?.connected) {
+    try {
+      await writeLocalGatewayCommand(action, targets, durationMs);
+      return { transport: 'ble' };
+    } catch (_) {
+      // The nearby BLE session may have gone stale. Fall through to the
+      // cloud/ESP-NOW queue instead of asking the user to pair again.
+      localGatewayCommandCharacteristic = null;
     }
   }
   try {
-    await writeLocalGatewayCommand(action, targets, durationMs);
+    const queued = await queueCloudGatewayCommand(action, targets, durationMs);
+    return { transport: 'cloud', command: queued };
   } catch (error) {
     localGatewayCommandCharacteristic = null;
-    throw new Error(`옷봉 BLE 연결이 끊어졌습니다. 다시 눌러 옷봉을 연결해 주세요. (${error.message || 'GATT 오류'})`);
+    throw new Error(`LED 명령을 전송하지 못했습니다. 옷봉의 전원·인터넷 연결을 확인해 주세요. (${error.message || '서버 오류'})`);
   }
 }
 
@@ -2474,7 +2566,7 @@ async function handleGatewayBleStatus(value, fallbackName = '') {
       return;
     }
     if (info.state === 'scan_complete' && !nearbyWifiNetworks.length) {
-      setBleSetupMessage('옷봉이 2.4 GHz Wi-Fi를 0개 감지했습니다. 공유기의 2.4 GHz 방송을 켜거나 아래에 SSID를 직접 입력하세요. 5 GHz 전용 Wi-Fi는 옷봉에서 사용할 수 없습니다.', true);
+      setBleSetupMessage('옷봉이 2.4 GHz Wi-Fi를 0개 감지했습니다. 공유기의 2.4 GHz 방송과 채널을 확인하세요. 5 GHz 전용 Wi-Fi는 옷봉에서 사용할 수 없습니다.', true);
       return;
     }
     setBleSetupMessage(info.message || '옷봉 상태를 받았습니다.', /error|failed|not_found/i.test(info.state || ''));
@@ -2610,12 +2702,10 @@ async function saveHangerWifi(event) {
   event.preventDefault();
   if (!bleConfigCharacteristic) return setBleSetupMessage('먼저 옷봉을 블루투스로 연결하세요.', true);
   const form = new FormData(event.currentTarget);
-  const selectedSsid = String(form.get('ssid') || '').trim();
-  const manualSsid = String($('#manualWifiSsid')?.value || '').trim();
-  const ssid = manualSsid || selectedSsid;
+  const ssid = String(form.get('ssid') || '').trim();
   const password = String(form.get('password') || '');
   const server = String(form.get('server') || '').trim();
-  if (!ssid || !server.startsWith('http')) return setBleSetupMessage('목록에서 2.4 GHz Wi-Fi를 선택하거나 SSID를 직접 입력하고 서버 주소를 확인하세요.', true);
+  if (!ssid || !server.startsWith('http')) return setBleSetupMessage('목록에서 2.4 GHz Wi-Fi를 선택하고 서버 주소를 확인하세요.', true);
 
   const connectStep = $('#bleStepConnect');
   if (connectStep) connectStep.hidden = true;
@@ -2753,7 +2843,7 @@ function physicalHangerStatus() {
   const physical = (model.hangers || []).filter(h => !String(h.hangerId || '').startsWith('HC-000'));
   const hanger = physical.sort((a, b) => Date.parse(b.lastSeen || 0) - Date.parse(a.lastSeen || 0))[0];
   const age = hanger ? Date.now() - Date.parse(hanger.lastSeen || 0) : Infinity;
-  return { hanger, online: !!hanger && age < 30000 };
+  return { hanger, online: !!hanger && age < DEVICE_OFFLINE_AFTER_MS };
 }
 
 function physicalGatewayStatus() {
@@ -2764,7 +2854,7 @@ function physicalGatewayStatus() {
   // Status notifications are intermittent by design, so their age must not
   // make an otherwise connected rod appear offline.
   const bleOnline = !!(localGatewayCommandCharacteristic && localGatewayDevice?.gatt?.connected);
-  const cloudOnline = !!latest && now - Date.parse(latest.lastSeen || 0) < 30000;
+  const cloudOnline = !!latest && now - Date.parse(latest.lastSeen || 0) < GATEWAY_OFFLINE_AFTER_MS;
   return { gateway: latest, online: bleOnline || cloudOnline, bleOnline, cloudOnline };
 }
 
@@ -2820,7 +2910,6 @@ async function claimDevice(kind, deviceId, { quietNotFound = false, confirmOwner
     if (!confirmOwnership) return { ok: false, reason: 'CONFIRM_REQUIRED' };
     const intent = await api(`/api/${kind}/${encodeURIComponent(deviceId)}/claim-intent`, { method: 'POST' });
     const item = await api(`/api/${kind}/${encodeURIComponent(deviceId)}/claim`, { method: 'POST', body: JSON.stringify({ claimToken: intent.claimToken }) });
-    refresh();
     return { ok: true, item };
   } catch (error) {
     if (error.status === 409) {
@@ -2971,7 +3060,7 @@ function openGatewayDiagnostics(gatewayId) {
   const dialog = $('#gatewayDiagDialog');
   if (!dialog) return;
 
-  const isOnline = Date.now() - Date.parse(g.lastSeen || 0) < 30000;
+  const isOnline = Date.now() - Date.parse(g.lastSeen || 0) < GATEWAY_OFFLINE_AFTER_MS;
   $('#gwDiagTitle').textContent = `옷봉 상세 진단 · ${g.name || g.gatewayId}`;
 
   const content = $('#gwDiagContent');
@@ -3048,7 +3137,7 @@ function openHangerDiagnostics(hangerId) {
   const dialog = $('#hangerDiagDialog');
   if (!dialog) return;
 
-  const isOnline = Date.now() - Date.parse(h.lastSeen || 0) < 30000;
+  const isOnline = hangerIsOnline(h);
   $('#hangerDiagTitle').textContent = `옷걸이 상세 진단 · ${hangerDisplayName(h)}`;
 
   const content = $('#hangerDiagContent');
@@ -3057,7 +3146,7 @@ function openHangerDiagnostics(hangerId) {
       <span class="label">옷걸이 ID</span><span class="val">${esc(h.hangerId)}</span>
       <span class="label">장비 상태</span><span class="val">${isOnline ? '<b style="color:#218451">● ONLINE (정상 연결됨)</b>' : '<b style="color:var(--red)">● OFFLINE</b>'}</span>
       <span class="label">PN532 상태</span><span class="val">${getPn532StatusHtml(h)}</span>
-      <span class="label">감지된 태그 UID</span><span class="val">${esc(h.tagUid || '태그 없음')}</span>
+      <span class="label">감지된 태그 UID</span><span class="val">${esc(isOnline ? h.tagUid || '태그 없음' : '통신 끊김 · 새 태그 대기')}</span>
       <span class="label">현재 감지 옷</span><span class="val">${esc(garmentNameForHanger(h))}</span>
       <span class="label">ESP-NOW 통신</span><span class="val">${h.gatewayId ? `옷봉(${esc(h.gatewayId)})과 정상 통신 중` : '신호 탐색 중'}</span>
       <span class="label">통신 채널</span><span class="val">채널 ${h.channel || '-'}</span>
@@ -3077,8 +3166,14 @@ function renderDeviceManagement() {
   const gateways = (model.gateways || []).filter(g => !String(g.gatewayId || '').startsWith('GW-SIM'));
   const hangers = (model.hangers || []).filter(h => !String(h.hangerId || '').startsWith('HC-000'));
   const ownedHangerIds = new Set(hangers.map(h => h.hangerId));
-  const discovered = (model.discoveredHangers || []).filter(h => !String(h.hangerId || '').startsWith('HC-000') && !ownedHangerIds.has(h.hangerId));
-  const isOnline = item => Date.now() - Date.parse(item.lastSeen || 0) < 30000;
+  const discovered = (model.discoveredHangers || [])
+    .filter(h => !String(h.hangerId || '').startsWith('HC-000') && !ownedHangerIds.has(h.hangerId))
+    .sort((a, b) => String(a.createdAt || a.lastSeen || a.hangerId).localeCompare(String(b.createdAt || b.lastSeen || b.hangerId)));
+  const isOnline = item => hangerIsOnline(item);
+  const isGatewayOnline = item => {
+    const seenAt = Date.parse(item?.lastSeen || 0);
+    return Number.isFinite(seenAt) && Date.now() - seenAt < GATEWAY_OFFLINE_AFTER_MS;
+  };
 
   // 1. Gateway Section HTML
   let gatewayContent = '';
@@ -3095,11 +3190,11 @@ function renderDeviceManagement() {
       // intentionally no longer the primary control transport.
       const gatewayStatus = physicalGatewayStatus();
       const isThisBleGateway = gatewayStatus.bleOnline && (!currentBleGatewayId || currentBleGatewayId === g.gatewayId);
-      const online = isThisBleGateway || isOnline(g);
+      const online = isThisBleGateway || isGatewayOnline(g);
       const statusBadge = online
         ? '<span class="pill status-pill-online">● 온라인</span>'
         : '<span class="pill status-pill-offline">● 오프라인</span>';
-      const cloudOnline = isOnline(g);
+      const cloudOnline = isGatewayOnline(g);
       const wifiStatus = cloudOnline ? (g.ssid ? `● 연결됨 (${esc(g.ssid)})` : '● 연결됨') : '● 클라우드 확인 대기';
       const cloudStatus = cloudOnline ? '● 연결됨' : '● 마지막 heartbeat 대기';
       return `
@@ -3131,16 +3226,10 @@ function renderDeviceManagement() {
     gatewayContent = `<div class="device-card-grid">${cards}</div>`;
   }
 
-  // 2. Hanger Section HTML
-  let hangerContent = '';
-  if (hangers.length === 0) {
-    hangerContent = `
-      <div class="empty-box">
-        <p>등록된 옷걸이가 없습니다. 블루투스로 옷봉에 옷걸이를 연결하세요.</p>
-        <button type="button" id="btnAddNewHanger" class="primary">+ 옷걸이 연결</button>
-      </div>`;
-  } else {
-    const cards = hangers.map(h => {
+  // 2. Hanger Section HTML. Unclaimed hangers that are already reporting
+  // through this account's gateway are shown here directly. Registration is
+  // an explicit claim, so no second BLE pairing step is needed.
+  const ownedHangerCards = hangers.map(h => {
       const online = isOnline(h);
       const statusBadge = online
         ? '<span class="pill status-pill-online">● 온라인</span>'
@@ -3168,10 +3257,29 @@ function renderDeviceManagement() {
           </div>
         </div>`;
     }).join('');
-    hangerContent = `<div class="device-card-grid">${cards}</div>`;
-  }
-
-  const discoveredContent = discovered.length ? `<div class="device-card-grid">${discovered.map(h => `<div class="device-box"><div class="device-box-header"><div><div class="device-box-title">새로 감지된 옷걸이</div><div class="device-box-id">${esc(h.hangerId)}</div></div><span class="pill status-pill-online">● 감지됨</span></div><div class="device-info-grid"><span class="label">감지 상태</span><span class="val">${esc(getKoreanState(h.state))}</span><span class="label">태그 UID</span><span class="val">${esc(h.tagUid || '태그 없음')}</span><span class="label">마지막 신호</span><span class="val">${timeAgo(h.lastSeen)}</span></div><div class="actions"><button type="button" class="primary" data-discovered-hanger="${esc(h.hangerId)}">이 옷걸이 등록</button></div></div>`).join('')}</div>` : '<p class="muted" style="margin:0">전원을 켠 새 옷걸이가 감지되면 이곳에 나타납니다.</p>';
+  const discoveredCards = discovered.map((h, index) => `
+    <div class="device-box device-box-discovered">
+      <div class="device-box-header">
+        <div>
+          <div class="device-box-title">새로 감지된 옷걸이 ${index + 1}</div>
+          <div class="device-box-id">${esc(h.hangerId)}</div>
+        </div>
+        <span class="pill status-pill-online">● 등록 대기</span>
+      </div>
+      <div class="device-info-grid">
+        <span class="label">감지 상태</span><span class="val">옷봉에서 감지됨</span>
+        <span class="label">태그 UID</span><span class="val">${esc(h.tagUid || '태그 없음')}</span>
+        <span class="label">통신 채널</span><span class="val">채널 ${h.channel || '-'}</span>
+        <span class="label">마지막 신호</span><span class="val">${timeAgo(h.lastSeen)}</span>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" data-discovered-hanger="${esc(h.hangerId)}">이 옷걸이 등록</button>
+      </div>
+    </div>`).join('');
+  const hangerCards = `${ownedHangerCards}${discoveredCards}`;
+  const hangerContent = hangerCards
+    ? `<div class="device-card-grid">${hangerCards}</div>`
+    : `<div class="empty-box"><p>등록된 옷걸이가 없습니다.</p><p class="muted" style="margin:4px 0 0">옷봉 전원이 켜져 있고 옷걸이 신호가 들어오면 이곳에 새로 감지된 옷걸이가 나타납니다.</p></div>`;
 
   // 3. Render Combined HTML
   panel.innerHTML = `
@@ -3189,22 +3297,16 @@ function renderDeviceManagement() {
       ${gatewayContent}
     </div>
     <div style="margin-top:24px">
-      <div style="margin-bottom:8px"><h4>감지된 새 옷걸이</h4><p class="muted" style="margin:4px 0 8px">전원을 켠 뒤 원하는 장비의 등록 버튼을 누르세요. 등록된 순서대로 1번, 2번… 번호가 부여됩니다.</p>${discoveredContent}</div>
-    </div>
-    <div style="margin-top:24px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <h4>스마트 옷걸이</h4>
-        ${hangers.length > 0 ? '<button type="button" class="ghost" id="btnAddAnotherHanger" style="padding:5px 10px;font-size:12px;color:var(--green);border:1px solid #347454">+ 옷걸이 추가 연결</button>' : ''}
       </div>
+      <p class="muted" style="margin:4px 0 8px">옷봉에서 새 옷걸이가 감지되면 아래에 표시됩니다. 등록된 순서대로 번호가 부여됩니다.</p>
       ${hangerContent}
     </div>`;
 
   // 4. Attach Event Handlers
   const addGwBtn = $('#btnAddNewGateway') || $('#btnAddAnotherGateway');
   if (addGwBtn) addGwBtn.onclick = window.showGatewayWifiHelp;
-
-  const addHgBtn = $('#btnAddNewHanger') || $('#btnAddAnotherHanger');
-  if (addHgBtn) addHgBtn.onclick = window.showHangerBleHelp;
 
   panel.querySelectorAll('[data-gateway-action="settings"]').forEach(btn => {
     btn.onclick = () => openGatewaySettings(btn.dataset.id);
@@ -3228,13 +3330,11 @@ function renderDeviceManagement() {
     btn.onclick = async () => {
       btn.disabled = true;
       try {
-        const connected = await connectHangerBluetooth({ scanWifi: false });
-        if (!connected) {
-          toast('옷걸이 등록을 완료하려면 먼저 스마트 옷봉을 블루투스로 선택해 주세요.');
-          return;
-        }
         const result = await claimDevice('hangers', btn.dataset.discoveredHanger, { confirmOwnership: true });
-        if (result?.ok) toast(`${result.item.alias || `${result.item.hangerNumber}번 옷걸이`} 등록 완료`);
+        if (result?.ok) {
+          await refreshAfterMutation();
+          toast(`${result.item.alias || `${result.item.hangerNumber}번 옷걸이`} 등록 완료`);
+        }
       } finally { btn.disabled = false; }
     };
   });
@@ -3280,15 +3380,11 @@ function installGatewayWifiSetup() {
       <button type="button" id="claimReleasedGateway" class="primary" hidden style="margin:8px 0;width:100%">이 옷봉을 내 계정에 등록</button>
       <form id="bleWifiForm" method="post" action="/" hidden style="margin-top:16px">
         <label>옷봉이 찾은 주변 2.4 GHz Wi-Fi
-          <select name="ssid" id="nearbyWifiChoices">
+          <select name="ssid" id="nearbyWifiChoices" required>
             <option value="">옷봉을 연결하면 목록이 표시됩니다</option>
           </select>
         </label>
         <button type="button" id="scanHangerWifi" class="ghost" style="margin-bottom:8px;color:var(--ink);border:1px solid #cbd4cd">주변 Wi-Fi 다시 검색</button>
-        <label>Wi-Fi 이름 직접 입력 (목록에 없을 때)
-          <input id="manualWifiSsid" type="text" maxlength="32" autocomplete="off" placeholder="예: gaon303_2.5g">
-        </label>
-        <p class="muted" style="margin:-4px 0 10px;font-size:12px">옷봉은 2.4 GHz Wi-Fi만 사용할 수 있습니다. 숨김 SSID이거나 검색 목록에 없을 때만 직접 입력하세요.</p>
         <label>선택한 Wi-Fi 비밀번호
           <input name="password" type="password" placeholder="비밀번호 입력">
         </label>
@@ -3323,14 +3419,6 @@ function installGatewayWifiSetup() {
   const serverInput = dialog.querySelector('input[name="server"]');
   if (serverInput) serverInput.value = window.location.origin;
   document.body.append(dialog);
-  const wifiSelect = $('#nearbyWifiChoices');
-  const manualWifiSsid = $('#manualWifiSsid');
-  wifiSelect?.addEventListener('change', () => {
-    if (wifiSelect.value && manualWifiSsid) manualWifiSsid.value = '';
-  });
-  manualWifiSsid?.addEventListener('input', () => {
-    if (manualWifiSsid.value.trim() && wifiSelect) wifiSelect.value = '';
-  });
 
   const showGatewayWifiHelp = () => {
     resetProvisionProgressUI();
@@ -3365,7 +3453,7 @@ function installGatewayWifiSetup() {
         claimReleasedGatewayBtn.hidden = true;
         setBleSetupMessage('내 계정에 옷봉을 등록했습니다. 기존 Wi-Fi 설정을 그대로 사용합니다.');
         toast('옷봉 등록 완료');
-        await refresh();
+        await refreshAfterMutation();
       } finally {
         claimReleasedGatewayBtn.disabled = false;
       }
@@ -3549,4 +3637,12 @@ $('#simulation')?.remove();
 setInterval(renderDeviceManagement, 2000);
 initAllComboboxes();
 token ? enter() : showAuth();
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+if ('serviceWorker' in navigator) {
+  let reloadingForUpdate = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloadingForUpdate) return;
+    reloadingForUpdate = true;
+    window.location.reload();
+  });
+  navigator.serviceWorker.register('/sw.js').then(registration => registration.update()).catch(() => {});
+}

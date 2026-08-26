@@ -29,6 +29,7 @@ Adafruit_PN532 nfc(PIN_NFC_SS, &SPI);
 String hanger;
 String pairedGateway;
 String discoveredGateway;
+uint8_t discoveredGatewayChannel = 0;
 String displayName;
 bool hangerLinkDisabled = false;
 volatile bool reportAfterGatewayBeacon = false;
@@ -64,14 +65,21 @@ ChannelState channelState = ChannelState::SEARCHING;
 uint8_t lastKnownGatewayChannel = 1;
 uint32_t lastBeaconMs = 0;
 uint32_t channelDwellStartMs = 0;
+// BLE callbacks run outside loop(). Queue the radio retune and apply it from
+// loop() so ESP-NOW channel changes never race a receive/send callback.
+volatile uint8_t pendingPairChannel = 0;
+volatile bool pendingManualPairSearch = false;
+bool manualPairSearchActive = false;
+uint32_t manualPairSearchDeadlineMs = 0;
+String manualPairGatewayTarget;
 
 constexpr uint32_t CHANNEL_SEARCH_DWELL_MS = 450;
-// Gateway cloud HTTPS calls are synchronous and can briefly delay ESP-NOW
-// beacons. Keep the last Wi-Fi channel long enough that a Web FIND arriving
-// during that delay is still received by this hanger.
-constexpr uint32_t BEACON_LOST_TIMEOUT_MS = 30000;
-constexpr uint32_t CHANNEL_RESCAN_TIMEOUT_MS = 90000;
-uint32_t lastBeaconWarningMs = 0;
+// A paired hanger never sweeps channels by itself. A sweep is only started by
+// an explicit BLE re-pair request (for example after the router moved to a
+// different Wi-Fi channel), so normal heartbeats always stay on the channel
+// that the gateway announced during pairing.
+constexpr uint32_t BEACON_LOST_TIMEOUT_MS = 10000;
+constexpr uint32_t MANUAL_PAIR_SEARCH_TIMEOUT_MS = 8000;
 constexpr uint32_t PN532_REINIT_COOLDOWN_MS = 500;
 // A passive NTAG answers immediately.  Keep no-tag polls short so removal
 // does not keep the app in IN_WARDROBE for several 200ms timeouts.
@@ -129,7 +137,9 @@ void setHangerBleStatus(const char* stateName, const char* message) {
       "\",\"hangerId\":\"" + hanger + "\",\"gatewayId\":\"" + pairedGateway +
       "\",\"discoveredGatewayId\":\"" + discoveredGateway + "\",\"tagUid\":\"" + currentUidHex() +
       "\",\"tagPresent\":" + (state == sw::State::PRESENT ? "true" : "false") +
-      ",\"nfcReady\":" + (nfcReady ? "true" : "false") + "}";
+      ",\"nfcReady\":" + (nfcReady ? "true" : "false") +
+      ",\"channel\":" + String(channel) +
+      ",\"channelState\":\"" + (channelState == ChannelState::LOCKED ? "LOCKED" : "SEARCHING") + "\"}";
   bleStatusCharacteristic->setValue(payload.c_str());
   bleStatusCharacteristic->notify();
 }
@@ -166,19 +176,14 @@ class HangerBleConfigCallbacks : public BLECharacteristicCallbacks {
     const String request = characteristic->getValue();
     const String action = bleJsonText(request, "action");
     if (action == "pair") {
-      if (!discoveredGateway.length()) {
-        setHangerBleStatus("waiting_gateway", "옷봉 신호를 찾는 중입니다. 옷봉 전원과 거리를 확인하세요.");
-        return;
-      }
-      pairedGateway = discoveredGateway;
-      hangerLinkDisabled = false;
-      prefs.putString("gateway", pairedGateway);
-      // The BLE advertising name is always a neutral hardware label. Do not
-      // persist an account or UI display name on a transferable hanger.
-      prefs.remove("displayName");
-      prefs.putBool("linkDisabled", false);
-      setHangerBleStatus("paired", "옷봉과 연결했습니다. 이제 옷 태그 상태를 확인할 수 있습니다.");
-      report(true);
+      // Pairing is also the explicit recovery action when the router moved
+      // the gateway to a different channel. Do not trust a cached beacon
+      // channel: scan once and lock to the channel in the fresh beacon.
+      manualPairGatewayTarget = pairedGateway.length() ? pairedGateway : discoveredGateway;
+      pendingManualPairSearch = true;
+      setHangerBleStatus("searching", "옷봉의 현재 채널을 찾는 중입니다.");
+      Serial.printf("[PAIR] manual channel search requested target=%s\n",
+                    manualPairGatewayTarget.length() ? manualPairGatewayTarget.c_str() : "<any>");
       return;
     }
     if (action == "forget") {
@@ -240,12 +245,63 @@ void startSerialLedTest() {
   Serial.println("[LED-TEST] ON (1/3)");
 }
 
+void setChannel(uint8_t ch);
+
+// Physical USB recovery command.  This is intentionally kept out of the
+// browser protocol: after a full flash erase the normal BLE pairing flow is
+// still the user-facing path, while a technician with the board on USB can
+// restore a known gateway/channel without making the hanger sweep forever.
+// Usage: PAIR GW-D4DB1C 4
+void provisionPairFromSerial(const String& command) {
+  int firstSpace = command.indexOf(' ');
+  if (firstSpace < 0) {
+    Serial.println("[PAIR] usage: PAIR <gatewayId> <channel>");
+    return;
+  }
+  String args = command.substring(firstSpace + 1);
+  args.trim();
+  int secondSpace = args.indexOf(' ');
+  if (secondSpace < 0) {
+    Serial.println("[PAIR] usage: PAIR <gatewayId> <channel>");
+    return;
+  }
+  String gatewayId = args.substring(0, secondSpace);
+  gatewayId.trim();
+  const int requestedChannel = args.substring(secondSpace + 1).toInt();
+  if (gatewayId.length() < 4 || requestedChannel < 1 || requestedChannel > 13) {
+    Serial.println("[PAIR] invalid gateway or channel (channel must be 1-13)");
+    return;
+  }
+
+  pairedGateway = gatewayId;
+  discoveredGateway = gatewayId;
+  discoveredGatewayChannel = (uint8_t)requestedChannel;
+  hangerLinkDisabled = false;
+  manualPairSearchActive = false;
+  pendingManualPairSearch = false;
+  channel = (uint8_t)requestedChannel;
+  lastKnownGatewayChannel = channel;
+  channelState = ChannelState::LOCKED;
+  channelDwellStartMs = 0;
+  lastBeaconMs = millis();
+  prefs.putString("gateway", pairedGateway);
+  prefs.putUChar("channel", channel);
+  prefs.putBool("linkDisabled", false);
+  setChannel(channel);
+  setHangerBleStatus("paired", "옷봉과 연결했습니다. 현재 채널에 고정했습니다.");
+  Serial.printf("[PAIR] USB provision gateway=%s channel=%u\n", pairedGateway.c_str(), unsigned(channel));
+  Serial.printf("[CHANNEL] LOCKED ch=%u\n", unsigned(channel));
+  reportAfterGatewayBeacon = true;
+}
+
 void handleSerialDiagnostics() {
   if (!Serial.available()) return;
   String command = Serial.readStringUntil('\n');
   command.trim();
   if (command.equalsIgnoreCase("LEDTEST")) {
     startSerialLedTest();
+  } else if (command.startsWith("PAIR ") || command.startsWith("pair ")) {
+    provisionPairFromSerial(command);
   }
 }
 
@@ -294,7 +350,11 @@ void fill(sw::Packet& p, sw::Type type) {
 }
 
 bool send(sw::Packet& p) {
-  if (hangerLinkDisabled) return false;
+  // A released hanger must never accept commands or auto-claim itself, but
+  // it still needs to announce its physical presence so the owner of a nearby
+  // registered rod can explicitly add it from the app.  Suppressing every
+  // packet here made a freshly released C6 permanently invisible.
+  if (hangerLinkDisabled && p.type != sw::Type::STATUS && p.type != sw::Type::EVENT) return false;
   sw::seal(p);
   return esp_now_send(sw::BROADCAST, reinterpret_cast<uint8_t*>(&p), sizeof p) == ESP_OK;
 }
@@ -351,16 +411,44 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
   if (!sw::valid(p)) return;
   if (p.type == sw::Type::BEACON) {
     discoveredGateway = p.gatewayId;
-    if (hangerLinkDisabled) return;
-    // Discovery is not pairing.  A reset or fresh hanger must never adopt the
+    const uint8_t gwCh = (uint8_t)p.errorFlags;
+    if (gwCh >= 1 && gwCh <= 13) discoveredGatewayChannel = gwCh;
+    if (hangerLinkDisabled) {
+      // Passive discovery only: follow the rod's live Wi-Fi channel so this
+      // unclaimed C6 can report STATUS. It does not save a gateway ID, claim
+      // ownership, or accept commands; explicit app registration remains the
+      // only way to pair it.
+      if (gwCh >= 1 && gwCh <= 13 && channel != gwCh) {
+        setChannel(gwCh);
+        Serial.printf("[DISCOVERY] gateway beacon ch=%u; reporting as unclaimed\n", channel);
+      }
+      lastBeaconMs = millis();
+      channelState = ChannelState::LOCKED;
+      return;
+    }
+    // Discovery is not pairing. A reset or fresh hanger must never adopt the
     // first nearby rod by itself; the user explicitly presses "옷봉과 연결".
-    if (!pairedGateway.length()) return;
-    if (pairedGateway != discoveredGateway) return;
+    // During that explicit request, however, accept the fresh beacon so a
+    // router-channel change can be recovered without an automatic sweep.
+    const bool manualPairing = manualPairSearchActive;
+    if (manualPairing) {
+      if (manualPairGatewayTarget.length() && manualPairGatewayTarget != discoveredGateway) return;
+      pairedGateway = discoveredGateway;
+      hangerLinkDisabled = false;
+      prefs.putString("gateway", pairedGateway);
+      prefs.remove("displayName");
+      prefs.putBool("linkDisabled", false);
+      manualPairSearchActive = false;
+      Serial.printf("[PAIR] gateway=%s found during manual channel search\n", pairedGateway.c_str());
+      setHangerBleStatus("paired", "옷봉과 연결했습니다. 현재 채널에 고정했습니다.");
+    } else {
+      if (!pairedGateway.length()) return;
+      if (pairedGateway != discoveredGateway) return;
+    }
 
     const uint32_t now = millis();
     const bool wasConnected = (channelState == ChannelState::LOCKED) && (now - lastBeaconMs < BEACON_LOST_TIMEOUT_MS);
     lastBeaconMs = now;
-    uint8_t gwCh = (uint8_t)p.errorFlags;
     if (gwCh >= 1 && gwCh <= 13) {
       if (channel != gwCh || channelState != ChannelState::LOCKED) {
         channel = gwCh;
@@ -595,26 +683,36 @@ void scanNfc() {
 
 void maintainChannel() {
   const uint32_t now = millis();
-  if (channelState == ChannelState::LOCKED) {
-    if (now - lastBeaconMs >= BEACON_LOST_TIMEOUT_MS) {
-      // Keep using the last proven Gateway channel while HTTPS is briefly
-      // blocking the S3 loop.  Sweeping channels immediately makes a Cloud
-      // FIND miss the C6 even though both boards are still on channel 4.
-      if (now - lastBeaconMs < CHANNEL_RESCAN_TIMEOUT_MS) {
-        if (now - lastBeaconWarningMs >= BEACON_LOST_TIMEOUT_MS) {
-          lastBeaconWarningMs = now;
-          Serial.printf("[CHANNEL] Beacon delayed; holding ch=%u for FIND\n", channel);
-        }
-        return;
-      }
-      channelState = ChannelState::SEARCHING;
-      channelDwellStartMs = now;
-      Serial.println("[CHANNEL] Gateway beacon absent 90s -> SEARCHING");
+  if (manualPairSearchActive && manualPairSearchDeadlineMs &&
+      (int32_t)(now - manualPairSearchDeadlineMs) >= 0) {
+    // A manual re-pair is bounded. If it cannot find the requested gateway,
+    // return to the last known channel and wait for the next explicit retry.
+    manualPairSearchActive = false;
+    manualPairSearchDeadlineMs = 0;
+    channelState = pairedGateway.length() ? ChannelState::LOCKED : ChannelState::SEARCHING;
+    if (pairedGateway.length()) {
+      channel = lastKnownGatewayChannel;
+      setChannel(channel);
+      lastBeaconMs = now;
+      setHangerBleStatus("error", "옷봉 채널을 찾지 못했습니다. 옷봉 전원과 거리를 확인한 뒤 다시 연결하세요.");
     }
-    return;
+    Serial.println("[PAIR] manual channel search timeout");
   }
 
-  // In SEARCHING state:
+  // A paired hanger stays on the last proven channel indefinitely. Searching
+  // is reserved for a fresh hanger or the explicit BLE re-pair action above.
+  if (pairedGateway.length() && !manualPairSearchActive) return;
+  // An unpaired hanger locks temporarily only to report through a nearby
+  // rod. If that rod disappears, resume discovery instead of staying forever
+  // on a stale channel.
+  if (channelState == ChannelState::LOCKED && now - lastBeaconMs < BEACON_LOST_TIMEOUT_MS) return;
+  if (channelState == ChannelState::LOCKED) {
+    channelState = ChannelState::SEARCHING;
+    channelDwellStartMs = now;
+  }
+
+  // In SEARCHING state, dwell long enough for the gateway's beacon task to
+  // run, then advance to the next channel.
   if (now - channelDwellStartMs < CHANNEL_SEARCH_DWELL_MS) return;
   channelDwellStartMs = now;
   channel = (channel >= 13) ? 1 : (channel + 1);
@@ -646,6 +744,7 @@ void setup() {
                 hanger == LEGACY_HANGER_ID ? " (legacy-preserved)" : "");
   bootId = esp_random();
   pairedGateway = prefs.getString("gateway", "");
+  hangerLinkDisabled = prefs.getBool("linkDisabled", false);
   lastKnownGatewayChannel = prefs.getUChar("channel", 1);
   if (lastKnownGatewayChannel < 1 || lastKnownGatewayChannel > 13) lastKnownGatewayChannel = 1;
   channel = lastKnownGatewayChannel;
@@ -655,7 +754,8 @@ void setup() {
   channelState = pairedGateway.length() ? ChannelState::LOCKED : ChannelState::SEARCHING;
   lastBeaconMs = millis();
   channelDwellStartMs = millis();
-  Serial.printf("[CHANNEL] trying last known ch=%u\n", channel);
+  Serial.printf("[PAIR] stored gateway=%s link=%s\n", pairedGateway.length() ? pairedGateway.c_str() : "<none>", hangerLinkDisabled ? "disabled" : "enabled");
+  Serial.printf("[CHANNEL] trying last known ch=%u state=%s\n", channel, channelState == ChannelState::LOCKED ? "LOCKED" : "SEARCHING");
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
@@ -685,6 +785,35 @@ void loop() {
     reportAfterGatewayBeacon = false;
     Serial.println("[ESPNOW] Gateway rejoined: sending current state now");
     report(false);
+  }
+
+  if (pendingManualPairSearch) {
+    pendingManualPairSearch = false;
+    manualPairSearchActive = true;
+    manualPairSearchDeadlineMs = t + MANUAL_PAIR_SEARCH_TIMEOUT_MS;
+    channelState = ChannelState::SEARCHING;
+    channelDwellStartMs = t;
+    // Start at channel 1 for a deterministic one-pass search. The first
+    // matching beacon will queue the new channel and stop the sweep.
+    setChannel(1);
+    Serial.printf("[CHANNEL] manual search start target=%s timeout=%ums\n",
+                  manualPairGatewayTarget.length() ? manualPairGatewayTarget.c_str() : "<any>",
+                  unsigned(MANUAL_PAIR_SEARCH_TIMEOUT_MS));
+    setHangerBleStatus("searching", "옷봉의 현재 채널을 찾는 중입니다.");
+  }
+
+  if (pendingPairChannel >= 1 && pendingPairChannel <= 13) {
+    const uint8_t pairChannel = pendingPairChannel;
+    pendingPairChannel = 0;
+    setChannel(pairChannel);
+    channelState = ChannelState::LOCKED;
+    lastBeaconMs = t;
+    channelDwellStartMs = t;
+    lastKnownGatewayChannel = pairChannel;
+    prefs.putUChar("channel", pairChannel);
+    manualPairSearchDeadlineMs = 0;
+    Serial.printf("[CHANNEL] LOCKED after pairing ch=%u\n", unsigned(pairChannel));
+    setHangerBleStatus("connected", "옷봉 무선 채널에 고정했습니다.");
   }
 
   // Keep the PN532 poll cadence bounded so ESP-NOW work can run between polls.

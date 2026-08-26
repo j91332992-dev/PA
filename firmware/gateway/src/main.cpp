@@ -91,7 +91,12 @@ const char GOOGLE_ROOT_BUNDLE[] =
 String gateway;
 uint32_t beaconAt = 0, cloudAt = 0, gatewayHeartbeatAt = 0, wifiRetryAt = 0, sequence = 0;
 // Bound each idle Cloud poll so it cannot delay a physical NFC state edge.
-constexpr uint32_t COMMAND_POLL_INTERVAL_MS = 350;
+// Render/Vercel TLS setup can take several hundred milliseconds on a cold
+// request.  A 250 ms command timeout made every poll fail even while status
+// uploads succeeded, so FIND commands stayed queued.  Keep polling often,
+// but give the HTTPS request enough time to complete.
+constexpr uint32_t COMMAND_POLL_INTERVAL_MS = 750;
+constexpr uint16_t COMMAND_POLL_TIMEOUT_MS = 1200;
 Preferences wifiPrefs;
 WebServer setupServer(80);
 DNSServer setupDns;
@@ -108,7 +113,6 @@ String provisionMessage = "블루투스로 옷봉을 연결하세요.";
 constexpr char BLE_SERVICE_UUID[] = "a4e66a10-0fb0-4dce-8be0-18cf7bc82001";
 constexpr char BLE_CONFIG_UUID[] = "a4e66a11-0fb0-4dce-8be0-18cf7bc82001";
 constexpr char BLE_STATUS_UUID[] = "a4e66a12-0fb0-4dce-8be0-18cf7bc82001";
-// Local-first service: the phone talks to one S3, never to every C6.
 constexpr char LOCAL_STATUS_UUID[] = "a4e66a13-0fb0-4dce-8be0-18cf7bc82001";
 constexpr char LOCAL_COMMAND_UUID[] = "a4e66a14-0fb0-4dce-8be0-18cf7bc82001";
 String stateName(sw::State s);
@@ -128,7 +132,10 @@ portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 constexpr uint8_t EVENT_Q = 16, NORMAL_Q = 32, SEEN_Q = 16;
 sw::Packet eventQueue[EVENT_Q], normalQueue[NORMAL_Q];
 volatile uint8_t eventHead = 0, eventTail = 0, normalHead = 0, normalTail = 0;
-struct SeenPacket { char hangerId[16]{}; uint32_t bootId = 0, sequence = 0; };
+struct SeenPacket {
+  char hangerId[16]{};
+  uint32_t bootId = 0, sequence = 0;
+};
 SeenPacket seenPackets[SEEN_Q];
 
 String cloudBaseUrl() {
@@ -169,6 +176,26 @@ String bleDisplayName() {
   // previous account name in NVS: the immutable hardware suffix distinguishes
   // multiple nearby rods before any server-side claim occurs.
   return String("스마트 옷봉 · ") + gateway.substring(gateway.length() - 6);
+}
+
+// The ESP32 default regulatory domain can exclude channels 12/13.  A Korean
+// home router may legally advertise its 2.4 GHz SSID on either of those
+// channels, so a default (US) scan can report zero networks even though the
+// PC and phone can see the access point.  Lock the radio to the Korean domain
+// before every setup/association scan so all channels 1–13 are searched.
+void configureWifiCountry() {
+  wifi_country_t country{};
+  strlcpy(country.cc, "KR", sizeof(country.cc));
+  country.schan = 1;
+  country.nchan = 13;
+  country.max_tx_power = 84; // 21 dBm, ESP32-S3 legal maximum for KR
+  country.policy = WIFI_COUNTRY_POLICY_MANUAL;
+  const esp_err_t result = esp_wifi_set_country(&country);
+  if (result != ESP_OK) {
+    Serial.printf("[WIFI] Korean country/channel setup failed: %s\n", esp_err_to_name(result));
+  } else {
+    Serial.println("[WIFI] Country KR configured (2.4 GHz channels 1-13)");
+  }
 }
 
 void setBleStatus(const char* state, const char* message) {
@@ -291,6 +318,7 @@ void scanNearbyWifiForBle() {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   esp_wifi_set_ps(WIFI_PS_NONE);
+  configureWifiCountry();
   WiFi.scanDelete();
   delay(300);
 
@@ -302,10 +330,20 @@ void scanNearbyWifiForBle() {
   uint8_t networkCount = 0;
   constexpr uint8_t SCAN_PASSES = 1;
   for (uint8_t pass = 0; pass < SCAN_PASSES; ++pass) {
-    const int count = WiFi.scanNetworks(false, true, false, 220, 0);
+    int count = WiFi.scanNetworks(false, true, false, 220, 0);
     Serial.printf("[BLE] Wi-Fi full active scan pass=%u result=%d\n", pass + 1, count);
+    // A beacon can fall just outside a single dwell window while the radio
+    // was switching away from BLE. Retry only the empty result so normal
+    // scans stay fast but a waking router is not silently omitted.
+    if (count == 0) {
+      WiFi.scanDelete();
+      delay(120);
+      count = WiFi.scanNetworks(false, true, false, 220, 0);
+      Serial.printf("[BLE] Wi-Fi retry after empty result=%d\n", count);
+    }
     if (count >= 0) for (int i = 0; i < count; ++i) {
       const String ssid = WiFi.SSID(i);
+      Serial.printf("[BLE-SCAN] ssid=%s ch=%d rssi=%d\n", ssid.length() ? ssid.c_str() : "<hidden>", WiFi.channel(i), WiFi.RSSI(i));
       const String marker = "|" + ssid + "|";
       if (!ssid.length() || seen.indexOf(marker) >= 0) continue;
       seen += marker;
@@ -365,10 +403,14 @@ bool dequeue(sw::Packet& p) {
 
 bool duplicateStatus(const sw::Packet& p) {
   if (p.type != sw::Type::STATUS && p.type != sw::Type::EVENT) return false;
+  portENTER_CRITICAL(&mux);
   SeenPacket* slot = nullptr;
   for (auto& seen : seenPackets) {
     if (strncmp(seen.hangerId, p.hangerId, sizeof seen.hangerId) == 0) {
-      if (seen.bootId == p.bootId && p.sequence <= seen.sequence) return true;
+      if (seen.bootId == p.bootId && p.sequence <= seen.sequence) {
+        portEXIT_CRITICAL(&mux);
+        return true;
+      }
       slot = &seen;
       break;
     }
@@ -378,6 +420,7 @@ bool duplicateStatus(const sw::Packet& p) {
   strlcpy(slot->hangerId, p.hangerId, sizeof slot->hangerId);
   slot->bootId = p.bootId;
   slot->sequence = p.sequence;
+  portEXIT_CRITICAL(&mux);
   return false;
 }
 
@@ -446,6 +489,7 @@ bool connectWifi(const String& ssid, const String& password, uint32_t timeoutMs 
   WiFi.persistent(false);
   WiFi.setAutoReconnect(true);
   WiFi.setSleep(false);
+  configureWifiCountry();
   WiFi.begin(ssid.c_str(), password.c_str());
   const uint32_t started = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - started < timeoutMs) delay(100);
@@ -765,8 +809,34 @@ void handleSerialDiagnostics() {
   if (!Serial.available()) return;
   String command = Serial.readStringUntil('\n');
   command.trim();
-  if (!command.startsWith("FINDTEST")) return;
-  runFindTest(command.substring(String("FINDTEST").length()));
+  if (command.startsWith("FINDTEST")) {
+    runFindTest(command.substring(String("FINDTEST").length()));
+    return;
+  }
+  // USB-only recovery for a gateway whose application was updated without
+  // retaining its Wi-Fi NVS.  The password is never printed to Serial.
+  // Format: WIFI <ssid>\t<password>\t<server-url>
+  if (!command.startsWith("WIFI ")) return;
+  const String args = command.substring(5);
+  const int firstTab = args.indexOf('\t');
+  const int secondTab = firstTab < 0 ? -1 : args.indexOf('\t', firstTab + 1);
+  if (firstTab <= 0 || secondTab <= firstTab + 1) {
+    Serial.println("[WIFI] usage: WIFI <ssid>\\t<password>\\t<server-url>");
+    return;
+  }
+  const String ssid = args.substring(0, firstTab);
+  const String password = args.substring(firstTab + 1, secondTab);
+  const String server = args.substring(secondTab + 1);
+  if (!ssid.length() || !server.startsWith("http")) {
+    Serial.println("[WIFI] invalid SSID or server URL");
+    return;
+  }
+  wifiPrefs.putString("ssid", ssid);
+  wifiPrefs.putString("pass", password);
+  wifiPrefs.putString("server", server);
+  wifiPrefs.putBool("disabled", false);
+  Serial.printf("[WIFI] credentials saved for %s; rebooting\n", ssid.c_str());
+  rebootAt = millis() + 500;
 }
 
 bool decodeChunkedBody(const String& encoded, String& decoded) {
@@ -796,7 +866,7 @@ void fetchCommands() {
   // bounded timeout keeps command polling responsive without starving beacons.
   // The next poll follows quickly. Prefer a bounded physical-state latency to
   // waiting several seconds for one stale/slow command response.
-  if (!request("/api/gateway/commands", "GET", "", out, 250)) {
+  if (!request("/api/gateway/commands", "GET", "", out, COMMAND_POLL_TIMEOUT_MS)) {
     Serial.println("[COMMAND-POLL] HTTP request failed");
     return;
   }
@@ -852,7 +922,9 @@ void fetchCommands() {
       rebootAt = millis() + 500;
       return;
     }
-    Serial.printf("[COMMAND] %lu cmd=%u targets=%u\n", p.commandId, (unsigned)p.command, p.targetCount);
+    Serial.printf("[COMMAND] %lu cmd=%u targets=%u", p.commandId, (unsigned)p.command, p.targetCount);
+    for (uint8_t i = 0; i < p.targetCount; ++i) Serial.printf(" id%u=%lu", unsigned(i + 1), (unsigned long)p.targetIds[i]);
+    Serial.println();
   }
 }
 
@@ -960,6 +1032,7 @@ void setup() {
   // dereferenced a null internal handle, rebooting the S3 before registration.
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
+  configureWifiCountry();
   // BLE stays available even after Wi-Fi succeeds, so first setup and later
   // router changes always use the same user-facing flow.  It must start
   // before a potentially slow saved-Wi-Fi retry, so it is discoverable
@@ -1007,12 +1080,10 @@ void loop() {
   } else if (WiFi.status() == WL_CONNECTED) {
     wifiRetryCount = 0;
   }
-  
+
   // 1. A physical NFC transition is the source of truth. Process exactly one
   // pending packet before command polling so PRESENT/EMPTY never waits behind
   // a slow Cloud GET request.
-  // Drain up to six physical state packets per Cloud request.  This keeps a
-  // simultaneous wardrobe change from serialising into six HTTPS round trips.
   sw::Packet batch[6];
   uint8_t batchCount = 0;
   sw::Packet p;

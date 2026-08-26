@@ -9,7 +9,11 @@ function loadEnv(file){if(!fs.existsSync(file))return;for(const line of fs.readF
 loadEnv(path.join(ROOT,'.env'));
 const PORT=Number(process.env.PORT||8787),DATA=path.resolve(ROOT,process.env.DATA_PATH||'data/wardrobe.json'),PUBLIC=path.join(ROOT,'web','public');
 const SECRET=process.env.JWT_SECRET||'development-secret',DEVICE=process.env.DEVICE_TOKEN||'development-device-token';
-const OFFLINE=Number(process.env.OFFLINE_TIMEOUT_MS||30000),CMD_TIMEOUT=Number(process.env.COMMAND_TIMEOUT_MS||60000),SIM=process.env.SIMULATION_ENABLED==='true';
+// Hanger presence is physical and must transition quickly. Gateway cloud
+// heartbeats use a separate, more tolerant lease: an S3 heartbeat runs every
+// 8 seconds and an occasional TLS/network delay must not make the whole rod
+// flap offline. This never changes the 10-second hanger/garment OUT rule.
+const OFFLINE=Number(process.env.OFFLINE_TIMEOUT_MS||10000),GATEWAY_OFFLINE=Number(process.env.GATEWAY_OFFLINE_TIMEOUT_MS||30000),CMD_TIMEOUT=Number(process.env.COMMAND_TIMEOUT_MS||60000),SIM=process.env.SIMULATION_ENABLED==='true';
 // Set ADMIN_EMAIL in Render (or .env locally) to the sole administrator.
 // Both the role and the second-factor proof are verified only by this server.
 const ADMIN_EMAIL=String(process.env.ADMIN_EMAIL||'').trim().toLowerCase();
@@ -89,16 +93,22 @@ function migrate(){
   for(const w of db.wardrobes){
     const gateways=db.gateways.filter(g=>g.wardrobeId===w.id&&!simulated(g)).sort((a,b)=>String(a.createdAt||a.gatewayId).localeCompare(String(b.createdAt||b.gatewayId)));
     gateways.forEach((g,index)=>{
+      const previousNumber=g.gatewayNumber,previousCustomName=g.customName,previousName=g.name;
       if(!Number.isInteger(Number(g.gatewayNumber))||Number(g.gatewayNumber)<1)g.gatewayNumber=index+1;
       if(typeof g.customName!=='string'){const old=String(g.name||'');g.customName=old&&old!=='새 옷봉'&&old!=='Gateway'&&!/의(?: \d+번)? 옷봉$/.test(old)?old:'';}
       syncGatewayName(g);
+      if(previousNumber!==g.gatewayNumber||previousCustomName!==g.customName||previousName!==g.name)changed=true;
     });
     for(const g of gateways){
       const hangers=db.hangers.filter(h=>h.gatewayId===g.gatewayId&&!simulated(h)).sort((a,b)=>String(a.createdAt||a.hangerId).localeCompare(String(b.createdAt||b.hangerId)));
-      hangers.forEach((h,index)=>{
-        if(!Number.isInteger(Number(h.hangerNumber))||Number(h.hangerNumber)<1)h.hangerNumber=index+1;
-        if(typeof h.customName!=='string'){const old=String(h.alias||'');h.customName=old&&!/^HC-/i.test(old)&&!/^\d+번 옷걸이$/.test(old)&&!/의 옷걸이 \d+번$/.test(old)?old:'';}
-        if(h.wardrobeId===w.id)syncHangerName(h);
+      const usedNumbers=new Set(), nextNumber=()=>{let n=1;while(usedNumbers.has(n))n++;return n;};
+      hangers.forEach(h=>{
+        const previousNumber=h.hangerNumber, explicit=Number(h.hangerNumber);
+        if(!Number.isInteger(explicit)||explicit<1||usedNumbers.has(explicit))h.hangerNumber=nextNumber();
+        usedNumbers.add(Number(h.hangerNumber));
+        if(previousNumber!==h.hangerNumber)changed=true;
+        if(typeof h.customName!=='string'){const old=String(h.alias||''),previous=h.customName;h.customName=old&&!/^HC-/i.test(old)&&!/^\d+번 옷걸이$/.test(old)&&!/의 옷걸이 \d+번$/.test(old)?old:'';if(previous!==h.customName)changed=true;}
+        if(h.wardrobeId===w.id){const previousName=h.alias;syncHangerName(h);if(previousName!==h.alias)changed=true;}
       });
     }
   }
@@ -144,10 +154,12 @@ let ownershipSyncAt=0,ownershipSyncPromise=null;
 async function syncDeviceOwnershipState(force=false){
   if(storage.mode!=='postgres')return;
   if(!force&&Date.now()-ownershipSyncAt<500)return;
-  if(!ownershipSyncPromise)ownershipSyncPromise=storage.syncDeviceOwnership(db).then(()=>{
-    for(const gateway of db.gateways)syncGatewayName(gateway);
-    for(const hanger of db.hangers)syncHangerName(hanger);
+  if(!ownershipSyncPromise)ownershipSyncPromise=storage.syncDeviceOwnership(db).then(async()=>{
+    let namesChanged=false;
+    for(const gateway of db.gateways){const previousName=gateway.name;syncGatewayName(gateway);if(previousName!==gateway.name)namesChanged=true;}
+    for(const hanger of db.hangers){const previousName=hanger.alias;syncHangerName(hanger);if(previousName!==hanger.alias)namesChanged=true;}
     reconcile();ownershipSyncAt=Date.now();
+    if(namesChanged)await save();
   }).finally(()=>{ownershipSyncPromise=null;});
   await ownershipSyncPromise;
 }
@@ -185,6 +197,32 @@ function reconcile(){
   const seen=new Map();for(const h of db.hangers)if(h.reportedState==='PRESENT'&&h.tagUid){const k=`${h.wardrobeId}:${h.tagUid}`,a=seen.get(k)||[];a.push(h);seen.set(k,a)}
   for(const h of db.hangers){const same=seen.get(`${h.wardrobeId}:${h.tagUid}`)||[];if(h.reportedState==='OFFLINE')h.state='OFFLINE';else if(h.reportedState==='PRESENT'&&same.length>1)h.state='CONFLICT';else if(h.reportedState==='PRESENT'&&!db.garments.some(g=>g.wardrobeId===h.wardrobeId&&g.tagUid===h.tagUid))h.state='UNKNOWN_TAG';else h.state=h.reportedState;}
   for(const g of db.garments){const h=db.hangers.find(h=>h.wardrobeId===g.wardrobeId&&h.tagUid===g.tagUid&&h.state==='PRESENT');g.currentState=h?'IN_WARDROBE':'OUT';g.currentHanger=h?.hangerId||null;if(h)g.lastSeen=h.lastSeen;}
+}
+// Vercel functions do not keep the background interval alive.  Expire stale
+// hangers on the request path instead, so an open app still gets a durable
+// OFFLINE transition even when no new device packet arrives.  reconcile() then
+// immediately projects any garment on that hanger to OUT.
+let offlineExpiryPromise=null;
+async function expireOfflineHangers(){
+  if(offlineExpiryPromise)return offlineExpiryPromise;
+  offlineExpiryPromise=(async()=>{
+    const cutoff=Date.now()-OFFLINE,expired=[];
+    for(const hanger of db.hangers){
+      const seenAt=Date.parse(hanger.lastSeen||0);
+      if(hanger.state!=='OFFLINE'&&(!Number.isFinite(seenAt)||seenAt<cutoff)){
+        hanger.reportedState='OFFLINE';
+        hanger.state='OFFLINE';
+        expired.push(hanger);
+      }
+    }
+    if(!expired.length)return false;
+    for(const hanger of expired)emit('hanger.offline',hanger,'warning',hanger.wardrobeId);
+    reconcile();
+    try{await save();}
+    catch(error){console.error('[OFFLINE] state save failed',error.message)}
+    return true;
+  })().finally(()=>{offlineExpiryPromise=null});
+  return offlineExpiryPromise;
 }
 function gatewayOwner(gatewayId){return db.gateways.find(g=>g.gatewayId===gatewayId)?.wardrobeId||null}
 function defaultWardrobeForNewGateway(){
@@ -255,11 +293,11 @@ function statusBatch(items){
 function heartbeat(x){const gatewayId=String(x.gatewayId||'').toUpperCase();if(!/^GW-[0-9A-F]{6,12}$/.test(gatewayId))throw error(400,'gatewayId 형식 오류');const g=attachGateway(gatewayId);Object.assign(g,{state:'ONLINE',lastSeen:now(),channel:Number(x.channel||0),firmwareVersion:String(x.firmwareVersion||'unknown'),ssid:String(x.ssid||g.ssid||''),rssi:Number(x.rssi||g.rssi||0),ip:String(x.ip||g.ip||''),provisioning:{status:'CONNECTED',wifiStatus:'CONNECTED',cloudStatus:'CONNECTED',at:now()}});emit('gateway.heartbeat',g,'info',g.wardrobeId);return g}
 function command(targets,user,duration=0,kind='LED_BLINK'){const w=wardrobeFor(user);targets=[...new Set((targets||[]).map(x=>String(x).toUpperCase()))];if(!targets.length||targets.length>16)throw error(400,'대상은 1~16개여야 합니다.');for(const t of targets)if(!db.hangers.some(h=>h.hangerId===t&&h.wardrobeId===w.id))throw error(404,`내 옷장에 없는 옷걸이: ${t}`);cancelActiveCommands(targets,w.id,'SUPERSEDED');const c={id:id('cmd'),numericId:crypto.randomInt(1,2147483647),command:String(kind).toUpperCase()==='LED_OFF'?'LED_OFF':'LED_BLINK',targets,durationMs:Math.max(0,Math.min(120000,Number(duration)||0)),status:'QUEUED',requestedBy:user.id,wardrobeId:w.id,createdAt:now(),expiresAt:new Date(Date.now()+CMD_TIMEOUT).toISOString(),acknowledgements:{}};db.commands.unshift(c);console.log(`[COMMAND] QUEUED id=${c.numericId} type=${c.command} targets=${targets.join(',')}`);emit('command.queued',c,'info',w.id);return c}
 function visible(list,wid){return list.filter(x=>x.wardrobeId===wid&&(SIM||!simulated(x)))}
-function discoveredHangers(wid){const ownedGatewayIds=new Set(db.gateways.filter(g=>g.wardrobeId===wid).map(g=>g.gatewayId));return db.hangers.filter(h=>!h.wardrobeId&&ownedGatewayIds.has(h.gatewayId)&&(SIM||!simulated(h))).map(h=>({hangerId:h.hangerId,alias:h.alias||'',gatewayId:h.gatewayId,reportedState:h.reportedState||h.state||'UNKNOWN',state:h.state||'UNKNOWN',tagUid:h.tagUid||null,lastSeen:h.lastSeen||null,channel:h.channel||0,errorFlags:h.errorFlags||0,firmwareVersion:h.firmwareVersion||'unknown'}))}
+function discoveredHangers(wid){const ownedGatewayIds=new Set(db.gateways.filter(g=>g.wardrobeId===wid).map(g=>g.gatewayId)),cutoff=Date.now()-OFFLINE;return db.hangers.filter(h=>!h.wardrobeId&&ownedGatewayIds.has(h.gatewayId)&&Date.parse(h.lastSeen||0)>=cutoff&&h.state!=='OFFLINE'&&(SIM||!simulated(h))).map(h=>({hangerId:h.hangerId,alias:h.alias||'',gatewayId:h.gatewayId,createdAt:h.createdAt||null,reportedState:h.reportedState||h.state||'UNKNOWN',state:h.state||'UNKNOWN',tagUid:h.tagUid||null,lastSeen:h.lastSeen||null,channel:h.channel||0,errorFlags:h.errorFlags||0,firmwareVersion:h.firmwareVersion||'unknown'}))}
 function eventReferencesOwnedHardware(event,wid){const p=event.payload||{};if(p.gatewayId&&!db.gateways.some(g=>g.gatewayId===p.gatewayId&&g.wardrobeId===wid))return false;if(p.hangerId&&!db.hangers.some(h=>h.hangerId===p.hangerId&&h.wardrobeId===wid))return false;if(Array.isArray(p.targets)&&p.targets.length&&!p.targets.some(target=>db.hangers.some(h=>h.hangerId===target&&h.wardrobeId===wid)))return false;return true}
 function snapshot(user){const w=wardrobeFor(user),ownedHangerIds=new Set(db.hangers.filter(h=>h.wardrobeId===w.id).map(h=>h.hangerId));return{wardrobe:w,gateways:visible(db.gateways,w.id),hangers:visible(db.hangers,w.id),discoveredHangers:discoveredHangers(w.id),garments:visible(db.garments,w.id),events:visible(db.events,w.id).filter(e=>eventReferencesOwnedHardware(e,w.id)).slice(0,100),commands:visible(db.commands,w.id).filter(c=>!c.targets?.length||c.targets.some(target=>ownedHangerIds.has(target))).slice(0,100),serverTime:now()}}
 function gatewayOperational(gateway){
-  const online=Date.now()-Date.parse(gateway.lastSeen||0)<OFFLINE;
+  const online=Date.now()-Date.parse(gateway.lastSeen||0)<GATEWAY_OFFLINE;
   const provision=gateway.provisioning&&typeof gateway.provisioning==='object'?gateway.provisioning:{};
   const wifiStatus=provision.wifiStatus==='FAILED'?'FAILED':online&&gateway.ssid?'CONNECTED':'UNKNOWN';
   const cloudStatus=provision.cloudStatus==='FAILED'?'FAILED':online?'CONNECTED':'UNKNOWN';
@@ -281,6 +319,7 @@ function releaseGatewayOwnership(gateway){
 }
 function adminOverview(){
   const online=item=>Date.now()-Date.parse(item.lastSeen||0)<OFFLINE;
+  const gatewayOnline=item=>Date.now()-Date.parse(item.lastSeen||0)<GATEWAY_OFFLINE;
   const managedUsers=db.users.filter(user=>(user.role||'user')==='user');
   const managedWardrobeIds=new Set(managedUsers.map(user=>wardrobeFor(user)?.id).filter(Boolean));
   const gateways=db.gateways.filter(g=>!simulated(g)&&managedWardrobeIds.has(g.wardrobeId)),hangers=db.hangers.filter(h=>!simulated(h)&&managedWardrobeIds.has(h.wardrobeId)),garments=db.garments.filter(g=>managedWardrobeIds.has(g.wardrobeId)),problems=[];
@@ -311,7 +350,7 @@ function adminOverview(){
   users.sort((a,b)=>Number(b.problemDeviceCount)-Number(a.problemDeviceCount)||Number(b.gatewayCount+b.hangerCount)-Number(a.gatewayCount+a.hangerCount)||Date.parse(b.lastActivityAt||0)-Date.parse(a.lastActivityAt||0));
   const adminWardrobeIds=new Set(db.wardrobes.filter(wardrobe=>ownerForWardrobe(wardrobe.id)?.role==='admin').map(wardrobe=>wardrobe.id));
   const adminOwnedGateways=db.gateways.filter(gateway=>!simulated(gateway)&&adminWardrobeIds.has(gateway.wardrobeId)).map(gateway=>({gatewayId:gateway.gatewayId,name:gateway.name||neutralGatewayName(gateway),hangerIds:db.hangers.filter(hanger=>hanger.gatewayId===gateway.gatewayId&&hanger.wardrobeId===gateway.wardrobeId).map(hanger=>hanger.hangerId)}));
-  const onlineGateways=gateways.filter(online).length,onlineHangers=hangers.filter(online).length;
+  const onlineGateways=gateways.filter(gatewayOnline).length,onlineHangers=hangers.filter(online).length;
   const gatewayIssues=gateways.map(gatewayOperational);
   const wifiFailures=gatewayIssues.filter(item=>item.wifiStatus==='FAILED').length,cloudFailures=gatewayIssues.filter(item=>item.cloudStatus==='FAILED').length,provisioningTimeouts=gatewayIssues.filter(item=>item.provisioningStatus==='TIMEOUT').length;
   const imageStates=garments.reduce((all,garment)=>{const state=String(garment.imageProcessingStatus||'ready');all[state]=(all[state]||0)+1;return all},{});
@@ -352,7 +391,7 @@ const server=http.createServer(async(req,res)=>{try{
   if(p==='/api/health'){
     if(storageInitError)return json(res,200,{ok:false,status:'retrying',storage:storage.mode,ready:false,error:'storage_initializing_retry',serverTime:now()});
     if(!isReady)return json(res,200,{ok:true,status:'initializing',storage:storage.mode,ready:false,serverTime:now()});
-    return json(res,200,{ok:true,status:'ready',storage:storage.mode,ready:true,setupRequired:!db.users.length,gatewayOnline:db.gateways.some(g=>Date.now()-Date.parse(g.lastSeen||0)<OFFLINE),simulationEnabled:SIM,serverTime:now()});
+    return json(res,200,{ok:true,status:'ready',storage:storage.mode,ready:true,setupRequired:!db.users.length,gatewayOnline:db.gateways.some(g=>Date.now()-Date.parse(g.lastSeen||0)<GATEWAY_OFFLINE),simulationEnabled:SIM,serverTime:now()});
   }
   if(!isReady){
     await initializeStorage();
@@ -362,6 +401,7 @@ const server=http.createServer(async(req,res)=>{try{
   // instance's memory. Refreshing it prevents a stale instance from showing
   // or saving a device that another request has already released.
   await syncDeviceOwnershipState();
+  await expireOfflineHangers();
   if(await cloudImageService.handle(req,res,{needUser,wardrobeFor,findGarment:garmentId=>db.garments.find(g=>g.id===garmentId),persist:save,emit}))return;
   if(await garmentImageService.handle(req,res,{needUser}))return;
   if(p==='/api/auth/status'){const u=getUser(req);return json(res,200,{setupRequired:!db.users.length,user:u&&userPublic(u)})}
@@ -410,7 +450,7 @@ if(p==='/api/gateway/status'&&req.method==='POST'){needDevice(req);const x=statu
 if(p==='/api/gateway/commands'){needDevice(req);const gatewayId=String(req.headers['x-gateway-id']||'').toUpperCase(),gateway=db.gateways.find(g=>g.gatewayId===gatewayId),wid=gatewayOwner(gatewayId),resets=[];if(gateway?.resetPending==='FACTORY_RESET'){resets.push({numericId:0,command:'FACTORY_RESET',targets:[],durationMs:0});gateway.resetPending=null;}for(const hangerId of gateway?.pendingHangerResets||[])resets.push({numericId:0,command:'UNPAIR',targets:[hangerId],durationMs:0});if(gateway)gateway.pendingHangerResets=[];const cs=db.commands.filter(c=>wid&&c.wardrobeId===wid&&['QUEUED','SENT','PARTIAL'].includes(c.status)&&Date.parse(c.expiresAt)>Date.now()&&c.targets.some(t=>db.hangers.some(h=>h.hangerId===t&&h.gatewayId===gatewayId)));for(const c of cs){c.status='SENT';c.sentAt=now();console.log(`[COMMAND] SENT id=${c.numericId} gateway=${gatewayId} targets=${c.targets.join(',')}`)}json(res,200,{commands:[...resets,...cs]});if(resets.length||cs.length)save().catch(e=>console.error('[COMMAND] command status save failed',e.message));return}
 if(p==='/api/gateway/ack'&&req.method==='POST'){needDevice(req);const a=await body(req),c=db.commands.find(x=>x.numericId===Number(a.commandId));if(!c)throw error(404,'명령이 없습니다.');const h=String(a.hangerId).toUpperCase();if(!c.targets.includes(h))throw error(400,'명령 대상 오류');if(c.status==='CANCELLED')return json(res,200,{...c,ignored:true});c.acknowledgements[h]={result:a.result||'ERROR',errorCode:Number(a.errorCode||0),at:now()};c.status=c.targets.every(t=>c.acknowledgements[t]?.result==='OK')?'ACKED':'PARTIAL';console.log(`[COMMAND] ACK id=${c.numericId} hanger=${h} result=${c.acknowledgements[h].result}`);emit('command.ack',c,'info',c.wardrobeId);json(res,200,c);save().catch(e=>console.error('[ACK] background save failed',e.message));return}
 if(p.startsWith('/api/'))throw error(404,'API를 찾을 수 없습니다.');return staticFile(req,res)}catch(e){console.error('[ERROR]',e.message);json(res,e.status||500,{error:e.message})}});
-const wss=new WebSocketServer({noServer:true});server.on('upgrade',(req,socket,head)=>{ready.then(()=>{const u=new URL(req.url,'http://x');const protocols=String(req.headers['sec-websocket-protocol']||'').split(',').map(value=>value.trim());const credential=protocols.find(value=>value.startsWith('wardrobe-token.'))||'';req.headers.authorization=`Bearer ${credential.slice('wardrobe-token.'.length)}`;const account=getUser(req);if(u.pathname!=='/ws'||!account)return socket.destroy();wss.handleUpgrade(req,socket,head,ws=>wss.emit('connection',ws,account))}).catch(()=>socket.destroy())});wss.on('connection',(ws,account)=>{ws.wardrobeId=wardrobeFor(account).id;sockets.add(ws);ws.send(JSON.stringify({type:'snapshot',payload:snapshot(account)}));ws.on('close',()=>sockets.delete(ws))});
+const wss=new WebSocketServer({noServer:true});server.on('upgrade',(req,socket,head)=>{ready.then(async()=>{await expireOfflineHangers();const u=new URL(req.url,'http://x');const protocols=String(req.headers['sec-websocket-protocol']||'').split(',').map(value=>value.trim());const credential=protocols.find(value=>value.startsWith('wardrobe-token.'))||'';req.headers.authorization=`Bearer ${credential.slice('wardrobe-token.'.length)}`;const account=getUser(req);if(u.pathname!=='/ws'||!account)return socket.destroy();wss.handleUpgrade(req,socket,head,ws=>wss.emit('connection',ws,account))}).catch(()=>socket.destroy())});wss.on('connection',(ws,account)=>{ws.wardrobeId=wardrobeFor(account).id;sockets.add(ws);ws.send(JSON.stringify({type:'snapshot',payload:snapshot(account)}));ws.on('close',()=>sockets.delete(ws))});
 if(process.env.DISABLE_BACKGROUND_TASKS!=='true')setInterval(async()=>{let dirty=false;for(const h of db.hangers)if(h.state!=='OFFLINE'&&Date.parse(h.lastSeen||0)<Date.now()-OFFLINE){h.reportedState=h.state='OFFLINE';emit('hanger.offline',h,'warning',h.wardrobeId);dirty=true}for(const c of db.commands)if(!['ACKED','TIMEOUT','CANCELLED'].includes(c.status)&&Date.parse(c.expiresAt)<Date.now()){c.status='TIMEOUT';emit('command.timeout',c,'warning',c.wardrobeId);dirty=true}if(dirty){reconcile();await save()}},1000).unref();
 if(require.main===module)server.listen(PORT,'0.0.0.0',()=>console.log(`[BOOT] Smart Wardrobe http://0.0.0.0:${PORT}`));
 module.exports={server,uid,hash,status,reconcile,ready,closeStorage:()=>storage.close()};

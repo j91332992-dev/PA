@@ -78,10 +78,12 @@ function postgresStorage(connectionString, initial){
         device_id text not null,
         wardrobe_id text,
         gateway_id text,
+        release_blocked boolean not null default false,
         updated_at timestamptz not null default now(),
         primary key (device_kind, device_id)
       )
     `);
+    await client.query('alter table device_ownership add column if not exists release_blocked boolean not null default false');
     await client.query('create index if not exists device_ownership_wardrobe_idx on device_ownership(wardrobe_id)');
     await client.query(`
       create table if not exists device_ownership_meta (
@@ -111,6 +113,13 @@ function postgresStorage(connectionString, initial){
   }
   function enforceDeviceOwnership(data, rows) {
     const ownership=new Map(rows.map(row=>[`${row.device_kind}:${row.device_id}`,row]));
+    // An unclaimed hanger still needs its physical gateway link so the
+    // owner's "detected new hangers" list can show it. That link is not an
+    // account claim: preserve it only when the referenced gateway itself is
+    // owned by the current wardrobe data. A released hanger remains unclaimed
+    // until an explicit claim, but its next heartbeat may restore this link
+    // for discovery after the gateway is claimed by a different account.
+    const gatewayOwners=new Map(rows.filter(row=>row.device_kind==='gateway').map(row=>[row.device_id,row.wardrobe_id||null]));
     for(const gateway of data.gateways||[]){
       const authoritative=ownership.get(`gateway:${gateway.gatewayId}`);
       gateway.wardrobeId=authoritative?.wardrobe_id||null;
@@ -119,7 +128,17 @@ function postgresStorage(connectionString, initial){
     for(const hanger of data.hangers||[]){
       const authoritative=ownership.get(`hanger:${hanger.hangerId}`);
       hanger.wardrobeId=authoritative?.wardrobe_id||null;
-      hanger.gatewayId=authoritative?.wardrobe_id?(authoritative.gateway_id||hanger.gatewayId||null):null;
+      // A released hanger must stay unclaimed, but its physical gateway link
+      // is still useful for discovery after that gateway is claimed by the
+      // next account.  Preserve only that link; wardrobe ownership remains
+      // null until the user explicitly registers the discovered hanger.
+      const candidateGatewayId=authoritative
+        ? (authoritative.gateway_id || hanger.gatewayId || null)
+        : (hanger.gatewayId||null);
+      const gatewayIsOwned=!!candidateGatewayId && !!gatewayOwners.get(candidateGatewayId);
+      hanger.gatewayId=hanger.wardrobeId
+        ? candidateGatewayId
+        : (gatewayIsOwned ? candidateGatewayId : null);
       if(!hanger.wardrobeId){hanger.hangerNumber=null;hanger.customName='';}
     }
   }
@@ -277,15 +296,21 @@ function postgresStorage(connectionString, initial){
         return {ok:false,wardrobeId:currentWardrobeId};
       }
       await client.query(`
-        insert into device_ownership(device_kind,device_id,wardrobe_id,gateway_id,updated_at)
-        values($1,$2,$3,$4,now())
+        insert into device_ownership(device_kind,device_id,wardrobe_id,gateway_id,release_blocked,updated_at)
+        values($1,$2,$3,$4,false,now())
         on conflict(device_kind,device_id) do update
-        set wardrobe_id=excluded.wardrobe_id,gateway_id=excluded.gateway_id,updated_at=now()
+        set wardrobe_id=excluded.wardrobe_id,gateway_id=excluded.gateway_id,release_blocked=false,updated_at=now()
       `,[kind,deviceId,wardrobeId,gatewayId]);
       if(kind==='gateway'){
-        await client.query(`update gateways set wardrobe_id=$2,payload=coalesce(payload,'{}'::jsonb)||jsonb_build_object('wardrobeId',$2) where gateway_id=$1`,[deviceId,wardrobeId]);
+        // PostgreSQL cannot infer a parameter type when the same value is
+        // also passed through jsonb_build_object().  The old query therefore
+        // failed on first-time gateway registration with
+        // "could not determine data type of parameter $2".  Keep the
+        // ownership columns unchanged and make the JSON payload arguments
+        // explicitly text so both hosted Postgres and local Postgres agree.
+        await client.query(`update gateways set wardrobe_id=$2,payload=coalesce(payload,'{}'::jsonb)||jsonb_build_object('wardrobeId',$2::text) where gateway_id=$1`,[deviceId,wardrobeId]);
       }else{
-        await client.query(`update hangers set wardrobe_id=$2,gateway_id=$3,payload=coalesce(payload,'{}'::jsonb)||jsonb_build_object('wardrobeId',$2,'gatewayId',$3) where hanger_id=$1`,[deviceId,wardrobeId,gatewayId]);
+        await client.query(`update hangers set wardrobe_id=$2,gateway_id=$3,payload=coalesce(payload,'{}'::jsonb)||jsonb_build_object('wardrobeId',$2::text,'gatewayId',$3::text) where hanger_id=$1`,[deviceId,wardrobeId,gatewayId]);
       }
       await client.query('commit');
       return {ok:true};
@@ -310,14 +335,14 @@ function postgresStorage(connectionString, initial){
       `,[gatewayId,wardrobeId]);
       const hangerIds=hangers.rows.map(row=>row.hanger_id);
       await client.query(`
-        insert into device_ownership(device_kind,device_id,wardrobe_id,gateway_id,updated_at)
-        values('gateway',$1,null,null,now())
-        on conflict(device_kind,device_id) do update set wardrobe_id=null,gateway_id=null,updated_at=now()
+        insert into device_ownership(device_kind,device_id,wardrobe_id,gateway_id,release_blocked,updated_at)
+        values('gateway',$1,null,null,true,now())
+        on conflict(device_kind,device_id) do update set wardrobe_id=null,gateway_id=null,release_blocked=true,updated_at=now()
       `,[gatewayId]);
       for(const hangerId of hangerIds)await client.query(`
-        insert into device_ownership(device_kind,device_id,wardrobe_id,gateway_id,updated_at)
-        values('hanger',$1,null,null,now())
-        on conflict(device_kind,device_id) do update set wardrobe_id=null,gateway_id=null,updated_at=now()
+        insert into device_ownership(device_kind,device_id,wardrobe_id,gateway_id,release_blocked,updated_at)
+        values('hanger',$1,null,null,true,now())
+        on conflict(device_kind,device_id) do update set wardrobe_id=null,gateway_id=null,release_blocked=true,updated_at=now()
       `,[hangerId]);
       await client.query(`update gateways set wardrobe_id=null,gateway_number=null,custom_name='',payload=coalesce(payload,'{}'::jsonb)||'{"wardrobeId":null,"gatewayNumber":null,"customName":""}'::jsonb where gateway_id=$1`,[gatewayId]);
       await client.query(`update hangers set wardrobe_id=null,gateway_id=null,hanger_number=null,custom_name='',payload=coalesce(payload,'{}'::jsonb)||'{"wardrobeId":null,"gatewayId":null,"hangerNumber":null,"customName":""}'::jsonb where hanger_id=any($1::text[])`,[hangerIds]);
@@ -338,9 +363,9 @@ function postgresStorage(connectionString, initial){
       );
       if(current.rows[0]?.wardrobe_id!==wardrobeId){await client.query('rollback');return {ok:false};}
       await client.query(`
-        insert into device_ownership(device_kind,device_id,wardrobe_id,gateway_id,updated_at)
-        values('hanger',$1,null,null,now())
-        on conflict(device_kind,device_id) do update set wardrobe_id=null,gateway_id=null,updated_at=now()
+        insert into device_ownership(device_kind,device_id,wardrobe_id,gateway_id,release_blocked,updated_at)
+        values('hanger',$1,null,null,true,now())
+        on conflict(device_kind,device_id) do update set wardrobe_id=null,gateway_id=null,release_blocked=true,updated_at=now()
       `,[hangerId]);
       await client.query(`update hangers set wardrobe_id=null,gateway_id=null,hanger_number=null,custom_name='',payload=coalesce(payload,'{}'::jsonb)||'{"wardrobeId":null,"gatewayId":null,"hangerNumber":null,"customName":""}'::jsonb where hanger_id=$1`,[hangerId]);
       await client.query('commit');
