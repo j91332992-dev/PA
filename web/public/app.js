@@ -51,6 +51,7 @@ let currentBleHangerId = '';
 let nativeHangerBleConnected = false;
 let nativeHangerCandidates = [];
 const claimedDeviceIds = new Set();
+let hangerRegistrationBusy = false;
 const LOCAL_LED_STORAGE_KEY = 'wardrobeLocalLedStates';
 const LAST_GATEWAY_BLE_DEVICE_KEY = 'wardrobeGatewayBleDeviceId';
 const LAST_GATEWAY_BLE_PAIRING_KEY = 'wardrobeGatewayBlePairing';
@@ -1182,6 +1183,17 @@ function mergeSnapshot(snapshot) {
   return { ...snapshot, hangers, commands };
 }
 
+function moveGarmentsOutsideForHanger(hangerId) {
+  let changed = false;
+  for (const garment of model.garments || []) {
+    if (garment.currentHanger !== hangerId) continue;
+    Object.assign(garment, { currentState: 'OUT', currentHanger: null });
+    changed = true;
+  }
+  if (changed) clearFindingForEmptyHanger(hangerId);
+  return changed;
+}
+
 function applyHangerEvent(hanger) {
   const id = hangerFreshness.hangerIdOf(hanger);
   if (!id) return false;
@@ -1191,6 +1203,9 @@ function applyHangerEvent(hanger) {
   const idx = (model.hangers || []).findIndex(item => hangerFreshness.hangerIdOf(item) === id);
   if (idx >= 0) model.hangers[idx] = hanger;
   else (model.hangers = model.hangers || []).push(hanger);
+  if (hanger.state === 'OFFLINE' || hanger.reportedState === 'OFFLINE' || hanger.state === 'EMPTY') {
+    moveGarmentsOutsideForHanger(id);
+  }
   return true;
 }
 
@@ -2283,10 +2298,21 @@ if (simResetBtn) {
 }
 
 setInterval(() => {
+  let offlineChanged = false;
+  const at = Date.now();
+  // BLE reports every live hanger directly. Absence is also information: do
+  // not wait for the next 15-second cloud refresh to move its garment OUT.
+  for (const hanger of model.hangers || []) {
+    if (hanger.state === 'OFFLINE' || hangerIsOnline(hanger, at)) continue;
+    hanger.state = 'OFFLINE';
+    hanger.reportedState = 'OFFLINE';
+    moveGarmentsOutsideForHanger(hanger.hangerId);
+    offlineChanged = true;
+  }
   const hasActiveLeds =
     (simState.hangers || []).some(h => Date.now() < (h.ledUntil || 0)) ||
     (model.commands || []).some(c => ['QUEUED', 'SENT', 'ACKED'].includes(c.status));
-  if (hasActiveLeds) {
+  if (hasActiveLeds || offlineChanged) {
     render();
   }
 }, 1000);
@@ -3263,16 +3289,32 @@ async function handleHangerBleStatus(value) {
   }
 }
 
-async function claimDevice(kind, deviceId, { quietNotFound = false, confirmOwnership = false } = {}) {
+async function claimDevice(kind, deviceId, { quietNotFound = false, confirmOwnership = false, retryNotFoundMs = 0 } = {}) {
   if (!deviceId) return;
   const key = `${kind}:${deviceId}`;
   if (claimedDeviceIds.has(key)) return { ok: false, reason: 'PENDING' };
   claimedDeviceIds.add(key);
   try {
     if (!confirmOwnership) return { ok: false, reason: 'CONFIRM_REQUIRED' };
+    // Reuse one physical-confirmation token while the S3 forwards the first
+    // status instead of doing two cloud round trips for every retry.
     const intent = await api(`/api/${kind}/${encodeURIComponent(deviceId)}/claim-intent`, { method: 'POST' });
-    const item = await api(`/api/${kind}/${encodeURIComponent(deviceId)}/claim`, { method: 'POST', body: JSON.stringify({ claimToken: intent.claimToken }) });
-    return { ok: true, item };
+    const deadline = Date.now() + Math.max(0, Number(retryNotFoundMs) || 0);
+    for (;;) {
+      try {
+        const item = await api(`/api/${kind}/${encodeURIComponent(deviceId)}/claim`, {
+          method: 'POST',
+          body: JSON.stringify({ claimToken: intent.claimToken }),
+        });
+        return { ok: true, item };
+      } catch (error) {
+        if (error.status === 404 && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 280));
+          continue;
+        }
+        throw error;
+      }
+    }
   } catch (error) {
     if (error.status === 409) {
       const message = error.message || pairingBlockedMessage(kind);
@@ -3360,33 +3402,44 @@ async function connectPhysicalHangerBluetooth() {
 
 async function pairAndRegisterPhysicalHanger() {
   if (!currentBleHangerId) return setHangerBleMessage('연결된 옷걸이의 고유 코드를 읽지 못했습니다. 다시 검색해 주세요.', true);
+  if (hangerRegistrationBusy) return setHangerBleMessage('다른 옷걸이 등록을 완료한 뒤 다시 눌러 주세요.', true);
   const hangerId = currentBleHangerId;
-  const sent = await writeHangerBle('pair');
-  if (sent === false) return;
-  setHangerBleMessage('옷봉 연결과 내 계정 등록을 완료하는 중입니다…');
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    await new Promise(resolve => setTimeout(resolve, attempt ? 800 : 250));
+  const button = $('#pairPhysicalHanger');
+  hangerRegistrationBusy = true;
+  if (button) { button.disabled = true; button.textContent = '등록 중…'; }
+  try {
+    const sent = await writeHangerBle('pair');
+    if (sent === false) return false;
+    setHangerBleMessage('옷봉 연결과 내 계정 등록을 완료하는 중입니다…');
+    await new Promise(resolve => setTimeout(resolve, 180));
     const pairing = await refreshBleOwnership('hangers', hangerId);
-    if (pairing.ownership === 'OWNED') {
-      await refreshAfterMutation();
-      setHangerBleMessage('내 옷봉과 계정에 등록되었습니다.');
-      toast('옷걸이 등록 완료');
-      return true;
-    }
     if (pairing.ownership === 'OTHER_ACCOUNT') {
       setHangerBleMessage(pairingBlockedMessage('hangers'), true);
       return false;
     }
-    const result = await claimDevice('hangers', hangerId, { quietNotFound: true, confirmOwnership: true });
-    if (result?.ok) {
+    if (pairing.ownership === 'OWNED') {
       await refreshAfterMutation();
-      setHangerBleMessage('내 옷봉과 계정에 등록되었습니다.');
-      toast(`${result.item.alias || `${result.item.hangerNumber}번 옷걸이`} 등록 완료`);
+      setHangerBleMessage('이미 내 계정에 등록된 옷걸이이며 옷봉 연결을 복구했습니다.');
+      toast('옷걸이 연결 복구 완료');
       return true;
     }
+    const result = await claimDevice('hangers', hangerId, {
+      quietNotFound: true,
+      confirmOwnership: true,
+      retryNotFoundMs: 7500,
+    });
+    if (!result?.ok) {
+      setHangerBleMessage('옷봉 신호 확인이 늦어지고 있습니다. 전원을 확인한 뒤 다시 눌러 주세요.', true);
+      return false;
+    }
+    await refreshAfterMutation();
+    setHangerBleMessage('내 옷봉과 계정에 등록되었습니다.');
+    toast(`${result.item.alias || `${result.item.hangerNumber}번 옷걸이`} 등록 완료`);
+    return true;
+  } finally {
+    hangerRegistrationBusy = false;
+    if (button) { button.disabled = false; button.textContent = '옷봉과 연결'; }
   }
-  setHangerBleMessage('옷봉 연결은 전달됐지만 서버 등록 확인이 늦어지고 있습니다. 전원을 확인한 뒤 다시 눌러 주세요.', true);
-  return false;
 }
 
 async function forgetPhysicalHanger() {
@@ -3707,6 +3760,7 @@ function renderDeviceManagement() {
     <div style="margin-top:24px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <h4>스마트 옷걸이</h4>
+        <button type="button" class="ghost" id="btnAddHangerBle" style="padding:5px 10px;font-size:12px;color:var(--green);border:1px solid #347454">+ 블루투스로 전체 검색</button>
       </div>
       <p class="muted" style="margin:4px 0 8px">옷봉에서 새 옷걸이가 감지되면 아래에 표시됩니다. 등록된 순서대로 번호가 부여됩니다.</p>
       ${hangerContent}
@@ -3740,16 +3794,30 @@ function renderDeviceManagement() {
   });
   panel.querySelectorAll('[data-discovered-hanger]').forEach(btn => {
     btn.onclick = async () => {
-      btn.disabled = true;
+      if (hangerRegistrationBusy) return toast('진행 중인 옷걸이 등록이 끝난 뒤 다시 눌러 주세요.');
+      hangerRegistrationBusy = true;
+      const registrationButtons = panel.querySelectorAll('[data-discovered-hanger], #btnAddHangerBle');
+      registrationButtons.forEach(button => { button.disabled = true; });
+      const originalText = btn.textContent;
+      btn.textContent = '등록 중…';
       try {
         const result = await claimDevice('hangers', btn.dataset.discoveredHanger, { confirmOwnership: true });
         if (result?.ok) {
           await refreshAfterMutation();
           toast(`${result.item.alias || `${result.item.hangerNumber}번 옷걸이`} 등록 완료`);
         }
-      } finally { btn.disabled = false; }
+      } finally {
+        hangerRegistrationBusy = false;
+        registrationButtons.forEach(button => { button.disabled = false; });
+        if (btn.isConnected) btn.textContent = originalText;
+      }
     };
   });
+  const addHangerBleButton = $('#btnAddHangerBle');
+  if (addHangerBleButton) addHangerBleButton.onclick = async () => {
+    window.showHangerBleHelp?.();
+    await connectPhysicalHangerBluetooth();
+  };
 }
 
 async function factoryResetHangerBeforeRemoval(hangerId) {
@@ -4030,6 +4098,11 @@ function installGatewayWifiSetup() {
     if (typeof hangerDialog.showModal === 'function' && !hangerDialog.open) hangerDialog.showModal();
   };
   window.showHangerBleHelp = showHangerBleHelp;
+  window.openHangerRegistration = async () => {
+    showHangerBleHelp();
+    await connectPhysicalHangerBluetooth();
+  };
+
 
   const closeHangerBleHelpBtn = $('#closeHangerBleHelp');
   if (closeHangerBleHelpBtn) closeHangerBleHelpBtn.onclick = () => hangerDialog.close();

@@ -36,6 +36,7 @@ function jsonStorage(file, initial){
     mode:'json',load:async()=>load(),reload:async()=>load(),save,close:async()=>{},
     syncDeviceOwnership:async()=>{},
     claimDeviceOwnership:async()=>({ok:true}),
+    refreshCommands:async()=>{},
     releaseGatewayOwnership:async()=>({ok:true,releasedHangerIds:[]}),
     releaseHangerOwnership:async()=>({ok:true}),
   };
@@ -121,24 +122,25 @@ function postgresStorage(connectionString, initial){
   function enforceDeviceOwnership(data, rows) {
     const ownership=new Map(rows.map(row=>[`${row.device_kind}:${row.device_id}`,row]));
     // An unclaimed hanger still needs its physical gateway link so the
-    // owner's "detected new hangers" list can show it. That link is not an
-    // account claim: preserve it only when the referenced gateway itself is
-    // owned by the current wardrobe data. A released hanger remains unclaimed
-    // until an explicit claim, but its next heartbeat may restore this link
-    // for discovery after the gateway is claimed by a different account.
+    // owner's "detected new hangers" list can show it. Ownership rows are
+    // authoritative across Vercel instances; when an old instance crosses an
+    // ownership boundary, also restore the latest persisted name and number.
     const gatewayOwners=new Map(rows.filter(row=>row.device_kind==='gateway').map(row=>[row.device_id,row.wardrobe_id||null]));
     for(const gateway of data.gateways||[]){
       const authoritative=ownership.get(`gateway:${gateway.gatewayId}`);
+      const previousWardrobeId=gateway.wardrobeId||null;
       gateway.wardrobeId=authoritative?.wardrobe_id||null;
+      if(gateway.wardrobeId&&previousWardrobeId!==gateway.wardrobeId){
+        gateway.gatewayNumber=authoritative.gateway_number??gateway.gatewayNumber;
+        gateway.customName=authoritative.gateway_custom_name??'';
+        gateway.name=authoritative.gateway_name||gateway.name;
+      }
       if(!gateway.wardrobeId){gateway.gatewayNumber=null;gateway.customName='';}
     }
     for(const hanger of data.hangers||[]){
       const authoritative=ownership.get(`hanger:${hanger.hangerId}`);
+      const previousWardrobeId=hanger.wardrobeId||null;
       hanger.wardrobeId=authoritative?.wardrobe_id||null;
-      // A released hanger must stay unclaimed, but its physical gateway link
-      // is still useful for discovery after that gateway is claimed by the
-      // next account.  Preserve only that link; wardrobe ownership remains
-      // null until the user explicitly registers the discovered hanger.
       const candidateGatewayId=authoritative
         ? (authoritative.gateway_id || hanger.gatewayId || null)
         : (hanger.gatewayId||null);
@@ -146,13 +148,25 @@ function postgresStorage(connectionString, initial){
       hanger.gatewayId=hanger.wardrobeId
         ? candidateGatewayId
         : (gatewayIsOwned ? candidateGatewayId : null);
+      if(hanger.wardrobeId&&previousWardrobeId!==hanger.wardrobeId){
+        hanger.hangerNumber=authoritative.hanger_number??hanger.hangerNumber;
+        hanger.customName=authoritative.hanger_custom_name??'';
+        hanger.alias=authoritative.hanger_alias||hanger.alias;
+      }
       if(!hanger.wardrobeId){hanger.hangerNumber=null;hanger.customName='';}
     }
   }
   async function readAndEnforceDeviceOwnership(client,data){
     await ensureDeviceOwnershipSchema(client);
     await seedDeviceOwnership(client);
-    const result=await client.query('select device_kind,device_id,wardrobe_id,gateway_id from device_ownership');
+    const result=await client.query(`
+      select ownership.device_kind,ownership.device_id,ownership.wardrobe_id,ownership.gateway_id,
+        hanger.hanger_number,hanger.alias as hanger_alias,hanger.custom_name as hanger_custom_name,
+        gateway.gateway_number,gateway.name as gateway_name,gateway.custom_name as gateway_custom_name
+      from device_ownership ownership
+      left join hangers hanger on ownership.device_kind='hanger' and hanger.hanger_id=ownership.device_id
+      left join gateways gateway on ownership.device_kind='gateway' and gateway.gateway_id=ownership.device_id
+    `);
     enforceDeviceOwnership(data,result.rows);
     return result.rows;
   }
@@ -180,7 +194,12 @@ function postgresStorage(connectionString, initial){
         // Events are timestamped with `at`; all other persisted records use
         // `created_at`. Keep the restore order deterministic in both cases.
         const orderColumn=key==='events'?'at':'created_at';
-        const result=await client.query(`select payload from ${table[key]} order by ${orderColumn} asc`);
+        const bounded=key==='events'
+          ? ' order by at desc limit 300'
+          : key==='commands'
+            ? ' order by created_at desc limit 300'
+            : ` order by ${orderColumn} asc`;
+        const result=await client.query(`select payload from ${table[key]}${bounded}`);
         out[key]=result.rows.map(row=>row.payload||{});
       }
       await readAndEnforceDeviceOwnership(client,out);
@@ -195,7 +214,7 @@ function postgresStorage(connectionString, initial){
         await persist(imported);
         return imported;
       }
-      const hydrated={...out,schemaVersion:4};
+      const hydrated={...out,schemaVersion:5};
       baselineByData.set(hydrated,clone(hydrated));
       return hydrated;
     }finally{client.release();}
@@ -271,7 +290,16 @@ function postgresStorage(connectionString, initial){
       await insertBatch(client, 'app_users', ['id', 'email', 'name', 'password_hash', 'role', 'last_login_at', 'created_at', 'payload'], changed('users'), u => [u.id, u.email, u.name, u.passwordHash, u.role || 'user', u.lastLoginAt || null, u.createdAt, asJson(u)]);
       await insertBatch(client, 'wardrobes', ['id', 'user_id', 'name', 'created_at', 'payload'], changed('wardrobes'), w => [w.id, w.userId, w.name, w.createdAt, asJson(w)]);
       await insertBatch(client, 'gateways', ['gateway_id', 'wardrobe_id', 'name', 'custom_name', 'gateway_number', 'state', 'last_seen', 'channel', 'firmware_version', 'created_at', 'payload'], changed('gateways'), g => [g.gatewayId, g.wardrobeId, g.name || '새 옷봉', g.customName || '', g.gatewayNumber || null, g.state || null, g.lastSeen || null, g.channel || null, g.firmwareVersion || null, g.createdAt || new Date().toISOString(), asJson(g)]);
-      await insertBatch(client, 'hangers', ['hanger_id', 'wardrobe_id', 'gateway_id', 'alias', 'custom_name', 'hanger_number', 'state', 'reported_state', 'tag_uid', 'last_seen', 'last_sequence', 'boot_id', 'channel', 'rssi', 'error_flags', 'firmware_version', 'created_at', 'payload'], changed('hangers'), h => [h.hangerId, h.wardrobeId, h.gatewayId || null, h.alias || '', h.customName || '', h.hangerNumber || null, h.state || null, h.reportedState || null, h.tagUid || null, h.lastSeen || null, h.lastSequence ?? -1, h.bootId || null, h.channel || null, h.rssi || null, h.errorFlags || null, h.firmwareVersion || null, h.createdAt || new Date().toISOString(), asJson(h)]);
+      const changedHangers=changed('hangers');
+      // Existing rows can need a number swap (for example 1<->2). PostgreSQL
+      // checks a non-deferrable unique index during each row update, so clear
+      // only the changed rows inside this transaction before assigning their
+      // final unique numbers. No row or ownership data is removed.
+      if(changedHangers.length)await client.query(
+        'update hangers set hanger_number=null where hanger_id=any($1::text[])',
+        [changedHangers.map(h=>h.hangerId)],
+      );
+      await insertBatch(client, 'hangers', ['hanger_id', 'wardrobe_id', 'gateway_id', 'alias', 'custom_name', 'hanger_number', 'state', 'reported_state', 'tag_uid', 'last_seen', 'last_sequence', 'boot_id', 'channel', 'rssi', 'error_flags', 'firmware_version', 'created_at', 'payload'], changedHangers, h => [h.hangerId, h.wardrobeId, h.gatewayId || null, h.alias || '', h.customName || '', h.hangerNumber || null, h.state || null, h.reportedState || null, h.tagUid || null, h.lastSeen || null, h.lastSequence ?? -1, h.bootId || null, h.channel || null, h.rssi || null, h.errorFlags || null, h.firmwareVersion || null, h.createdAt || new Date().toISOString(), asJson(h)]);
       await insertBatch(client, 'garments', ['id', 'wardrobe_id', 'created_by', 'tag_uid', 'name', 'category', 'color', 'season', 'brand', 'memo', 'image_url', 'original_image_path', 'processed_image_path', 'image_processing_status', 'classification', 'classification_confidence', 'processing_error', 'current_state', 'current_hanger', 'last_seen', 'created_at', 'payload'], changed('garments'), g => [g.id, g.wardrobeId, g.createdBy || null, g.tagUid, g.name, g.category || '', g.color || '', g.season || '', g.brand || '', g.memo || '', g.imageUrl || '', g.originalImagePath || '', g.processedImagePath || '', g.imageProcessingStatus || 'ready', asJson(g.classification || {}), asJson(g.classificationConfidence || {}), g.processingError || '', g.currentState || 'OUT', g.currentHanger || null, g.lastSeen || null, g.createdAt || new Date().toISOString(), asJson(g)]);
       for (const c of changed('commands')) await client.query(`
         insert into device_commands(id,numeric_id,wardrobe_id,requested_by,command,targets,duration_ms,status,acknowledgements,created_at,expires_at,sent_at,payload)
@@ -323,6 +351,18 @@ function postgresStorage(connectionString, initial){
       runSaveLoop().catch(() => {});
     });
   }
+  async function refreshCommands(data){
+    const client=await pool.connect();
+    try{
+      const result=await client.query("select payload from device_commands where status in ('QUEUED','SENT','PARTIAL') and expires_at>now() order by created_at desc limit 100");
+      const pending=result.rows.map(row=>row.payload||{});
+      const byId=new Map((data.commands||[]).map(command=>[command.id,command]));
+      for(const command of pending)byId.set(command.id,command);
+      data.commands=[...byId.values()];
+    }finally{
+      client.release();
+    }
+  }
   async function syncDeviceOwnership(data){
     const client=await pool.connect();
     try{await readAndEnforceDeviceOwnership(client,data);}finally{client.release();}
@@ -334,6 +374,12 @@ function postgresStorage(connectionString, initial){
       await client.query('begin');
       await ensureDeviceOwnershipSchema(client);
       await seedDeviceOwnership(client);
+      // Different serverless instances can register different hangers at the
+      // same moment. Serialize number allocation per physical gateway in the
+      // database, not merely in one browser or one Vercel process.
+      if(kind==='hanger'){
+        await client.query('select pg_advisory_xact_lock(hashtext($1))',[`otkok-hanger-number:${gatewayId}`]);
+      }
       const current=await client.query(
         'select wardrobe_id from device_ownership where device_kind=$1 and device_id=$2 for update',
         [kind,deviceId],
@@ -343,6 +389,23 @@ function postgresStorage(connectionString, initial){
         await client.query('rollback');
         return {ok:false,wardrobeId:currentWardrobeId};
       }
+      let hangerNumber=null;
+      if(kind==='hanger'){
+        const hangerRow=await client.query('select hanger_number from hangers where hanger_id=$1 for update',[deviceId]);
+        const existing=Number(hangerRow.rows[0]?.hanger_number||0);
+        const conflict=existing>0?await client.query(
+          'select 1 from hangers where gateway_id=$1 and hanger_id<>$2 and hanger_number=$3 limit 1',
+          [gatewayId,deviceId,existing],
+        ):null;
+        if(Number.isInteger(existing)&&existing>0&&!conflict?.rowCount)hangerNumber=existing;
+        else{
+          const next=await client.query(
+            'select coalesce(max(hanger_number),0)+1 as number from hangers where gateway_id=$1 and hanger_id<>$2 and wardrobe_id=$3',
+            [gatewayId,deviceId,wardrobeId],
+          );
+          hangerNumber=Number(next.rows[0]?.number||1);
+        }
+      }
       await client.query(`
         insert into device_ownership(device_kind,device_id,wardrobe_id,gateway_id,release_blocked,updated_at)
         values($1,$2,$3,$4,false,now())
@@ -350,18 +413,12 @@ function postgresStorage(connectionString, initial){
         set wardrobe_id=excluded.wardrobe_id,gateway_id=excluded.gateway_id,release_blocked=false,updated_at=now()
       `,[kind,deviceId,wardrobeId,gatewayId]);
       if(kind==='gateway'){
-        // PostgreSQL cannot infer a parameter type when the same value is
-        // also passed through jsonb_build_object().  The old query therefore
-        // failed on first-time gateway registration with
-        // "could not determine data type of parameter $2".  Keep the
-        // ownership columns unchanged and make the JSON payload arguments
-        // explicitly text so both hosted Postgres and local Postgres agree.
         await client.query(`update gateways set wardrobe_id=$2,payload=coalesce(payload,'{}'::jsonb)||jsonb_build_object('wardrobeId',$2::text) where gateway_id=$1`,[deviceId,wardrobeId]);
       }else{
-        await client.query(`update hangers set wardrobe_id=$2,gateway_id=$3,payload=coalesce(payload,'{}'::jsonb)||jsonb_build_object('wardrobeId',$2::text,'gatewayId',$3::text) where hanger_id=$1`,[deviceId,wardrobeId,gatewayId]);
+        await client.query(`update hangers set wardrobe_id=$2,gateway_id=$3,hanger_number=$4,payload=coalesce(payload,'{}'::jsonb)||jsonb_build_object('wardrobeId',$2::text,'gatewayId',$3::text,'hangerNumber',$4::int) where hanger_id=$1`,[deviceId,wardrobeId,gatewayId,hangerNumber]);
       }
       await client.query('commit');
-      return {ok:true};
+      return {ok:true,hangerNumber};
     }catch(error){await client.query('rollback').catch(()=>{});throw error;}finally{client.release();}
   }
 
@@ -427,7 +484,7 @@ function postgresStorage(connectionString, initial){
     }
     await pool.end();
   }
-  return {mode:'postgres',load,reload:load,save,close,syncDeviceOwnership,claimDeviceOwnership,releaseGatewayOwnership,releaseHangerOwnership};
+  return {mode:'postgres',load,reload:load,save,close,syncDeviceOwnership,refreshCommands,claimDeviceOwnership,releaseGatewayOwnership,releaseHangerOwnership};
 }
 
 function createStorage({file,initial}){

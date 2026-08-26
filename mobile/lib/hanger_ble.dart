@@ -57,11 +57,19 @@ class HangerBle {
           }
         }
       });
-      await FlutterBluePlus.startScan(
-        withServices: [_hangerService],
-        timeout: const Duration(seconds: 5),
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 4800));
+      // Android can miss one of several simultaneous C6 advertisements in a
+      // single scan window. Accumulate two independent passes without making
+      // the overall search slower than the old five-second scan.
+      for (var pass = 0; pass < 2; pass += 1) {
+        await FlutterBluePlus.startScan(
+          withServices: [_hangerService],
+          timeout: const Duration(milliseconds: 2400),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 2250));
+        await FlutterBluePlus.stopScan();
+        if (pass == 0)
+          await Future<void>.delayed(const Duration(milliseconds: 180));
+      }
     } catch (_) {
       // Preserve devices discovered before Android stopped the scan.
     } finally {
@@ -89,62 +97,73 @@ class HangerBle {
   }
 
   Future<Map<String, dynamic>> connectSelected(String deviceId) async {
-    if (!await _requestPermissions())
+    if (!await _requestPermissions()) {
       return {'connected': false, 'error': '블루투스 권한이 필요합니다.'};
-    try {
-      await disconnect();
-      final device = BluetoothDevice.fromId(deviceId);
-      _device = device;
-      await device.connect(
-        timeout: const Duration(seconds: 10),
-        autoConnect: false,
-      );
-      final services = await device.discoverServices();
-      final service = services.firstWhere(
-        (item) => item.uuid == _hangerService,
-      );
-      _config = service.characteristics.firstWhere(
-        (item) => item.uuid == _hangerConfig,
-      );
-      _status = service.characteristics.firstWhere(
-        (item) => item.uuid == _hangerStatus,
-      );
-      await _status!.setNotifyValue(true);
-      _statusSubscription = _status!.lastValueStream.listen((bytes) {
-        final info = _decode(bytes);
-        if (info.isNotEmpty) _events.add({...info, 'source': 'hanger'});
-      });
-      _connectionSubscription = device.connectionState.listen((state) {
-        if (state == BluetoothConnectionState.disconnected) {
-          _config = null;
-          _status = null;
-          _events.add({
-            'source': 'hanger',
-            'type': 'transport',
-            'connected': false,
-          });
-        }
-      });
-      final info = _decode(await _status!.read());
-      _events.add({
-        'source': 'hanger',
-        'type': 'transport',
-        'connected': true,
-        'deviceId': deviceId,
-      });
-      return {
-        'connected': true,
-        'deviceId': deviceId,
-        'name': device.platformName,
-        'status': info,
-      };
-    } catch (error) {
-      await disconnect();
-      return {
-        'connected': false,
-        'error': '선택한 옷걸이와 연결하지 못했습니다. 전원과 거리를 확인해 주세요. ($error)',
-      };
     }
+    Object? lastError;
+    // Android GATT error 133 is transient and was reproduced on real C6
+    // hardware. Tear down the stale handle and retry instead of hiding that
+    // hanger from the registration flow.
+    for (var attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await disconnect();
+        if (attempt > 0) {
+          await Future<void>.delayed(Duration(milliseconds: 350 * attempt));
+        }
+        final device = BluetoothDevice.fromId(deviceId);
+        _device = device;
+        await device.connect(
+          timeout: const Duration(seconds: 7),
+          autoConnect: false,
+        );
+        final services = await device.discoverServices();
+        final service = services.firstWhere(
+          (item) => item.uuid == _hangerService,
+        );
+        _config = service.characteristics.firstWhere(
+          (item) => item.uuid == _hangerConfig,
+        );
+        _status = service.characteristics.firstWhere(
+          (item) => item.uuid == _hangerStatus,
+        );
+        await _status!.setNotifyValue(true);
+        _statusSubscription = _status!.lastValueStream.listen((bytes) {
+          final info = _decode(bytes);
+          if (info.isNotEmpty) _events.add({...info, 'source': 'hanger'});
+        });
+        _connectionSubscription = device.connectionState.listen((state) {
+          if (state == BluetoothConnectionState.disconnected) {
+            _config = null;
+            _status = null;
+            _events.add({
+              'source': 'hanger',
+              'type': 'transport',
+              'connected': false,
+            });
+          }
+        });
+        final info = _decode(await _status!.read());
+        _events.add({
+          'source': 'hanger',
+          'type': 'transport',
+          'connected': true,
+          'deviceId': deviceId,
+        });
+        return {
+          'connected': true,
+          'deviceId': deviceId,
+          'name': device.platformName,
+          'status': info,
+        };
+      } catch (error) {
+        lastError = error;
+        await disconnect();
+      }
+    }
+    return {
+      'connected': false,
+      'error': '선택한 옷걸이와 연결하지 못했습니다. 전원과 거리를 확인해 주세요. ($lastError)',
+    };
   }
 
   Future<Map<String, dynamic>> configure(Map<String, dynamic> payload) async {

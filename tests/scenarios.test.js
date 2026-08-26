@@ -186,6 +186,13 @@ test('Account/Gateway/Hanger numbers are scoped, monotonic, and admin protected'
   assert.equal(moved.hangerNumber, 2);
   assert.equal(moved.alias, '이동한 옷걸이');
   await api('/api/gateways/GW-A0B002', { method: 'DELETE', userAuth: true });
+  snap = await api('/api/snapshot', { userAuth: true });
+  assert.equal(snap.body.gateways.some(g => g.gatewayId === 'GW-A0B002'), false);
+  assert.equal(snap.body.hangers.some(h => ['HC-A0B002', 'HC-A0B003'].includes(h.hangerId)), false);
+  for (const hangerId of ['HC-A0B002', 'HC-A0B003']) {
+    const pairing = await api('/api/hangers/' + hangerId + '/pairing-status', { userAuth: true });
+    assert.equal(pairing.body.ownership, 'UNCLAIMED');
+  }
   const adminSignup = await api('/api/auth/signup', { method: 'POST', body: JSON.stringify({ email: 'admin-scenarios@example.com', password: 'admin-password-1234', name: '테스트관리자' }) });
   assert.equal(adminSignup.status, 201);
   const adminAuth = { authToken: adminSignup.body.token };

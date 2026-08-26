@@ -74,10 +74,9 @@ uint32_t manualPairSearchDeadlineMs = 0;
 String manualPairGatewayTarget;
 
 constexpr uint32_t CHANNEL_SEARCH_DWELL_MS = 450;
-// A paired hanger never sweeps channels by itself. A sweep is only started by
-// an explicit BLE re-pair request (for example after the router moved to a
-// different Wi-Fi channel), so normal heartbeats always stay on the channel
-// that the gateway announced during pairing.
+// A healthy paired hanger stays locked. If ten seconds of 250 ms beacons are
+// all missed, it performs one gateway-ID-restricted sweep so a router channel
+// change cannot leave one or two hangers permanently invisible.
 constexpr uint32_t BEACON_LOST_TIMEOUT_MS = 10000;
 constexpr uint32_t MANUAL_PAIR_SEARCH_TIMEOUT_MS = 8000;
 constexpr uint32_t PN532_REINIT_COOLDOWN_MS = 500;
@@ -718,9 +717,23 @@ void maintainChannel() {
     Serial.println("[PAIR] manual channel search timeout");
   }
 
-  // A paired hanger stays on the last proven channel indefinitely. Searching
-  // is reserved for a fresh hanger or the explicit BLE re-pair action above.
-  if (pairedGateway.length() && !hangerLinkDisabled && !manualPairSearchActive) return;
+  if (pairedGateway.length() && !hangerLinkDisabled && !manualPairSearchActive) {
+    if (now - lastBeaconMs < BEACON_LOST_TIMEOUT_MS) return;
+    // Search only for the already paired immutable gateway ID. This restores
+    // connectivity after an AP channel change without allowing a neighbour's
+    // wardrobe to claim or command this hanger.
+    manualPairGatewayTarget = pairedGateway;
+    manualPairSearchActive = true;
+    manualPairSearchDeadlineMs = now + MANUAL_PAIR_SEARCH_TIMEOUT_MS;
+    channelState = ChannelState::SEARCHING;
+    channelDwellStartMs = now;
+    channel = (channel >= 13) ? 1 : (channel + 1);
+    setChannel(channel);
+    setHangerBleStatus("reconnecting", "옷봉 채널이 바뀌어 자동으로 다시 찾는 중입니다.");
+    Serial.printf("[CHANNEL] paired gateway beacon lost; automatic recovery target=%s start=%u\n",
+                  pairedGateway.c_str(), unsigned(channel));
+    return;
+  }
   // An unpaired hanger locks temporarily only to report through a nearby
   // rod. If that rod disappears, resume discovery instead of staying forever
   // on a stale channel.

@@ -21,7 +21,7 @@ const ADMIN_SECONDARY_PASSWORD=String(process.env.ADMIN_SECONDARY_PASSWORD||'');
 const ADMIN_SESSION_TTL_MS=Math.max(60_000,Number(process.env.ADMIN_SESSION_TTL_MS||900_000));
 const adminSessions=new Map();
 const now=()=>new Date().toISOString(),id=p=>`${p}_${crypto.randomUUID()}`,uid=x=>String(x||'').replace(/[^0-9a-f]/gi,'').toUpperCase();
-const initial=()=>({schemaVersion:5,users:[],wardrobes:[],gateways:[],hangers:[],garments:[],events:[],commands:[]});
+const initial=()=>({schemaVersion:6,users:[],wardrobes:[],gateways:[],hangers:[],garments:[],events:[],commands:[]});
 let db=initial();const storage=createStorage({file:DATA,initial});function save(){return storage.save(db)}
 const safe=(a,b)=>{const x=Buffer.from(String(a)),y=Buffer.from(String(b));return x.length===y.length&&crypto.timingSafeEqual(x,y)};
 function hash(p,s=crypto.randomBytes(16).toString('hex')){return `${s}:${crypto.pbkdf2Sync(p,s,210000,32,'sha256').toString('hex')}`}
@@ -44,8 +44,12 @@ function assignGateway(gateway,wardrobeId){
   if(gateway.wardrobeId!==wardrobeId||!Number.isInteger(Number(gateway.gatewayNumber))||Number(gateway.gatewayNumber)<1)gateway.gatewayNumber=nextGatewayNumber(wardrobeId);
   gateway.wardrobeId=wardrobeId;return syncGatewayName(gateway);
 }
-function assignHanger(hanger,wardrobeId,gatewayId,{moved=false}={}){
-  if(moved||hanger.gatewayId!==gatewayId||!Number.isInteger(Number(hanger.hangerNumber))||Number(hanger.hangerNumber)<1)hanger.hangerNumber=nextHangerNumber(gatewayId);
+function assignHanger(hanger,wardrobeId,gatewayId,{moved=false,assignedNumber=null}={}){
+  const databaseNumber=Number(assignedNumber);
+  if(Number.isInteger(databaseNumber)&&databaseNumber>0)hanger.hangerNumber=databaseNumber;
+  else if(moved||hanger.gatewayId!==gatewayId||!Number.isInteger(Number(hanger.hangerNumber))||Number(hanger.hangerNumber)<1){
+    hanger.hangerNumber=nextHangerNumber(gatewayId);
+  }
   hanger.wardrobeId=wardrobeId;hanger.gatewayId=gatewayId;return syncHangerName(hanger);
 }
 function maskOwnerName(name){const chars=[...String(name||'').trim()];if(!chars.length)return '알 수 없는 사용자';return chars.length===1?`${chars[0]}*`:`${chars[0]}${'*'.repeat(Math.min(chars.length-1,3))}`}
@@ -77,8 +81,25 @@ function migrate(){
     for(const g of db.gateways)if(!g.wardrobeId&&!simulated(g))g.wardrobeId=legacyOwner;
     for(const h of db.hangers)if(!h.wardrobeId&&!simulated(h))h.wardrobeId=db.gateways.find(g=>g.gatewayId===h.gatewayId)?.wardrobeId||legacyOwner;
   }
+  // Version 6 repairs numbers that old discovery rows reserved before a user
+  // claimed them. This runs once; normal deletion still never compacts or
+  // reuses an already assigned number.
+  if(Number(db.schemaVersion||0)<6||db.hangers.some(hanger=>!hanger.wardrobeId&&hanger.hangerNumber!=null)){
+    for(const hanger of db.hangers)if(!hanger.wardrobeId&&hanger.hangerNumber!=null){hanger.hangerNumber=null;changed=true;}
+    for(const wardrobe of db.wardrobes){
+      const owned=db.hangers.filter(hanger=>hanger.wardrobeId===wardrobe.id&&hanger.gatewayId&&!simulated(hanger))
+        .sort((a,b)=>String(a.createdAt||a.hangerId).localeCompare(String(b.createdAt||b.hangerId)));
+      const byGateway=new Map();
+      for(const hanger of owned){
+        const list=byGateway.get(hanger.gatewayId)||[];
+        list.push(hanger);
+        byGateway.set(hanger.gatewayId,list);
+      }
+      for(const list of byGateway.values())list.forEach((hanger,index)=>{if(Number(hanger.hangerNumber)!==index+1){hanger.hangerNumber=index+1;changed=true;}});
+    }
+  }
   // Migrate visible names without changing immutable hardware IDs. Numbers
-  // are assigned only when absent, so deletion never compacts/reuses them.
+  // are assigned only when absent after the one-time v6 repair.
   for(const user of db.users){const role=isConfiguredAdmin(user)?'admin':'user';if(user.role!==role){user.role=role;changed=true;}}
   // Version 5 fixes the historical single-wardrobe bootstrap behavior. A
   // configured service administrator must not silently own real hardware:
@@ -99,7 +120,7 @@ function migrate(){
       if(previousNumber!==g.gatewayNumber||previousCustomName!==g.customName||previousName!==g.name)changed=true;
     });
     for(const g of gateways){
-      const hangers=db.hangers.filter(h=>h.gatewayId===g.gatewayId&&!simulated(h)).sort((a,b)=>String(a.createdAt||a.hangerId).localeCompare(String(b.createdAt||b.hangerId)));
+      const hangers=db.hangers.filter(h=>h.gatewayId===g.gatewayId&&h.wardrobeId===w.id&&!simulated(h)).sort((a,b)=>String(a.createdAt||a.hangerId).localeCompare(String(b.createdAt||b.hangerId)));
       const usedNumbers=new Set(), nextNumber=()=>{let n=1;while(usedNumbers.has(n))n++;return n;};
       hangers.forEach(h=>{
         const previousNumber=h.hangerNumber, explicit=Number(h.hangerNumber);
@@ -114,8 +135,8 @@ function migrate(){
   for(const g of db.gateways)if(!g.wardrobeId){g.customName='';syncGatewayName(g);}
   for(const h of db.hangers)if(!h.wardrobeId){h.customName='';syncHangerName(h);}
   for(const c of db.commands)if(!c.wardrobeId){const h=db.hangers.find(h=>c.targets?.includes(h.hangerId));c.wardrobeId=h?.wardrobeId||byUser.get(c.requestedBy)||null;}
-  changed = changed || db.schemaVersion !== 5;
-  db.schemaVersion = 5;
+  changed = changed || db.schemaVersion !== 6;
+  db.schemaVersion = 6;
   return changed;
 }
 let isReady = false;
@@ -204,7 +225,7 @@ const sockets=new Set();
 function emit(type,payload,severity='info',wardrobeId=payload?.wardrobeId){
   const e={id:id('evt'),type,severity,payload:structuredClone(payload),wardrobeId:wardrobeId||null,at:now()};
   db.events.unshift(e);
-  db.events=db.events.slice(0,1000);
+  db.events=db.events.slice(0,300);
   const msg=JSON.stringify({type,payload,at:e.at});
   for(const ws of sockets)if(ws.readyState===1&&(!e.wardrobeId||ws.wardrobeId===e.wardrobeId))ws.send(msg);
 }
@@ -273,6 +294,10 @@ function status(x){
   let h=db.hangers.find(v=>v.hangerId===hangerId);
   // A physical hanger is only discovered at this point. It must be explicitly
   // claimed from the user's discovered-device list before it joins an account.
+  const previousSemantic={
+    state:h?.reportedState||h?.state||'',tagUid:h?.tagUid||null,
+    errorFlags:Number(h?.errorFlags||0),gatewayId:h?.gatewayId||null,
+  };
   if(!h){h={hangerId,alias:neutralHangerName({hangerId}),customName:'',createdAt:now(),lastSequence:-1,bootHistory:[],wardrobeId:null};db.hangers.push(h)}
   // A paired hanger may later report through a different *owned* gateway.
   // Keep its immutable hardware ID, but allocate its next number in the
@@ -295,7 +320,11 @@ function status(x){
   reconcile();
   // Unclaimed hardware belongs to no wardrobe yet; do not broadcast its NFC
   // UID or state to every connected account.
-  if(h.wardrobeId)emit('hanger.state',h,'info',h.wardrobeId);
+  const semanticChanged=previousSemantic.state!==state
+    || previousSemantic.tagUid!==(uid(x.tagUid)||null)
+    || previousSemantic.errorFlags!==Number(x.errorFlags||0)
+    || previousSemantic.gatewayId!==gatewayId;
+  if(h.wardrobeId&&semanticChanged)emit('hanger.state',h,'info',h.wardrobeId);
   if(cancelled.length)emit('command.cancelled',{hangerId,targets:[hangerId],reason:'NFC_TAG_REMOVED',commandCount:cancelled.length},'info',h.wardrobeId);
   return{hanger:h,duplicate:false};
 }
@@ -305,7 +334,14 @@ function statusBatch(items){
   for(const item of items)results.push(status(item));
   return results;
 }
-function heartbeat(x){const gatewayId=String(x.gatewayId||'').toUpperCase();if(!/^GW-[0-9A-F]{6,12}$/.test(gatewayId))throw error(400,'gatewayId 형식 오류');const g=attachGateway(gatewayId);Object.assign(g,{state:'ONLINE',lastSeen:now(),channel:Number(x.channel||0),firmwareVersion:String(x.firmwareVersion||'unknown'),ssid:String(x.ssid||g.ssid||''),rssi:Number(x.rssi||g.rssi||0),ip:String(x.ip||g.ip||''),provisioning:{status:'CONNECTED',wifiStatus:'CONNECTED',cloudStatus:'CONNECTED',at:now()}});emit('gateway.heartbeat',g,'info',g.wardrobeId);return g}
+function heartbeat(x){
+  const gatewayId=String(x.gatewayId||'').toUpperCase();
+  if(!/^GW-[0-9A-F]{6,12}$/.test(gatewayId))throw error(400,'gatewayId 형식 오류');
+  const g=attachGateway(gatewayId),wasOnline=g.state==='ONLINE',previousChannel=Number(g.channel||0),channel=Number(x.channel||0);
+  Object.assign(g,{state:'ONLINE',lastSeen:now(),channel,firmwareVersion:String(x.firmwareVersion||'unknown'),ssid:String(x.ssid||g.ssid||''),rssi:Number(x.rssi||g.rssi||0),ip:String(x.ip||g.ip||''),provisioning:{status:'CONNECTED',wifiStatus:'CONNECTED',cloudStatus:'CONNECTED',at:now()}});
+  if(!wasOnline||previousChannel!==channel)emit('gateway.heartbeat',g,'info',g.wardrobeId);
+  return g;
+}
 function command(targets,user,duration=0,kind='LED_BLINK'){const w=wardrobeFor(user);targets=[...new Set((targets||[]).map(x=>String(x).toUpperCase()))];if(!targets.length||targets.length>16)throw error(400,'대상은 1~16개여야 합니다.');for(const t of targets)if(!db.hangers.some(h=>h.hangerId===t&&h.wardrobeId===w.id))throw error(404,`내 옷장에 없는 옷걸이: ${t}`);cancelActiveCommands(targets,w.id,'SUPERSEDED');const c={id:id('cmd'),numericId:crypto.randomInt(1,2147483647),command:String(kind).toUpperCase()==='LED_OFF'?'LED_OFF':'LED_BLINK',targets,durationMs:Math.max(0,Math.min(120000,Number(duration)||0)),status:'QUEUED',requestedBy:user.id,wardrobeId:w.id,createdAt:now(),expiresAt:new Date(Date.now()+CMD_TIMEOUT).toISOString(),acknowledgements:{}};db.commands.unshift(c);console.log(`[COMMAND] QUEUED id=${c.numericId} type=${c.command} targets=${targets.join(',')}`);emit('command.queued',c,'info',w.id);return c}
 function pairingCommand(targets,user){const w=wardrobeFor(user);const c={id:id('cmd'),numericId:crypto.randomInt(1,2147483647),command:'PAIR',targets,status:'QUEUED',requestedBy:user.id,wardrobeId:w.id,createdAt:now(),expiresAt:new Date(Date.now()+CMD_TIMEOUT).toISOString(),acknowledgements:{}};db.commands.unshift(c);emit('hanger.pair_queued',c,'info',w.id);return c}
 function visible(list,wid){return list.filter(x=>x.wardrobeId===wid&&(SIM||!simulated(x)))}
@@ -413,12 +449,12 @@ const server=http.createServer(async(req,res)=>{try{
     await initializeStorage();
     if(!isReady)throw error(503,'데이터 연결을 다시 시도 중입니다. 잠시 후 자동으로 다시 연결됩니다.');
   }
-  // Vercel may route consecutive requests to different warm instances. PostgreSQL is authoritative.
-  await reloadAuthoritativeState();
-  // Device ownership is authoritative in PostgreSQL, not in a warm Vercel
-  // instance's memory. Refreshing it prevents a stale instance from showing
-  // or saving a device that another request has already released.
-  await syncDeviceOwnershipState();
+  const deviceRequest=p==='/api/gateway/status'||p==='/api/gateway/status/batch'
+    ||p==='/api/gateway/heartbeat'||p==='/api/gateway/commands'||p==='/api/gateway/ack';
+  // Hardware saves already enforce ownership transactionally. Avoid loading
+  // every table for each high-frequency device poll; user requests still
+  // reload PostgreSQL authoritatively.
+  if(!deviceRequest)await reloadAuthoritativeState();
   await expireOfflineHangers();
   if(await cloudImageService.handle(req,res,{needUser,wardrobeFor,findGarment:garmentId=>db.garments.find(g=>g.id===garmentId),persist:save,emit}))return;
   if(await garmentImageService.handle(req,res,{needUser}))return;
@@ -439,7 +475,7 @@ const gd=match(req.url,/^\/api\/garments\/([^/]+)$/);if(gd&&req.method==='DELETE
 const find=match(req.url,/^\/api\/garments\/([^/]+)\/find$/);if(find&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),g=db.garments.find(g=>g.id===find[1]&&g.wardrobeId===w.id);if(!g?.currentHanger)throw error(409,'이 옷은 현재 옷장에 없습니다.');const c=command([g.currentHanger],u);await save();return json(res,202,c)}
 if(p==='/api/commands'&&req.method==='POST'){const u=needUser(req),x=await body(req),c=command(x.targets,u,x.durationMs,x.command);await save();return json(res,202,c)}
 const claimIntent=match(req.url,/^\/api\/(gateways|hangers)\/([^/]+)\/claim-intent$/);if(claimIntent&&req.method==='POST'){const u=needUser(req),kind=claimIntent[1],key=decodeURIComponent(claimIntent[2]);return json(res,200,{claimToken:issueDeviceClaimIntent(u,kind,key),expiresInMs:15000})}
-const claim=match(req.url,/^\/api\/(gateways|hangers)\/([^/]+)\/claim$/);if(claim&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),confirmation=await body(req),kind=claim[1],key=decodeURIComponent(claim[2]).toUpperCase();if(!verifyDeviceClaimIntent(confirmation.claimToken,u,kind,key))throw error(400,'화면에서 장비 등록을 다시 눌러 확인해 주세요.');const list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',item=list.find(v=>v[field]===key);if(!item)throw error(404,'장비 신호를 아직 받지 못했습니다. 전원을 확인한 뒤 다시 시도하세요.');if(item.wardrobeId&&item.wardrobeId!==w.id){const owner=ownerForWardrobe(item.wardrobeId);throw error(409,`이미 다른 계정에 등록된 장비입니다. (소유자: ${maskOwnerName(owner?.name)})`);}const needsInitialPair=kind==='hangers'&&!item.wardrobeId;let gatewayId=null;if(kind==='hangers'){const gateway=db.gateways.find(g=>g.gatewayId===item.gatewayId&&g.wardrobeId===w.id);if(!gateway)throw error(409,'먼저 같은 계정의 옷봉과 연결하세요.');gatewayId=gateway.gatewayId;}const claimed=await storage.claimDeviceOwnership(kind==='gateways'?'gateway':'hanger',key,w.id,gatewayId);if(!claimed.ok){const owner=ownerForWardrobe(claimed.wardrobeId);throw error(409,`이미 다른 계정에 등록된 장비입니다. (소유자: ${maskOwnerName(owner?.name)})`);}if(kind==='gateways')assignGateway(item,w.id);else{assignHanger(item,w.id,gatewayId);if(needsInitialPair)pairingCommand([key],u)}reconcile();emit(`${kind}.claimed`,item,'info',w.id);await save();return json(res,200,item)}
+const claim=match(req.url,/^\/api\/(gateways|hangers)\/([^/]+)\/claim$/);if(claim&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),confirmation=await body(req),kind=claim[1],key=decodeURIComponent(claim[2]).toUpperCase();if(!verifyDeviceClaimIntent(confirmation.claimToken,u,kind,key))throw error(400,'화면에서 장비 등록을 다시 눌러 확인해 주세요.');const list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',item=list.find(v=>v[field]===key);if(!item)throw error(404,'장비 신호를 아직 받지 못했습니다. 전원을 확인한 뒤 다시 시도하세요.');if(item.wardrobeId&&item.wardrobeId!==w.id){const owner=ownerForWardrobe(item.wardrobeId);throw error(409,`이미 다른 계정에 등록된 장비입니다. (소유자: ${maskOwnerName(owner?.name)})`);}const needsInitialPair=kind==='hangers'&&!item.wardrobeId;let gatewayId=null;if(kind==='hangers'){const gateway=db.gateways.find(g=>g.gatewayId===item.gatewayId&&g.wardrobeId===w.id);if(!gateway)throw error(409,'먼저 같은 계정의 옷봉과 연결하세요.');gatewayId=gateway.gatewayId;}const claimed=await storage.claimDeviceOwnership(kind==='gateways'?'gateway':'hanger',key,w.id,gatewayId);if(!claimed.ok){const owner=ownerForWardrobe(claimed.wardrobeId);throw error(409,`이미 다른 계정에 등록된 장비입니다. (소유자: ${maskOwnerName(owner?.name)})`);}if(kind==='gateways')assignGateway(item,w.id);else{assignHanger(item,w.id,gatewayId,{assignedNumber:claimed.hangerNumber});if(needsInitialPair)pairingCommand([key],u)}reconcile();emit(`${kind}.claimed`,item,'info',w.id);await save();return json(res,200,item)}
 const provision=match(req.url,/^\/api\/gateways\/([^/]+)\/provisioning-status$/);if(provision&&req.method==='POST'){const u=needUser(req),w=wardrobeFor(u),gatewayId=decodeURIComponent(provision[1]).toUpperCase(),gateway=db.gateways.find(item=>item.gatewayId===gatewayId&&item.wardrobeId===w.id);if(!gateway)throw error(404,'내 옷봉을 찾을 수 없습니다.');const x=await body(req);gateway.provisioning={status:'TIMEOUT',wifiStatus:'UNKNOWN',cloudStatus:'UNKNOWN',detail:String(x.detail||'BLE 설정 후 heartbeat 확인 시간이 초과되었습니다.').slice(0,240),at:now()};emit('gateway.provisioning.timeout',{gatewayId,provisioning:gateway.provisioning},'warning',w.id);await save();return json(res,200,gateway)}
 const device=match(req.url,/^\/api\/(gateways|hangers)\/([^/]+)$/);if(device&&req.method==='PATCH'){const u=needUser(req),w=wardrobeFor(u),x=await body(req),kind=device[1],key=decodeURIComponent(device[2]),list=kind==='gateways'?db.gateways:db.hangers,field=kind==='gateways'?'gatewayId':'hangerId',item=list.find(v=>v[field]===key&&v.wardrobeId===w.id);if(!item)throw error(404,kind==='gateways'?'내 옷봉을 찾을 수 없습니다.':'내 옷걸이를 찾을 수 없습니다.');const name=String(x.name??x.alias??'').trim().slice(0,40);if(name){if(kind==='gateways'){item.customName=name;syncGatewayName(item)}else{item.customName=name;syncHangerName(item)}}else if(x.resetName===true){if(kind==='gateways'){item.customName='';syncGatewayName(item)}else{item.customName='';syncHangerName(item)}}else throw error(400,'이름을 입력하세요.');if(kind==='hangers'&&x.gatewayId&&x.gatewayId!==item.gatewayId){const target=db.gateways.find(g=>g.gatewayId===String(x.gatewayId).toUpperCase()&&g.wardrobeId===w.id);if(!target)throw error(404,'대상 옷봉을 찾을 수 없습니다.');assignHanger(item,w.id,target.gatewayId,{moved:true});}emit(`${kind}.updated`,item,'info',w.id);await save();return json(res,200,item)}
 if(device&&req.method==='DELETE'){
@@ -465,7 +501,7 @@ if(device&&req.method==='DELETE'){
   emit(`${kind}.removed`,{[field]:key},'warning',w.id);await save();return json(res,200,{ok:true});
 }
 if(p==='/api/gateway/status'&&req.method==='POST'){needDevice(req);const x=status(await body(req));await save();return json(res,200,x)}if(p==='/api/gateway/status/batch'&&req.method==='POST'){needDevice(req);const x=statusBatch((await body(req)).items);await save();return json(res,200,{items:x})}if(p==='/api/gateway/heartbeat'&&req.method==='POST'){needDevice(req);const x=heartbeat(await body(req));await save();return json(res,200,x)}
-if(p==='/api/gateway/commands'){needDevice(req);const gatewayId=String(req.headers['x-gateway-id']||'').toUpperCase(),gateway=db.gateways.find(g=>g.gatewayId===gatewayId),wid=gatewayOwner(gatewayId),resets=[];if(gateway?.resetPending==='FACTORY_RESET'){resets.push({numericId:0,command:'FACTORY_RESET',targets:[],durationMs:0});gateway.resetPending=null;}for(const hangerId of gateway?.pendingHangerResets||[])resets.push({numericId:0,command:'UNPAIR',targets:[hangerId],durationMs:0});if(gateway)gateway.pendingHangerResets=[];const cs=db.commands.filter(c=>wid&&c.wardrobeId===wid&&['QUEUED','SENT','PARTIAL'].includes(c.status)&&Date.parse(c.expiresAt)>Date.now()&&c.targets.some(t=>db.hangers.some(h=>h.hangerId===t&&h.gatewayId===gatewayId)));for(const c of cs){c.status='SENT';c.sentAt=now();console.log(`[COMMAND] SENT id=${c.numericId} gateway=${gatewayId} targets=${c.targets.join(',')}`)}json(res,200,{commands:[...resets,...cs]});if(resets.length||cs.length)save().catch(e=>console.error('[COMMAND] command status save failed',e.message));return}
+if(p==='/api/gateway/commands'){needDevice(req);await storage.refreshCommands?.(db);const gatewayId=String(req.headers['x-gateway-id']||'').toUpperCase(),gateway=db.gateways.find(g=>g.gatewayId===gatewayId),wid=gatewayOwner(gatewayId),resets=[];if(gateway?.resetPending==='FACTORY_RESET'){resets.push({numericId:0,command:'FACTORY_RESET',targets:[],durationMs:0});gateway.resetPending=null;}for(const hangerId of gateway?.pendingHangerResets||[])resets.push({numericId:0,command:'UNPAIR',targets:[hangerId],durationMs:0});if(gateway)gateway.pendingHangerResets=[];const cs=db.commands.filter(c=>wid&&c.wardrobeId===wid&&['QUEUED','SENT','PARTIAL'].includes(c.status)&&Date.parse(c.expiresAt)>Date.now()&&c.targets.some(t=>db.hangers.some(h=>h.hangerId===t&&h.gatewayId===gatewayId)));for(const c of cs){c.status='SENT';c.sentAt=now();console.log(`[COMMAND] SENT id=${c.numericId} gateway=${gatewayId} targets=${c.targets.join(',')}`)}json(res,200,{commands:[...resets,...cs]});if(resets.length||cs.length)save().catch(e=>console.error('[COMMAND] command status save failed',e.message));return}
 if(p==='/api/gateway/ack'&&req.method==='POST'){needDevice(req);const a=await body(req),c=db.commands.find(x=>x.numericId===Number(a.commandId));if(!c)throw error(404,'명령이 없습니다.');const h=String(a.hangerId).toUpperCase();if(!c.targets.includes(h))throw error(400,'명령 대상 오류');if(c.status==='CANCELLED')return json(res,200,{...c,ignored:true});c.acknowledgements[h]={result:a.result||'ERROR',errorCode:Number(a.errorCode||0),at:now()};c.status=c.targets.every(t=>c.acknowledgements[t]?.result==='OK')?'ACKED':'PARTIAL';console.log(`[COMMAND] ACK id=${c.numericId} hanger=${h} result=${c.acknowledgements[h].result}`);emit('command.ack',c,'info',c.wardrobeId);await save();return json(res,200,c)}
 if(p.startsWith('/api/'))throw error(404,'API를 찾을 수 없습니다.');return staticFile(req,res)}catch(e){console.error('[ERROR]',e.message);json(res,e.status||500,{error:e.message})}});
 const wss=new WebSocketServer({noServer:true});server.on('upgrade',(req,socket,head)=>{ready.then(async()=>{await expireOfflineHangers();const u=new URL(req.url,'http://x');const protocols=String(req.headers['sec-websocket-protocol']||'').split(',').map(value=>value.trim());const credential=protocols.find(value=>value.startsWith('wardrobe-token.'))||'';req.headers.authorization=`Bearer ${credential.slice('wardrobe-token.'.length)}`;const account=getUser(req);if(u.pathname!=='/ws'||!account)return socket.destroy();wss.handleUpgrade(req,socket,head,ws=>wss.emit('connection',ws,account))}).catch(()=>socket.destroy())});wss.on('connection',(ws,account)=>{ws.wardrobeId=wardrobeFor(account).id;sockets.add(ws);ws.send(JSON.stringify({type:'snapshot',payload:snapshot(account)}));ws.on('close',()=>sockets.delete(ws))});
