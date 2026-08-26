@@ -48,6 +48,8 @@ let localGatewayDevice = null;
 let nearbyWifiNetworks = [];
 let hangerBleConfigCharacteristic = null;
 let currentBleHangerId = '';
+let nativeHangerBleConnected = false;
+let nativeHangerCandidates = [];
 const claimedDeviceIds = new Set();
 const LOCAL_LED_STORAGE_KEY = 'wardrobeLocalLedStates';
 const LAST_GATEWAY_BLE_DEVICE_KEY = 'wardrobeGatewayBleDeviceId';
@@ -2775,6 +2777,15 @@ function nativeStatusDataView(info) {
 
 window.addEventListener('otkokNativeBleStatus', event => {
   const info = event.detail || {};
+  if (info.source === 'hanger') {
+    if (info.type === 'transport') {
+      nativeHangerBleConnected = info.connected === true;
+      if (!nativeHangerBleConnected) setHangerBleMessage('옷걸이 Bluetooth 연결이 끊겼습니다. 다시 검색해 주세요.', true);
+      return;
+    }
+    handleHangerBleStatus(nativeStatusDataView(info));
+    return;
+  }
   if (info.type === 'transport') {
     nativeGatewayBleConnected = info.connected === true;
     nativeGatewayBleId = nativeGatewayBleConnected ? String(info.gatewayId || '').toUpperCase() : '';
@@ -3246,6 +3257,18 @@ async function claimDevice(kind, deviceId, { quietNotFound = false, confirmOwner
 }
 
 async function writeHangerBle(action, extra = {}) {
+  if (hasNativeGatewayBridge()) {
+    if (!nativeHangerBleConnected) return setHangerBleMessage('먼저 옷걸이를 블루투스로 연결하세요.', true);
+    try {
+      const result = await nativeGatewayCall('otkokHangerBleConfig', { action, ...extra });
+      if (!result?.ok) throw new Error(result?.error || '명령 전송에 실패했습니다.');
+      if (action === 'pair') setHangerBleMessage('내 옷봉 신호를 찾아 연결하고 있습니다. 최대 8초 기다려 주세요.');
+      return true;
+    } catch (error) {
+      setHangerBleMessage(bleErrorMessage(error, '옷걸이 요청'), true);
+      return false;
+    }
+  }
   if (!hangerBleConfigCharacteristic) return setHangerBleMessage('먼저 옷걸이를 블루투스로 연결하세요.', true);
   try {
     const payload = new TextEncoder().encode(JSON.stringify({ action, ...extra }));
@@ -3256,7 +3279,9 @@ async function writeHangerBle(action, extra = {}) {
   }
 }
 
+function renderNativeHangerChoices(devices) { const target = $('#nativeHangerChoices'); if (!target) return; nativeHangerCandidates = (devices || []).filter(device => device?.deviceId); target.hidden = false; if (!nativeHangerCandidates.length) { target.innerHTML = '<p class="error">발견된 옷걸이가 없습니다. 전원·거리·블루투스를 확인한 뒤 다시 검색하세요.</p>'; return; } target.innerHTML = `<p class="muted"><b>발견된 옷걸이를 선택하세요.</b></p>${nativeHangerCandidates.map((device,index)=>`<button type="button" class="ghost" data-native-hanger-index="${index}" style="width:100%;margin:6px 0;text-align:left;color:var(--ink);border:1px solid #cbd4cd"><b>${esc(device.name || '스마트 옷걸이')}</b><br><small>신호 ${Number(device.rssi) || '-'} dBm</small></button>`).join('')}`; target.querySelectorAll('[data-native-hanger-index]').forEach(button => { button.onclick = async () => { const device = nativeHangerCandidates[Number(button.dataset.nativeHangerIndex)]; if (!device) return; target.querySelectorAll('button').forEach(item => { item.disabled = true; }); setHangerBleMessage('선택한 옷걸이에 연결하고 있습니다…'); try { const result = await nativeGatewayCall('otkokHangerBleConnectSelected', { deviceId: device.deviceId }); if (!result?.connected) throw new Error(result?.error || '연결에 실패했습니다.'); nativeHangerBleConnected = true; currentBleHangerId = String(result.status?.hangerId || '').toUpperCase(); $('#hangerBleDeviceName').textContent = `${device.name || '스마트 옷걸이'} 연결됨`; target.hidden = true; $('#pairPhysicalHanger').hidden = false; $('#forgetPhysicalHanger').hidden = false; if (result.status) await handleHangerBleStatus(nativeStatusDataView(result.status)); setHangerBleMessage('옷걸이와 실제 Bluetooth 연결이 완료되었습니다.'); } catch (error) { renderNativeHangerChoices(nativeHangerCandidates); setHangerBleMessage(bleErrorMessage(error, '옷걸이 연결'), true); } }; }); }
 async function connectPhysicalHangerBluetooth() {
+  if (hasNativeGatewayBridge()) { const button = $('#connectPhysicalHangerBle'); if (button) { button.disabled = true; button.textContent = '옷걸이 검색 중…'; } try { setHangerBleMessage('주변의 스마트 옷걸이를 검색하고 있습니다.'); const result = await nativeGatewayCall('otkokHangerBleScan'); if (!result?.ok) throw new Error(result?.error || '검색에 실패했습니다.'); renderNativeHangerChoices(result.devices || []); setHangerBleMessage((result.devices || []).length ? '목록에서 연결할 옷걸이를 선택하세요.' : '옷걸이를 찾지 못했습니다.', !(result.devices || []).length); return ''; } catch (error) { setHangerBleMessage(bleErrorMessage(error, '옷걸이 검색'), true); return ''; } finally { if (button) { button.disabled = false; button.textContent = '옷걸이 찾기 (블루투스)'; } } }
   if (!navigator.bluetooth || !window.isSecureContext) {
     setHangerBleMessage('이 기능은 블루투스가 켜진 Chrome에서 HTTPS 또는 localhost로 열어야 합니다.', true);
     return;
@@ -3300,7 +3325,7 @@ async function connectPhysicalHangerBluetooth() {
 }
 
 async function forgetPhysicalHanger() {
-  if (!hangerBleConfigCharacteristic) return setHangerBleMessage('먼저 옷걸이를 블루투스로 연결하세요.', true);
+  if ((hasNativeGatewayBridge() && !nativeHangerBleConnected) || (!hasNativeGatewayBridge() && !hangerBleConfigCharacteristic)) return setHangerBleMessage('먼저 옷걸이를 블루투스로 연결하세요.', true);
   if (!window.confirm('이 옷걸이의 옷봉 연결을 제거할까요? 제거 후에는 태그 상태가 웹에 전송되지 않습니다.')) return;
   await writeHangerBle('forget');
   setTimeout(refresh, 1500);
@@ -3921,6 +3946,7 @@ function installGatewayWifiSetup() {
       <li>옷 태그를 대면 옷 감지 상태가 표시됩니다.</li>
     </ol>
     <button type="button" id="connectPhysicalHangerBle" class="primary" style="width:100%;margin:12px 0">옷걸이 찾기 (블루투스)</button>
+    <div id="nativeHangerChoices" hidden></div>
     <p id="hangerBleDeviceName" class="muted"></p>
     <p id="hangerBleMessage" class="muted">블루투스 연결을 시작하세요.</p>
     <section id="hangerBleDetail" class="panel" style="padding:12px;margin-top:12px" hidden></section>

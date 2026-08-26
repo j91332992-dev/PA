@@ -8,6 +8,8 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import 'hanger_ble.dart';
+
 const _webUrl = 'https://otkok-live.vercel.app/';
 const _trustedHost = 'otkok-live.vercel.app';
 final _gatewayService = Guid('a4e66a10-0fb0-4dce-8be0-18cf7bc82001');
@@ -24,11 +26,14 @@ class OtkokApp extends StatelessWidget {
   const OtkokApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: '옷콕',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(colorSchemeSeed: const Color(0xff2d63e5), useMaterial3: true),
-        home: const OtkokWebApp(),
-      );
+    title: '옷콕',
+    debugShowCheckedModeBanner: false,
+    theme: ThemeData(
+      colorSchemeSeed: const Color(0xff2d63e5),
+      useMaterial3: true,
+    ),
+    home: const OtkokWebApp(),
+  );
 }
 
 class GatewayBle {
@@ -45,7 +50,8 @@ class GatewayBle {
   String gatewayId = '';
 
   Stream<Map<String, dynamic>> get events => _events.stream;
-  bool get connected => _device != null && _command != null && gatewayId.isNotEmpty;
+  bool get connected =>
+      _device != null && _command != null && gatewayId.isNotEmpty;
 
   Future<Map<String, dynamic>> connect(List<String> expectedGatewayIds) {
     final active = _connecting;
@@ -59,13 +65,16 @@ class GatewayBle {
 
   Future<Map<String, dynamic>> _connect(List<String> expectedGatewayIds) async {
     final expected = expectedGatewayIds.map((id) => id.toUpperCase()).toSet();
-    if (connected && (expected.isEmpty || expected.contains(gatewayId))) return _connectionResult(true);
-    if (!await _requestPermissions()) return {'connected': false, 'error': '블루투스 권한이 필요합니다.'};
+    if (connected && (expected.isEmpty || expected.contains(gatewayId)))
+      return _connectionResult(true);
+    if (!await _requestPermissions())
+      return {'connected': false, 'error': '블루투스 권한이 필요합니다.'};
 
     final savedDeviceId = await _storage.read(key: 'otkok_gateway_ble_device');
     if (savedDeviceId != null && savedDeviceId.isNotEmpty) {
       try {
-        if (await _attach(BluetoothDevice.fromId(savedDeviceId), expected)) return _connectionResult(true);
+        if (await _attach(BluetoothDevice.fromId(savedDeviceId), expected))
+          return _connectionResult(true);
       } catch (_) {
         await disconnect();
       }
@@ -84,31 +93,51 @@ class GatewayBle {
           }
         }
       });
-      await FlutterBluePlus.startScan(withServices: [_gatewayService], timeout: const Duration(seconds: 5));
+      await FlutterBluePlus.startScan(
+        withServices: [_gatewayService],
+        timeout: const Duration(seconds: 5),
+      );
       await Future.any([
-        firstCandidate.future.then((_) => Future<void>.delayed(const Duration(milliseconds: 650))),
+        firstCandidate.future.then(
+          (_) => Future<void>.delayed(const Duration(milliseconds: 650)),
+        ),
         Future<void>.delayed(const Duration(seconds: 5)),
       ]);
     } catch (_) {
       // Candidates collected before an Android controller timeout remain valid.
     } finally {
-      try { await FlutterBluePlus.stopScan(); } catch (_) {}
+      try {
+        await FlutterBluePlus.stopScan();
+      } catch (_) {}
       await scanSubscription?.cancel();
       _events.add({'type': 'scan', 'state': 'stopped', 'count': found.length});
     }
 
-    final candidates = found.values.toList()..sort((a, b) => b.rssi.compareTo(a.rssi));
+    final candidates = found.values.toList()
+      ..sort((a, b) => b.rssi.compareTo(a.rssi));
     for (final candidate in candidates) {
       try {
-        if (await _attach(candidate.device, expected)) return _connectionResult(true);
+        if (await _attach(candidate.device, expected))
+          return _connectionResult(true);
       } catch (_) {
         await disconnect();
       }
     }
-    return {'connected': false, 'error': expected.isEmpty ? '근처 옷봉을 찾지 못했습니다.' : '이 계정에 등록된 근처 옷봉을 찾지 못했습니다.'};
+    return {
+      'connected': false,
+      'error': expected.isEmpty
+          ? '근처 옷봉을 찾지 못했습니다.'
+          : '이 계정에 등록된 근처 옷봉을 찾지 못했습니다.',
+    };
   }
+
   Future<Map<String, dynamic>> scanGateways() async {
-    if (!await _requestPermissions()) return {'ok': false, 'error': '블루투스 권한이 필요합니다.', 'devices': <Map<String, dynamic>>[]};
+    if (!await _requestPermissions())
+      return {
+        'ok': false,
+        'error': '블루투스 권한이 필요합니다.',
+        'devices': <Map<String, dynamic>>[],
+      };
     final found = <String, ScanResult>{};
     StreamSubscription<List<ScanResult>>? subscription;
     try {
@@ -120,57 +149,86 @@ class GatewayBle {
           }
         }
       });
-      await FlutterBluePlus.startScan(withServices: [_gatewayService], timeout: const Duration(seconds: 4));
+      await FlutterBluePlus.startScan(
+        withServices: [_gatewayService],
+        timeout: const Duration(seconds: 4),
+      );
       await Future<void>.delayed(const Duration(seconds: 4));
     } catch (_) {
       // Preserve candidates gathered before the Android scan controller stops.
     } finally {
-      try { await FlutterBluePlus.stopScan(); } catch (_) {}
+      try {
+        await FlutterBluePlus.stopScan();
+      } catch (_) {}
       await subscription?.cancel();
       _events.add({'type': 'scan', 'state': 'stopped', 'count': found.length});
     }
-    final candidates = found.values.toList()..sort((a, b) => b.rssi.compareTo(a.rssi));
+    final candidates = found.values.toList()
+      ..sort((a, b) => b.rssi.compareTo(a.rssi));
     final devices = candidates.map((candidate) {
       final advertisedName = candidate.advertisementData.advName;
       final platformName = candidate.device.platformName;
       return <String, dynamic>{
         'deviceId': candidate.device.remoteId.str,
-        'name': advertisedName.isNotEmpty ? advertisedName : (platformName.isNotEmpty ? platformName : '스마트 옷봉'),
+        'name': advertisedName.isNotEmpty
+            ? advertisedName
+            : (platformName.isNotEmpty ? platformName : '스마트 옷봉'),
         'rssi': candidate.rssi,
       };
     }).toList();
     return {'ok': true, 'devices': devices};
   }
 
-  Future<Map<String, dynamic>> connectSelectedGateway(List<String> expectedGatewayIds, String deviceId) async {
+  Future<Map<String, dynamic>> connectSelectedGateway(
+    List<String> expectedGatewayIds,
+    String deviceId,
+  ) async {
     final expected = expectedGatewayIds.map((id) => id.toUpperCase()).toSet();
-    if (!await _requestPermissions()) return {'connected': false, 'error': '블루투스 권한이 필요합니다.'};
+    if (!await _requestPermissions())
+      return {'connected': false, 'error': '블루투스 권한이 필요합니다.'};
     try {
-      if (await _attach(BluetoothDevice.fromId(deviceId), expected)) return _connectionResult(true);
+      if (await _attach(BluetoothDevice.fromId(deviceId), expected))
+        return _connectionResult(true);
     } catch (_) {
       await disconnect();
     }
-    return {'connected': false, 'error': '선택한 옷봉과 연결하지 못했습니다. 전원과 거리를 확인해 주세요.'};
+    return {
+      'connected': false,
+      'error': '선택한 옷봉과 연결하지 못했습니다. 전원과 거리를 확인해 주세요.',
+    };
   }
-
 
   Future<bool> _attach(BluetoothDevice device, Set<String> expected) async {
     await disconnect();
     _device = device;
-    await device.connect(timeout: const Duration(seconds: 9), autoConnect: false);
+    await device.connect(
+      timeout: const Duration(seconds: 9),
+      autoConnect: false,
+    );
     final services = await device.discoverServices();
     final service = services.firstWhere((item) => item.uuid == _gatewayService);
-    final status = service.characteristics.firstWhere((item) => item.uuid == _gatewayStatus);
-    final localStatus = service.characteristics.firstWhere((item) => item.uuid == _localStatus);
-    _config = service.characteristics.firstWhere((item) => item.uuid == Guid('a4e66a11-0fb0-4dce-8be0-18cf7bc82001'));
-    _command = service.characteristics.firstWhere((item) => item.uuid == _localCommand);
+    final status = service.characteristics.firstWhere(
+      (item) => item.uuid == _gatewayStatus,
+    );
+    final localStatus = service.characteristics.firstWhere(
+      (item) => item.uuid == _localStatus,
+    );
+    _config = service.characteristics.firstWhere(
+      (item) => item.uuid == Guid('a4e66a11-0fb0-4dce-8be0-18cf7bc82001'),
+    );
+    _command = service.characteristics.firstWhere(
+      (item) => item.uuid == _localCommand,
+    );
     await status.setNotifyValue(true);
     await localStatus.setNotifyValue(true);
     _gatewayStatusSubscription = status.lastValueStream.listen(_onStatus);
     _statusSubscription = localStatus.lastValueStream.listen(_onStatus);
     final statusInfo = _decode(await status.read());
-    gatewayId = (statusInfo['gatewayId'] ?? statusInfo['deviceId'] ?? '').toString().toUpperCase();
-    if (gatewayId.isEmpty || (expected.isNotEmpty && !expected.contains(gatewayId))) {
+    gatewayId = (statusInfo['gatewayId'] ?? statusInfo['deviceId'] ?? '')
+        .toString()
+        .toUpperCase();
+    if (gatewayId.isEmpty ||
+        (expected.isNotEmpty && !expected.contains(gatewayId))) {
       await disconnect();
       return false;
     }
@@ -179,11 +237,22 @@ class GatewayBle {
         _command = null;
         final previous = gatewayId;
         gatewayId = '';
-        _events.add({'type': 'transport', 'connected': false, 'gatewayId': previous});
+        _events.add({
+          'type': 'transport',
+          'connected': false,
+          'gatewayId': previous,
+        });
       }
     });
-    await _storage.write(key: 'otkok_gateway_ble_device', value: device.remoteId.str);
-    _events.add({'type': 'transport', 'connected': true, 'gatewayId': gatewayId});
+    await _storage.write(
+      key: 'otkok_gateway_ble_device',
+      value: device.remoteId.str,
+    );
+    _events.add({
+      'type': 'transport',
+      'connected': true,
+      'gatewayId': gatewayId,
+    });
     return true;
   }
 
@@ -191,16 +260,26 @@ class GatewayBle {
     final info = _decode(bytes);
     if (info.isEmpty) return;
     final hangerId = (info['hangerId'] ?? '').toString().toUpperCase();
-    if (info['type'] == 'command_ack' && hangerId.isNotEmpty) _ackWaiters.remove(hangerId)?.complete(info);
+    if (info['type'] == 'command_ack' && hangerId.isNotEmpty)
+      _ackWaiters.remove(hangerId)?.complete(info);
     _events.add(info);
   }
 
   Map<String, dynamic> _decode(List<int> bytes) {
-    try { return Map<String, dynamic>.from(jsonDecode(utf8.decode(bytes)) as Map); } catch (_) { return <String, dynamic>{}; }
+    try {
+      return Map<String, dynamic>.from(jsonDecode(utf8.decode(bytes)) as Map);
+    } catch (_) {
+      return <String, dynamic>{};
+    }
   }
 
-  Future<Map<String, dynamic>> command(String action, List<String> targets, int durationMs) async {
-    if (!connected || targets.isEmpty) return {'ok': false, 'error': '근처 BLE 연결이 없습니다.'};
+  Future<Map<String, dynamic>> command(
+    String action,
+    List<String> targets,
+    int durationMs,
+  ) async {
+    if (!connected || targets.isEmpty)
+      return {'ok': false, 'error': '근처 BLE 연결이 없습니다.'};
     Object? lastError;
     for (var attempt = 0; attempt < 2; attempt++) {
       final pending = <Future<Map<String, dynamic>>>[];
@@ -211,33 +290,60 @@ class GatewayBle {
         pending.add(waiter.future.timeout(const Duration(milliseconds: 850)));
       }
       try {
-        await _command!.write(utf8.encode(jsonEncode({'action': action, 'targets': targets, 'durationMs': durationMs})), withoutResponse: false);
+        await _command!.write(
+          utf8.encode(
+            jsonEncode({
+              'action': action,
+              'targets': targets,
+              'durationMs': durationMs,
+            }),
+          ),
+          withoutResponse: false,
+        );
         final acknowledgements = await Future.wait(pending);
-        if (acknowledgements.any((ack) => (ack['result'] ?? 'ERROR').toString().toUpperCase() != 'OK')) throw StateError('옷걸이가 명령을 거부했습니다.');
+        if (acknowledgements.any(
+          (ack) => (ack['result'] ?? 'ERROR').toString().toUpperCase() != 'OK',
+        ))
+          throw StateError('옷걸이가 명령을 거부했습니다.');
         return {'ok': true, 'transport': 'ble', 'gatewayId': gatewayId};
       } catch (error) {
         lastError = error;
-        for (final target in targets) { _ackWaiters.remove(target.toUpperCase()); }
-        if (attempt == 0 && connected) await Future<void>.delayed(const Duration(milliseconds: 180));
+        for (final target in targets) {
+          _ackWaiters.remove(target.toUpperCase());
+        }
+        if (attempt == 0 && connected)
+          await Future<void>.delayed(const Duration(milliseconds: 180));
       }
     }
     return {'ok': false, 'error': '근처 옷걸이의 실제 응답을 받지 못했습니다. ($lastError)'};
   }
 
-
   Future<Map<String, dynamic>> configure(Map<String, dynamic> payload) async {
-    if (!connected || _config == null) return {'ok': false, 'error': '근처 BLE 연결이 없습니다.'};
+    if (!connected || _config == null)
+      return {'ok': false, 'error': '근처 BLE 연결이 없습니다.'};
     try {
-      await _config!.write(utf8.encode(jsonEncode(payload)), withoutResponse: false);
+      await _config!.write(
+        utf8.encode(jsonEncode(payload)),
+        withoutResponse: false,
+      );
       return {'ok': true};
     } catch (error) {
       return {'ok': false, 'error': '옷봉 설정 명령 전송에 실패했습니다. ($error)'};
     }
   }
-  Map<String, dynamic> _connectionResult(bool value) => {'connected': value, 'gatewayId': gatewayId, 'deviceId': _device?.remoteId.str ?? '', 'name': _device?.platformName ?? '스마트 옷봉'};
+
+  Map<String, dynamic> _connectionResult(bool value) => {
+    'connected': value,
+    'gatewayId': gatewayId,
+    'deviceId': _device?.remoteId.str ?? '',
+    'name': _device?.platformName ?? '스마트 옷봉',
+  };
 
   Future<bool> _requestPermissions() async {
-    final states = await [Permission.bluetoothScan, Permission.bluetoothConnect].request();
+    final states = await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+    ].request();
     return states.values.every((state) => state.isGranted);
   }
 
@@ -248,16 +354,24 @@ class GatewayBle {
     _statusSubscription = null;
     _gatewayStatusSubscription = null;
     _connectionSubscription = null;
-    for (final waiter in _ackWaiters.values) { if (!waiter.isCompleted) waiter.completeError(StateError('BLE 연결이 끊겼습니다.')); }
+    for (final waiter in _ackWaiters.values) {
+      if (!waiter.isCompleted)
+        waiter.completeError(StateError('BLE 연결이 끊겼습니다.'));
+    }
     _ackWaiters.clear();
-    try { await _device?.disconnect(); } catch (_) {}
+    try {
+      await _device?.disconnect();
+    } catch (_) {}
     _device = null;
     _command = null;
     _config = null;
     gatewayId = '';
   }
 
-  Future<void> dispose() async { await disconnect(); await _events.close(); }
+  Future<void> dispose() async {
+    await disconnect();
+    await _events.close();
+  }
 }
 
 class OtkokWebApp extends StatefulWidget {
@@ -268,17 +382,21 @@ class OtkokWebApp extends StatefulWidget {
 
 class _OtkokWebAppState extends State<OtkokWebApp> with WidgetsBindingObserver {
   final _ble = GatewayBle();
+  final _hangerBle = HangerBle();
   InAppWebViewController? _controller;
   StreamSubscription<Map<String, dynamic>>? _bleEvents;
+  StreamSubscription<Map<String, dynamic>>? _hangerBleEvents;
   double _progress = 0;
 
-  bool _trusted(WebUri? uri) => uri != null && uri.scheme == 'https' && uri.host == _trustedHost;
+  bool _trusted(WebUri? uri) =>
+      uri != null && uri.scheme == 'https' && uri.host == _trustedHost;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _bleEvents = _ble.events.listen(_emitBleEvent);
+    _hangerBleEvents = _hangerBle.events.listen(_emitBleEvent);
   }
 
   @override
@@ -286,87 +404,213 @@ class _OtkokWebAppState extends State<OtkokWebApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _bleEvents?.cancel();
     _ble.dispose();
+    _hangerBle.dispose();
+    _hangerBleEvents?.cancel();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _controller?.evaluateJavascript(source: "window.dispatchEvent(new Event('otkokNativeResume'));");
+    if (state == AppLifecycleState.resumed)
+      _controller?.evaluateJavascript(
+        source: "window.dispatchEvent(new Event('otkokNativeResume'));",
+      );
   }
 
-  Future<bool> _controllerIsTrusted(InAppWebViewController controller) async => _trusted(await controller.getUrl());
+  Future<bool> _controllerIsTrusted(InAppWebViewController controller) async =>
+      _trusted(await controller.getUrl());
 
   Future<void> _emitBleEvent(Map<String, dynamic> event) async {
     final controller = _controller;
     if (controller == null || !await _controllerIsTrusted(controller)) return;
-    await controller.evaluateJavascript(source: "window.dispatchEvent(new CustomEvent('otkokNativeBleStatus',{detail:${jsonEncode(event)}}));");
+    await controller.evaluateJavascript(
+      source:
+          "window.dispatchEvent(new CustomEvent('otkokNativeBleStatus',{detail:${jsonEncode(event)}}));",
+    );
   }
 
-  Future<void> _installBridge(InAppWebViewController controller, WebUri? uri) async {
+  Future<void> _installBridge(
+    InAppWebViewController controller,
+    WebUri? uri,
+  ) async {
     if (!_trusted(uri)) return;
-    await controller.evaluateJavascript(source: "window.__OTKOK_NATIVE_APK__=true;window.dispatchEvent(new Event('otkokNativeReady'));");
+    await controller.evaluateJavascript(
+      source: "window.__OTKOK_NATIVE_APK__=true;window.dispatchEvent(new Event('otkokNativeReady'));",
+    );
   }
 
   @override
   Widget build(BuildContext context) => PopScope(
-        canPop: false,
-        onPopInvokedWithResult: (didPop, result) async { if (!didPop && await _controller?.canGoBack() == true) await _controller?.goBack(); },
-        child: Scaffold(
-          body: SafeArea(
-            bottom: false,
-            child: Stack(children: [
-              InAppWebView(
-                initialUrlRequest: URLRequest(url: WebUri(_webUrl)),
-                initialUserScripts: UnmodifiableListView([
-                  UserScript(
-                    groupName: 'otkok-native-bridge',
-                    source: 'window.__OTKOK_NATIVE_APK__=true;',
-                    injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
-                    forMainFrameOnly: true,
-                  ),
-                ]),
-                initialSettings: InAppWebViewSettings(javaScriptEnabled: true, domStorageEnabled: true, databaseEnabled: true, cacheEnabled: true, supportZoom: false, mediaPlaybackRequiresUserGesture: false, allowsInlineMediaPlayback: true, useShouldOverrideUrlLoading: true),
-                onWebViewCreated: (controller) {
-                  _controller = controller;
-                  controller.addJavaScriptHandler(handlerName: 'otkokBleConnect', callback: (arguments) async {
-                    if (!await _controllerIsTrusted(controller)) return {'connected': false, 'error': '허용되지 않은 페이지입니다.'};
-                    final data = arguments.isNotEmpty && arguments.first is Map ? Map<String, dynamic>.from(arguments.first as Map) : <String, dynamic>{};
-                    final expected = ((data['expectedGatewayIds'] as List?) ?? const []).map((value) => value.toString()).toList();
+    canPop: false,
+    onPopInvokedWithResult: (didPop, result) async {
+      if (!didPop && await _controller?.canGoBack() == true)
+        await _controller?.goBack();
+    },
+    child: Scaffold(
+      body: SafeArea(
+        bottom: false,
+        child: Stack(
+          children: [
+            InAppWebView(
+              initialUrlRequest: URLRequest(url: WebUri(_webUrl)),
+              initialUserScripts: UnmodifiableListView([
+                UserScript(
+                  groupName: 'otkok-native-bridge',
+                  source: 'window.__OTKOK_NATIVE_APK__=true;',
+                  injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+                  forMainFrameOnly: true,
+                ),
+              ]),
+              initialSettings: InAppWebViewSettings(
+                javaScriptEnabled: true,
+                domStorageEnabled: true,
+                databaseEnabled: true,
+                cacheEnabled: true,
+                supportZoom: false,
+                mediaPlaybackRequiresUserGesture: false,
+                allowsInlineMediaPlayback: true,
+                useShouldOverrideUrlLoading: true,
+              ),
+              onWebViewCreated: (controller) {
+                _controller = controller;
+                controller.addJavaScriptHandler(
+                  handlerName: 'otkokBleConnect',
+                  callback: (arguments) async {
+                    if (!await _controllerIsTrusted(controller))
+                      return {'connected': false, 'error': '허용되지 않은 페이지입니다.'};
+                    final data = arguments.isNotEmpty && arguments.first is Map
+                        ? Map<String, dynamic>.from(arguments.first as Map)
+                        : <String, dynamic>{};
+                    final expected =
+                        ((data['expectedGatewayIds'] as List?) ?? const [])
+                            .map((value) => value.toString())
+                            .toList();
                     return _ble.connect(expected);
-                  });
-                  controller.addJavaScriptHandler(handlerName: 'otkokBleCommand', callback: (arguments) async {
-                    if (!await _controllerIsTrusted(controller)) return {'ok': false, 'error': '허용되지 않은 페이지입니다.'};
-                    final data = arguments.isNotEmpty && arguments.first is Map ? Map<String, dynamic>.from(arguments.first as Map) : <String, dynamic>{};
-                    return _ble.command((data['action'] ?? 'local_find').toString(), ((data['targets'] as List?) ?? const []).map((value) => value.toString()).toList(), int.tryParse((data['durationMs'] ?? 0).toString()) ?? 0);
-                  });
-                  controller.addJavaScriptHandler(handlerName: 'otkokBleConfig', callback: (arguments) async {
-                    if (!await _controllerIsTrusted(controller)) return {'ok': false, 'error': '허용되지 않은 페이지입니다.'};
-                    final data = arguments.isNotEmpty && arguments.first is Map ? Map<String, dynamic>.from(arguments.first as Map) : <String, dynamic>{};
+                  },
+                );
+                controller.addJavaScriptHandler(
+                  handlerName: 'otkokBleCommand',
+                  callback: (arguments) async {
+                    if (!await _controllerIsTrusted(controller))
+                      return {'ok': false, 'error': '허용되지 않은 페이지입니다.'};
+                    final data = arguments.isNotEmpty && arguments.first is Map
+                        ? Map<String, dynamic>.from(arguments.first as Map)
+                        : <String, dynamic>{};
+                    return _ble.command(
+                      (data['action'] ?? 'local_find').toString(),
+                      ((data['targets'] as List?) ?? const [])
+                          .map((value) => value.toString())
+                          .toList(),
+                      int.tryParse((data['durationMs'] ?? 0).toString()) ?? 0,
+                    );
+                  },
+                );
+                controller.addJavaScriptHandler(
+                  handlerName: 'otkokBleConfig',
+                  callback: (arguments) async {
+                    if (!await _controllerIsTrusted(controller))
+                      return {'ok': false, 'error': '허용되지 않은 페이지입니다.'};
+                    final data = arguments.isNotEmpty && arguments.first is Map
+                        ? Map<String, dynamic>.from(arguments.first as Map)
+                        : <String, dynamic>{};
                     return _ble.configure(data);
-                  });                  controller.addJavaScriptHandler(handlerName: 'otkokBleDisconnect', callback: (_) async {
-                    if (!await _controllerIsTrusted(controller)) return {'ok': false};
+                  },
+                );
+                controller.addJavaScriptHandler(
+                  handlerName: 'otkokBleDisconnect',
+                  callback: (_) async {
+                    if (!await _controllerIsTrusted(controller))
+                      return {'ok': false};
                     await _ble.disconnect();
                     return {'ok': true};
-                  });
-                  controller.addJavaScriptHandler(handlerName: 'otkokBleScan', callback: (_) async {
-                    if (!await _controllerIsTrusted(controller)) return {'ok': false, 'error': '허용되지 않은 페이지입니다.', 'devices': <Map<String, dynamic>>[]};
+                  },
+                );
+                controller.addJavaScriptHandler(
+                  handlerName: 'otkokBleScan',
+                  callback: (_) async {
+                    if (!await _controllerIsTrusted(controller))
+                      return {
+                        'ok': false,
+                        'error': '허용되지 않은 페이지입니다.',
+                        'devices': <Map<String, dynamic>>[],
+                      };
                     return _ble.scanGateways();
-                  });
-                  controller.addJavaScriptHandler(handlerName: 'otkokBleConnectSelected', callback: (arguments) async {
-                    if (!await _controllerIsTrusted(controller)) return {'connected': false, 'error': '허용되지 않은 페이지입니다.'};
-                    final data = arguments.isNotEmpty && arguments.first is Map ? Map<String, dynamic>.from(arguments.first as Map) : <String, dynamic>{};
-                    final expected = ((data['expectedGatewayIds'] as List?) ?? const []).map((value) => value.toString()).toList();
-                    return _ble.connectSelectedGateway(expected, (data['deviceId'] ?? '').toString());
-                  });
-                },
-                onLoadStop: _installBridge,
-                onProgressChanged: (_, progress) { if (mounted) setState(() => _progress = progress / 100); },
-                onPermissionRequest: (_, request) async => PermissionResponse(resources: request.resources, action: _trusted(request.origin) ? PermissionResponseAction.GRANT : PermissionResponseAction.DENY),
-                shouldOverrideUrlLoading: (_, action) async => _trusted(action.request.url) ? NavigationActionPolicy.ALLOW : NavigationActionPolicy.CANCEL,
+                  },
+                );
+                controller.addJavaScriptHandler(
+                  handlerName: 'otkokBleConnectSelected',
+                  callback: (arguments) async {
+                    if (!await _controllerIsTrusted(controller))
+                      return {'connected': false, 'error': '허용되지 않은 페이지입니다.'};
+                    final data = arguments.isNotEmpty && arguments.first is Map
+                        ? Map<String, dynamic>.from(arguments.first as Map)
+                        : <String, dynamic>{};
+                    final expected =
+                        ((data['expectedGatewayIds'] as List?) ?? const [])
+                            .map((value) => value.toString())
+                            .toList();
+                    return _ble.connectSelectedGateway(
+                      expected,
+                      (data['deviceId'] ?? '').toString(),
+                    );
+                  },
+                );
+                controller.addJavaScriptHandler(
+                  handlerName: 'otkokHangerBleScan',
+                  callback: (_) async {
+                    if (!await _controllerIsTrusted(controller))
+                      return {
+                        'ok': false,
+                        'error': '허용되지 않은 페이지입니다.',
+                        'devices': <Map<String, dynamic>>[],
+                      };
+                    return _hangerBle.scan();
+                  },
+                );
+                controller.addJavaScriptHandler(
+                  handlerName: 'otkokHangerBleConnectSelected',
+                  callback: (arguments) async {
+                    if (!await _controllerIsTrusted(controller))
+                      return {'connected': false, 'error': '허용되지 않은 페이지입니다.'};
+                    final data = arguments.isNotEmpty && arguments.first is Map
+                        ? Map<String, dynamic>.from(arguments.first as Map)
+                        : <String, dynamic>{};
+                    return _hangerBle.connectSelected(
+                      (data['deviceId'] ?? '').toString(),
+                    );
+                  },
+                );
+                controller.addJavaScriptHandler(
+                  handlerName: 'otkokHangerBleConfig',
+                  callback: (arguments) async {
+                    if (!await _controllerIsTrusted(controller))
+                      return {'ok': false, 'error': '허용되지 않은 페이지입니다.'};
+                    final data = arguments.isNotEmpty && arguments.first is Map
+                        ? Map<String, dynamic>.from(arguments.first as Map)
+                        : <String, dynamic>{};
+                    return _hangerBle.configure(data);
+                  },
+                );
+              },
+              onLoadStop: _installBridge,
+              onProgressChanged: (_, progress) {
+                if (mounted) setState(() => _progress = progress / 100);
+              },
+              onPermissionRequest: (_, request) async => PermissionResponse(
+                resources: request.resources,
+                action: _trusted(request.origin)
+                    ? PermissionResponseAction.GRANT
+                    : PermissionResponseAction.DENY,
               ),
-              if (_progress < 1) LinearProgressIndicator(value: _progress),
-            ]),
-          ),
+              shouldOverrideUrlLoading: (_, action) async =>
+                  _trusted(action.request.url)
+                  ? NavigationActionPolicy.ALLOW
+                  : NavigationActionPolicy.CANCEL,
+            ),
+            if (_progress < 1) LinearProgressIndicator(value: _progress),
+          ],
         ),
-      );
+      ),
+    ),
+  );
 }
