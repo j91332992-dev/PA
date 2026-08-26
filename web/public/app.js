@@ -2311,6 +2311,8 @@ let currentHangerOwnership = 'UNKNOWN';
 let provisionPollInterval = null;
 let rebootCountdownInterval = null;
 let localGatewayBleLastSeenAt = 0;
+let localGatewayReconnectTimer = null;
+let localGatewayReconnectAttempt = 0;
 
 function rememberedGatewayIdForDevice(device) {
   try {
@@ -2326,6 +2328,31 @@ function rememberGatewayDevice(device, gatewayId) {
   localStorage.setItem(accountStorageKey(LAST_GATEWAY_BLE_PAIRING_KEY), JSON.stringify({ deviceId: device.id, gatewayId: String(gatewayId).toUpperCase() }));
 }
 
+function updateGatewayTransportIndicator() {
+  const label = $('#connection');
+  const dot = $('#dot');
+  if (!label || !dot || !token || !sessionUser) return;
+  const direct = !!(localGatewayCommandCharacteristic && localGatewayDevice?.gatt?.connected);
+  label.textContent = direct ? '근처 BLE 직통 연결됨' : '클라우드 연결됨';
+  dot.className = 'on';
+}
+
+function scheduleLocalGatewayReconnect() {
+  clearTimeout(localGatewayReconnectTimer);
+  if (!token || !sessionUser || !navigator.bluetooth?.getDevices) return;
+  const delay = Math.min(700 * (2 ** localGatewayReconnectAttempt), 8000);
+  localGatewayReconnectTimer = setTimeout(async () => {
+    localGatewayReconnectTimer = null;
+    const connected = await connectHangerBluetooth({ scanWifi: false, allowChooser: false, silent: true });
+    if (connected) {
+      localGatewayReconnectAttempt = 0;
+      updateGatewayTransportIndicator();
+    } else {
+      localGatewayReconnectAttempt = Math.min(localGatewayReconnectAttempt + 1, 4);
+      scheduleLocalGatewayReconnect();
+    }
+  }, delay);
+}
 function disconnectLocalGatewayBluetooth() {
   const device = localGatewayDevice;
   if (device) device.ongattserverdisconnected = null;
@@ -2637,6 +2664,8 @@ async function connectHangerBluetooth(options = {}) {
       localGatewayCommandCharacteristic = null;
       localGatewayBleLastSeenAt = 0;
       if (localGatewayDevice === device) localGatewayDevice = null;
+      updateGatewayTransportIndicator();
+      scheduleLocalGatewayReconnect();
       render();
     };
     const gatt = await connectGatewayGatt(device);
@@ -2646,6 +2675,8 @@ async function connectHangerBluetooth(options = {}) {
     const localStatus = await service.getCharacteristic(LOCAL_STATUS_UUID);
     localGatewayCommandCharacteristic = await service.getCharacteristic(LOCAL_COMMAND_UUID);
     localGatewayBleLastSeenAt = Date.now();
+    localGatewayReconnectAttempt = 0;
+    clearTimeout(localGatewayReconnectTimer);
     await status.startNotifications();
     await localStatus.startNotifications();
 
@@ -2669,6 +2700,7 @@ async function connectHangerBluetooth(options = {}) {
     await writeGatewayBle('status');
     render();
     if (shouldScanWifi) await scanHangerWifi();
+    updateGatewayTransportIndicator();
     if (!silent) toast('근처 옷봉과 연결되었습니다. 옷 상태와 LED 찾기는 이제 로컬 BLE로 즉시 처리됩니다.');
     return true;
   } catch (error) {
@@ -3653,6 +3685,12 @@ installGatewayWifiSetup();
 $('#navSim')?.remove();
 $('#simulation')?.remove();
 setInterval(renderDeviceManagement, 2000);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && token && !localGatewayDevice?.gatt?.connected) {
+    localGatewayReconnectAttempt = 0;
+    scheduleLocalGatewayReconnect();
+  }
+});
 initAllComboboxes();
 token ? enter() : showAuth();
 if ('serviceWorker' in navigator) {
