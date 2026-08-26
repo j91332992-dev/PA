@@ -490,6 +490,24 @@ void receive(const uint8_t*, const uint8_t* data, int len) {
       Serial.println("[PAIR] Reset by paired gateway");
       return;
     }
+    // The cloud sends PAIR only for a hanger explicitly owned by the same
+    // account as this gateway. This idempotent command repairs stale local
+    // pairing after release/reclaim, reboot, or moving between gateways.
+    if (p.command == sw::Command::PAIR && targeted) {
+      pairedGateway = String(p.gatewayId);
+      discoveredGateway = pairedGateway;
+      hangerLinkDisabled = false;
+      channelState = ChannelState::LOCKED;
+      lastBeaconMs = millis();
+      prefs.putString("gateway", pairedGateway);
+      prefs.putUChar("channel", channel);
+      prefs.putBool("linkDisabled", false);
+      reportAfterGatewayBeacon = true;
+      setHangerBleStatus("connected", "계정에 등록된 옷봉과 연결되었습니다.");
+      Serial.printf("[PAIR] Cloud ownership applied gateway=%s ch=%u\n", pairedGateway.c_str(), channel);
+      report(true);
+      return;
+    }
     if (hangerLinkDisabled || !gatewayMatches || !targeted) {
       Serial.printf("[COMMAND-IGNORE] gateway-match=%s target=%s\n",
                     gatewayMatches ? "yes" : "no", targeted ? "yes" : "no");

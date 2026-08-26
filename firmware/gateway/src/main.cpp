@@ -897,6 +897,9 @@ void fetchCommands() {
     if (factoryReset || strcmp(cmdStr, "UNPAIR") == 0) {
       p.command = sw::Command::UNPAIR;
       p.durationMs = 0;
+    } else if (strcmp(cmdStr, "PAIR") == 0) {
+      p.command = sw::Command::PAIR;
+      p.durationMs = 0;
     } else if (strcmp(cmdStr, "LED_OFF") == 0) {
       p.command = sw::Command::LED_OFF;
       p.durationMs = 0;
@@ -910,7 +913,7 @@ void fetchCommands() {
     // The C6 can be completing an ESP-NOW channel relock when a cloud command
     // arrives. A short burst makes a real FIND reliable without changing its
     // command ID or producing a second cloud command.
-    const uint8_t burstCount = p.command == sw::Command::UNPAIR ? 8 : 4;
+    const uint8_t burstCount = (p.command == sw::Command::UNPAIR || p.command == sw::Command::PAIR) ? 8 : 6;
     for (uint8_t i = 0; i < burstCount; i++) {
       send(p);
       if (i + 1 < burstCount) delay(30);
