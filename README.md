@@ -1,5 +1,7 @@
 # Smart Wardrobe ESP-NOW Service
 
+다른 PC 설치·이전: [새 PC 설정 안내](docs/NEW_PC_SETUP.md) / [APK 다운로드](https://github.com/j91332992-dev/PA/releases/tag/apk-archive-2026-09-03)
+
 NTAG213 → PN532 → XIAO ESP32-C6 → ESP-NOW → XIAO ESP32-S3 → Web/PWA 전체 경로를 위한 프로젝트입니다.
 
 처음 시작한다면 **[docs/00_MASTER_START_TO_FINISH_GUIDE.md](docs/00_MASTER_START_TO_FINISH_GUIDE.md)** 하나를 위에서부터 순서대로 따라가세요. 소프트웨어 빠른 실행은 `powershell -ExecutionPolicy Bypass -File scripts/setup.ps1` 후 `npm start`입니다.
